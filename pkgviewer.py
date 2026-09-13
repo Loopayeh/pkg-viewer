@@ -378,6 +378,27 @@ def _global_ctrl_keys(event, root, statusvar):
     return None
 
 
+def _local_logo(size=(40, 40)):
+    """Load local assets/logo.png if present (gitignored, never committed)."""
+    try:
+        from PIL import Image as _I
+        here = os.path.dirname(os.path.abspath(__file__))
+        cands = [os.path.join(os.getcwd(), "assets", "logo.png"),
+                 os.path.join(here, "assets", "logo.png")]
+        if getattr(sys, "frozen", False):
+            cands.insert(0, os.path.join(os.path.dirname(sys.executable),
+                                         "assets", "logo.png"))
+            cands.insert(0, os.path.join(sys._MEIPASS, "assets", "logo.png"))
+        for p in cands:
+            if os.path.isfile(p):
+                im = _I.open(p).convert("RGB")
+                im.thumbnail(size)
+                return im
+        return None
+    except Exception:
+        return None
+
+
 def run_gui(start_path=None):
     import tkinter as tk
     from tkinter import filedialog, ttk
@@ -395,6 +416,13 @@ def run_gui(start_path=None):
     root.geometry("960x640")
     root.configure(bg=BG)
     root.minsize(820, 540)
+    try:
+        _ic = os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)
+                            if getattr(sys, "frozen", False) else "."), "assets", "logo.ico")
+        if os.path.isfile(_ic):
+            root.iconbitmap(_ic)
+    except Exception:
+        pass
 
     style = ttk.Style(root)
     try:
@@ -425,6 +453,15 @@ def run_gui(start_path=None):
     # header
     header = ttk.Frame(root, padding=(12, 10))
     header.pack(fill="x")
+    try:
+        _lg = _local_logo((40, 40))
+        if _lg is not None:
+            from PIL import ImageTk as _ITk
+            _lph = _ITk.PhotoImage(_lg)
+            state["logo_photo"] = _lph
+            tk.Label(header, image=_lph, bg=BG).pack(side="left", padx=(0, 10))
+    except Exception:
+        pass
     ttk.Button(header, text="Open PKG", style="Accent.TButton",
                command=lambda: pick()).pack(side="left")
     pathvar = tk.StringVar(value="Select a PKG file...")
