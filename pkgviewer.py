@@ -79,18 +79,58 @@ def parse_sfo(data):
         return {"_error": str(e)}
 
 
+REGION_NAMES = {"EP": "Europe", "UP": "Americas", "JP": "Japan", "HP": "Asia"}
+PS4_CAT_TYPES = {"gd": "Game", "ac": "DLC", "gp": "Update Patch"}
+
+
+def content_region(cid):
+    """Region from content-ID prefix (EP0002-... -> Europe)."""
+    try:
+        pre = (cid or "").split("-")[0][:2].upper()
+        return REGION_NAMES.get(pre, pre or "-")
+    except Exception:
+        return "-"
+
+
+def fmt_fw(v):
+    """Decode PS5 fw hex (0x0250...) -> '2.50'. Passes other values through."""
+    if v is None or v == "":
+        return "-"
+    try:
+        n = v if isinstance(v, int) else int(str(v).strip(), 0)
+        top = (n >> 48) & 0xFFFF
+        if not top:
+            return str(v)
+        return f"{(top >> 8) & 0xFF}.{top & 0xFF:02X}"
+    except Exception:
+        return str(v)
+
+
+def ps4_pkg_type(cat):
+    if not cat:
+        return "-"
+    lab = PS4_CAT_TYPES.get(str(cat).lower())
+    return f"{lab} ({cat})" if lab else str(cat)
+
+
 def _param_json_meta(meta):
     lp = meta.get("localizedParameters", {})
     lang = lp.get("defaultLanguage", "en-US")
     title = (lp.get(lang) or {}).get("titleName", "")
+    cid = meta.get("contentId", "")
+    cn = meta.get("applicationCategoryType")
+    ptype = "Application (APP)" if cn == 0 else (f"Type {cn}" if cn is not None else "-")
+    drm = meta.get("applicationDrmType", "")
     extra = [("Title ID", meta.get("titleId", "")),
-             ("Content ID", meta.get("contentId", "")),
+             ("Content ID", cid),
+             ("Region", content_region(cid)),
+             ("Type", ptype),
              ("Content Ver", meta.get("contentVersion", "")),
-             ("Master Ver", meta.get("masterVersion", ""))]
-    sv = meta.get("sdkVersion")
-    rv = meta.get("requiredSystemSoftwareVersion")
-    extra.append(("SDK", hex(sv) if isinstance(sv, int) else str(sv or "")))
-    extra.append(("Req. FW", hex(rv) if isinstance(rv, int) else str(rv or "")))
+             ("Master Ver", meta.get("masterVersion", "")),
+             ("Concept ID", meta.get("conceptId", "")),
+             ("Min. System", fmt_fw(meta.get("requiredSystemSoftwareVersion"))),
+             ("DRM", str(drm).capitalize() if drm else "-"),
+             ("SDK", fmt_fw(meta.get("sdkVersion")))]
     return title, extra
 
 
@@ -128,11 +168,12 @@ def parse_pkg(path):
                     meta = {"_error": str(e)}
             rows = [("Platform", "PS5 (finalized FIH)"),
                     ("Signature", "official" if signed == 0x80 else "debug / fake"),
-                    ("Content ID", cid),
                     ("Size", fmt_size(size)),
                     ("PFS image", f"{fmt_size(pfs_size)} @ {pfs_off:#x}"),
                     ("Entries", str(len(ents)))]
             rows += extra
+            if not any(k == "Content ID" for k, _ in rows):
+                rows.insert(2, ("Content ID", cid))
             return {"ok": True, "kind": "ps5", "path": path, "size": size,
                     "title": title or os.path.basename(path),
                     "rows": rows, "entries": ents, "meta": meta, "icon_entry": "icon0.png"}
@@ -157,10 +198,14 @@ def parse_pkg(path):
             meta, title, extra = {}, "", []
             if sfo and not sfo.get("_error"):
                 title = sfo.get("TITLE", "")
+                _cid4 = sfo.get("CONTENT_ID", cid)
+                _cat4 = sfo.get("CATEGORY", "")
                 extra = [("Title ID", sfo.get("TITLE_ID", "")),
-                         ("Category", sfo.get("CATEGORY", "")),
+                         ("Content ID", _cid4),
+                         ("Region", content_region(_cid4)),
+                         ("Type", ps4_pkg_type(_cat4)),
                          ("Version", sfo.get("VERSION", "")),
-                         ("Content ID", sfo.get("CONTENT_ID", cid))]
+                         ("Min. System", str(sfo.get("SYSTEM_VER", "-")))]
             elif pj and pj["size"] and pj["size"] < 100_000:
                 f.seek(pj["off"])
                 try:
@@ -202,8 +247,23 @@ def fmt_size(n):
 
 
 CURATED_SFO = ["TITLE", "TITLE_ID", "CATEGORY", "VERSION", "CONTENT_ID", "FORMAT"]
-CURATED_JSON = ["titleId", "contentId", "contentVersion", "masterVersion",
-                "sdkVersion", "requiredSystemSoftwareVersion"]
+# (key in param.json, friendly label shown in Details; None = decode via fmt_fw)
+CURATED_JSON = [("titleId", "Title ID"),
+                ("contentId", "Content ID"),
+                ("contentVersion", "Content Version"),
+                ("masterVersion", "Master Version"),
+                ("conceptId", "Concept ID"),
+                ("applicationDrmType", "DRM"),
+                ("requiredSystemSoftwareVersion", "Min. System"),
+                ("sdkVersion", "SDK")]
+
+
+def friendly_json_value(key, v):
+    if key in ("sdkVersion", "requiredSystemSoftwareVersion"):
+        return fmt_fw(v)
+    if isinstance(v, int):
+        return str(v)
+    return str(v)
 
 
 def curated_meta_lines(kind, meta):
@@ -216,13 +276,10 @@ def curated_meta_lines(kind, meta):
         lang = lp.get("defaultLanguage", "en-US")
         t = (lp.get(lang) or {}).get("titleName", "")
         if t:
-            lines.append(f"titleName [{lang}] = {t}")
-        for k in CURATED_JSON:
+            lines.append(f"Title = {t}")
+        for k, label in CURATED_JSON:
             if k in meta:
-                v = meta[k]
-                if isinstance(v, int):
-                    v = hex(v)
-                lines.append(f"{k} = {v}")
+                lines.append(f"{label} = {friendly_json_value(k, meta[k])}")
     else:
         for k in CURATED_SFO:
             if k in meta:
@@ -316,11 +373,13 @@ def print_info(path):
 
 
 # ---------------- GUI ----------------
-BG, CARD, ACCENT = "#16181d", "#20242c", "#2d6cdf"
-TEXT, MUTED = "#eef0f5", "#9aa3b2"
+BG, CARD, CARD2, ACCENT = "#0f1115", "#1a1e26", "#222836", "#3b82f6"
+TEXT, MUTED = "#f1f3f8", "#8b93a5"
 FONT = ("Segoe UI", 10)
-FONT_BIG = ("Segoe UI", 14, "bold")
+FONT_BIG = ("Segoe UI", 18, "bold")
+FONT_MID = ("Segoe UI", 11, "bold")
 FONT_SMALL = ("Segoe UI", 9)
+FONT_BADGE = ("Segoe UI", 9, "bold")
 
 
 def _global_ctrl_keys(event, root, statusvar):
@@ -411,11 +470,18 @@ def run_gui(start_path=None):
     state = {"result": None, "photo": None, "pil": None,
              "img_name": "", "show_all": False}
 
-    root = tk.Tk()
+    root = None
+    has_dnd = False
+    try:
+        from tkinterdnd2 import DND_FILES, TkinterDnD
+        root = TkinterDnD.Tk()
+        has_dnd = True
+    except ImportError:
+        root = tk.Tk()
     root.title("PKG Viewer  •  PS4 / PS5")
-    root.geometry("960x640")
+    root.geometry("1060x700")
     root.configure(bg=BG)
-    root.minsize(820, 540)
+    root.minsize(900, 600)
     try:
         _ic = os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)
                             if getattr(sys, "frozen", False) else "."), "assets", "logo.ico")
@@ -431,61 +497,77 @@ def run_gui(start_path=None):
         pass
     style.configure("TFrame", background=BG)
     style.configure("Card.TFrame", background=CARD)
+    style.configure("Card2.TFrame", background=CARD2)
     style.configure("TLabel", background=BG, foreground=TEXT, font=FONT)
     style.configure("Card.TLabel", background=CARD, foreground=TEXT, font=FONT)
     style.configure("Muted.Card.TLabel", background=CARD, foreground=MUTED, font=FONT_SMALL)
     style.configure("Title.Card.TLabel", background=CARD, foreground=TEXT, font=FONT_BIG)
+    style.configure("Badge.TLabel", background=CARD2, foreground=TEXT, font=FONT_BADGE,
+                    padding=(10, 4))
+    style.configure("SpecKey.TLabel", background=CARD, foreground=MUTED, font=FONT_SMALL)
+    style.configure("SpecVal.TLabel", background=CARD, foreground=TEXT, font=FONT_MID)
     style.configure("Accent.TButton", background=ACCENT, foreground="white", font=FONT,
-                    borderwidth=0, padding=(14, 8))
-    style.map("Accent.TButton", background=[("active", "#3d7bef")])
+                    borderwidth=0, padding=(16, 9))
+    style.map("Accent.TButton", background=[("active", "#2f6fe0")])
     style.configure("TNotebook", background=BG, borderwidth=0)
-    style.configure("TNotebook.Tab", background=CARD, foreground=TEXT, padding=(14, 6), font=FONT)
-    style.map("TNotebook.Tab", background=[("selected", ACCENT)])
+    style.configure("TNotebook.Tab", background=CARD, foreground=MUTED, padding=(18, 8), font=FONT)
+    style.map("TNotebook.Tab", background=[("selected", CARD2)],
+              foreground=[("selected", TEXT)])
     style.configure("Treeview", background=CARD, fieldbackground=CARD, foreground=TEXT,
-                    font=FONT_SMALL, rowheight=24, borderwidth=0)
-    style.configure("Treeview.Heading", background="#2a303b", foreground=TEXT, font=FONT_SMALL)
+                    font=FONT, rowheight=26, borderwidth=0)
+    style.configure("Treeview.Heading", background=CARD2, foreground=MUTED, font=FONT_SMALL)
     style.map("Treeview", background=[("selected", ACCENT)])
-    style.configure("TCombobox", fieldbackground=CARD, background=CARD, foreground=TEXT)
-    style.configure("Ghost.TButton", background=CARD, foreground=MUTED, font=FONT_SMALL,
-                    borderwidth=0, padding=(10, 5))
-    style.map("Ghost.TButton", background=[("active", "#2a303b")], foreground=[("active", TEXT)])
+    style.configure("TCombobox", fieldbackground=CARD2, background=CARD2, foreground=TEXT,
+                    arrowcolor=MUTED)
+    style.configure("Ghost.TButton", background=CARD2, foreground=TEXT, font=FONT,
+                    borderwidth=0, padding=(12, 7))
+    style.map("Ghost.TButton", background=[("active", "#2c3342")])
 
-    # header
-    header = ttk.Frame(root, padding=(12, 10))
+    # header: slim toolbar
+    header = ttk.Frame(root, padding=(16, 12))
     header.pack(fill="x")
     try:
-        _lg = _local_logo((40, 40))
+        _lg = _local_logo((36, 36))
         if _lg is not None:
             from PIL import ImageTk as _ITk
             _lph = _ITk.PhotoImage(_lg)
             state["logo_photo"] = _lph
-            tk.Label(header, image=_lph, bg=BG).pack(side="left", padx=(0, 10))
+            tk.Label(header, image=_lph, bg=BG).pack(side="left", padx=(0, 12))
     except Exception:
         pass
     ttk.Button(header, text="Open PKG", style="Accent.TButton",
                command=lambda: pick()).pack(side="left")
-    pathvar = tk.StringVar(value="Select a PKG file...")
+    pathvar = tk.StringVar(value="Drop a .pkg file here, or open one")
     ttk.Label(header, textvariable=pathvar, font=FONT_SMALL, foreground=MUTED).pack(
-        side="left", padx=(12, 0))
+        side="left", padx=(14, 0))
 
     # body
-    body = ttk.Frame(root, padding=(12, 0))
+    body = ttk.Frame(root, padding=(16, 4))
     body.pack(fill="both", expand=True)
     body.columnconfigure(1, weight=1)
     body.rowconfigure(0, weight=1)
 
-    # left card
-    left = ttk.Frame(body, style="Card.TFrame", padding=14)
-    left.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
-    imglabel = tk.Label(left, bg=CARD, fg=MUTED, text="(icon)",
-                        font=FONT_SMALL)
-    imglabel.pack()
+    # ---- hero: cover + title/badges (left) ----
+    left = ttk.Frame(body, style="Card.TFrame", padding=18)
+    left.grid(row=0, column=0, sticky="ns", padx=(0, 14))
+    imglabel = tk.Label(left, bg=CARD, fg=MUTED,
+                        text="Drop a .pkg file here\n\nor click Open PKG",
+                        font=FONT_MID, justify="center")
+    imglabel.pack(pady=40)
     titlevar = tk.StringVar(value="—")
     tk.Label(left, textvariable=titlevar, bg=CARD, fg=TEXT, font=FONT_BIG,
-             wraplength=300, justify="left").pack(pady=(12, 2), anchor="w")
-    badgevar = tk.StringVar(value="")
-    tk.Label(left, textvariable=badgevar, bg=CARD, fg=MUTED,
-             font=FONT_SMALL).pack(anchor="w")
+             wraplength=300, justify="left").pack(pady=(14, 8), anchor="w")
+    badgerow = ttk.Frame(left, style="Card.TFrame")
+    badgerow.pack(anchor="w", pady=(0, 4))
+    badgevars = [tk.StringVar(value="") for _ in range(3)]
+    badge_labels = []
+    for bv in badgevars:
+        lb = tk.Label(badgerow, textvariable=bv, bg=CARD2, fg=TEXT,
+                      font=FONT_BADGE, padx=10, pady=4)
+        lb.pack(side="left", padx=(0, 8))
+        badge_labels.append(lb)
+    state["badges"] = badgevars
+    state["badge_labels"] = badge_labels
     ttk.Label(left, text="Image:", style="Muted.Card.TLabel").pack(anchor="w", pady=(14, 4))
     imgchoice = ttk.Combobox(left, state="readonly", width=30)
     imgchoice.pack(anchor="w")
@@ -503,18 +585,27 @@ def run_gui(start_path=None):
     right.rowconfigure(1, weight=1)
     right.columnconfigure(0, weight=1)
 
-    specbox = ttk.Frame(right, style="Card.TFrame", padding=12)
-    specbox.pack(fill="x", pady=(0, 10))
+    specbox = ttk.Frame(right, style="Card.TFrame", padding=16)
+    specbox.pack(fill="x", pady=(0, 12))
     spec_rows = []
-    for _ in range(8):
-        k = ttk.Label(specbox, text="", style="Muted.Card.TLabel", width=14)
-        v = tk.Entry(specbox, bg=CARD, fg=TEXT, font=FONT, relief="flat",
-                     readonlybackground=CARD, highlightthickness=0,
-                     state="readonly", width=60)
-        k.grid(column=0, row=len(spec_rows), sticky="w", pady=2)
-        v.grid(column=1, row=len(spec_rows), sticky="we", padx=(8, 0), pady=2)
-        spec_rows.append((k, v))
-    specbox.columnconfigure(1, weight=1)
+    for _ in range(5):
+        row = ttk.Frame(specbox, style="Card.TFrame")
+        row.pack(fill="x", pady=3)
+        row.columnconfigure(0, weight=1)
+        row.columnconfigure(1, weight=1)
+        cells = []
+        for col in (0, 1):
+            cell = ttk.Frame(row, style="Card.TFrame")
+            cell.grid(row=0, column=col, sticky="w", padx=(0, 24))
+            k = ttk.Label(cell, text="", style="SpecKey.TLabel")
+            k.pack(anchor="w")
+            v = tk.Entry(cell, bg=CARD, fg=TEXT, font=FONT_MID, relief="flat",
+                         readonlybackground=CARD, highlightthickness=0,
+                         state="readonly", width=34)
+            v.pack(anchor="w")
+            cells.append((k, v))
+        spec_rows.append(cells)
+    state["spec_cells"] = spec_rows
 
     nb = ttk.Notebook(right)
     nb.pack(fill="both", expand=True)
@@ -580,17 +671,34 @@ def run_gui(start_path=None):
         state["result"] = r
         state["show_all"] = False
         detailvar.set("Show all")
-        pathvar.set(p)
+        pathvar.set(os.path.basename(p))
         titlevar.set(r["title"])
         plat = r["rows"][0][1] if r["rows"] else ""
-        badgevar.set(f"{plat}  •  {fmt_size(r['size'])}")
-        for (k, v), (kl, vl) in zip(r["rows"][:8], spec_rows):
-            kl.config(text=k)
+        _rd = dict(r["rows"])
+        badges = state.get("badges", [])
+        _blabs = state.get("badge_labels", [])
+        _bvals = [plat,
+                  _rd.get("Region", ""),
+                  f"{fmt_size(r['size'])}"]
+        _bcolors = ["#3b82f6" if "PS5" in plat else "#22c55e",
+                    "#22c55e", "#6b7280"]
+        for bv, val, lb, col in zip(badges, _bvals, _blabs, _bcolors):
+            bv.set(val or "")
+            try:
+                lb.config(bg=col)
+            except Exception:
+                pass
+        _flat = [(k, v) for (k, v) in r["rows"]
+                 if k not in ("Platform", "Size", "Region")]
+        _flat = _flat[:10]
+        cells = [c for row in state.get("spec_cells", []) for c in row]
+        for (k, v), (kl, vl) in zip(_flat, cells):
+            kl.config(text=k.upper())
             vl.config(state="normal")
             vl.delete(0, "end")
-            vl.insert(0, str(v)[:90])
+            vl.insert(0, str(v)[:60])
             vl.config(state="readonly")
-        for kl, vl in spec_rows[len(r["rows"]):]:
+        for kl, vl in cells[len(_flat):]:
             kl.config(text="")
             vl.config(state="normal")
             vl.delete(0, "end")
@@ -705,7 +813,7 @@ def run_gui(start_path=None):
             im = Image.open(io.BytesIO(data))
             state["pil"] = im.copy()
             state["img_name"] = name
-            im.thumbnail((300, 300))
+            im.thumbnail((360, 360))
             ph = ImageTk.PhotoImage(im)
             state["photo"] = ph
             imglabel.config(image=ph, text="")
@@ -717,6 +825,16 @@ def run_gui(start_path=None):
 
     if start_path and os.path.isfile(start_path):
         root.after(200, lambda: load(start_path))
+    if has_dnd:
+        def _on_drop(ev):
+            p = (ev.data or "").strip().strip("{}").split("} {")[0]
+            if p and os.path.isfile(p):
+                load(p)
+        try:
+            root.drop_target_register(DND_FILES)
+            root.dnd_bind("<<Drop>>", _on_drop)
+        except Exception as ex:
+            statusvar.set(f"Drop disabled: {ex}")
     root.mainloop()
 
 

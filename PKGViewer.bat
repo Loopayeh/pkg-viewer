@@ -1,2 +1,2 @@
 @echo off
-start "" /min "%~dp0PKGViewer-noconsole.vbs" %*
+start "" /min pythonw "%~dp0pkgviewer.py" %*
