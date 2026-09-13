@@ -2,7 +2,9 @@
 
 ![screenshot](screenshot.png)
 
-View PS4 (CNT) and PS5 (finalized FIH) package info, plus PS5 exFAT / ffpfsc images and app folders: cover art, title, Title ID, Content ID, version, region, and required firmware — without extracting anything.
+**PKG Viewer** shows what's inside a PS4 / PS5 game file without extracting it: cover art, title, Title ID, region, version, and required firmware.
+
+Works with `.pkg` packages, `.exfat` / `.ffpfsc` images, and app folders.
 
 ## Download
 
@@ -28,11 +30,10 @@ PKGViewer.bat
 
 ## Supported formats
 
-- **PS4** packages (`7F CNT`): reads the entry table and `param.sfo`
-- **PS5** finalized packages (FIH): reads the file table, `param.json`, and the icon
-- **PS5 exFAT images** (`.exfat`): reads `sce_sys/param.json` + icon straight from the image via FAT walk
-- **PS5 compressed images** (`.ffpfsc`): opens the inner exFAT via mkpfs, then reads `sce_sys` the same way (needs `pip install mkpfs` when running from source)
-- **PS5 app folders**: reads `sce_sys/param.json` + icon directly — no container needed
+- **PS4 / PS5 packages** (`.pkg`) — game, DLC, update
+- **PS5 disk images** (`.exfat`) — game dumps
+- **PS5 compressed images** (`.ffpfsc`) — game dumps
+- **PS5 app folders** — extracted game folder
 
 ## Build from source
 
