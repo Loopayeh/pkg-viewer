@@ -22,6 +22,10 @@ PKGViewer.bat
 
 Drag & drop a `.pkg` onto the exe/bat, or use Open PKG.
 
+## Contact
+
+Telegram: [@loopayeh](https://t.me/loopayeh)
+
 ## Build exe
 
 ```bat
