@@ -101,7 +101,7 @@ def fmt_fw(v):
         top = (n >> 48) & 0xFFFF
         if not top:
             return str(v)
-        return f"{(top >> 8) & 0xFF}.{top & 0xFF:02X}"
+        return f"{(top >> 8) & 0xFF:X}.{top & 0xFF:02X}"
     except Exception:
         return str(v)
 
@@ -138,6 +138,8 @@ def parse_pkg(path):
     if os.path.isdir(path):
         return parse_app_folder(path)
     size = os.path.getsize(path)
+    if path.lower().endswith(".ffpfsc"):
+        return parse_ffpfsc_image(path)
     with open(path, "rb") as f:
         magic = f.read(4)
         if magic != FIH_MAGIC and magic != CNT_MAGIC:
@@ -276,12 +278,22 @@ def parse_app_folder(path):
 class _Exfat:
     """Minimal read-only exFAT: boot sector, FAT walk, dir scan."""
 
-    def __init__(self, path):
-        self.path = path
-        self.f = open(path, "rb")
-        self.f.seek(0, 2)
-        self._img_size = self.f.tell()
-        self.f.seek(0)
+    def __init__(self, path_or_file):
+        if hasattr(path_or_file, "read"):
+            self.path = getattr(path_or_file, "name", "<view>")
+            self.f = path_or_file
+            self._own = False
+            pos = self.f.tell()
+            self.f.seek(0, 2)
+            self._img_size = self.f.tell()
+            self.f.seek(0)
+        else:
+            self.path = path_or_file
+            self.f = open(path_or_file, "rb")
+            self._own = True
+            self.f.seek(0, 2)
+            self._img_size = self.f.tell()
+            self.f.seek(0)
         bs = self.f.read(512)
         if bs[3:11] != b"EXFAT   " or bs[510] != 0x55 or bs[511] != 0xAA:
             raise ValueError("not an exFAT image")
@@ -296,10 +308,11 @@ class _Exfat:
         self.root_clus = root_clus
 
     def close(self):
-        try:
-            self.f.close()
-        except Exception:
-            pass
+        if getattr(self, "_own", True):
+            try:
+                self.f.close()
+            except Exception:
+                pass
 
     def _clus_off(self, clus):
         return (self.data_sec + (clus - 2) * self.spc) * self.bps
@@ -409,39 +422,98 @@ class _Exfat:
         return None
 
 
+def _open_ffpfsc_view(path):
+    """Open inner exFAT view of an .ffpfsc via mkpfs. Returns (view, fh, name).
+
+    Caller must close fh. Raises RuntimeError if mkpfs is missing.
+    """
+    try:
+        from pathlib import Path as _P
+        from mkpfs.pfs import open_inner_file_view as _oiv
+    except ImportError:
+        raise RuntimeError("mkpfs not installed (pip install mkpfs)")
+    r = _oiv(_P(path))
+    if not r:
+        raise ValueError("no single inner file in ffpfsc")
+    return r
+
+
 def parse_exfat_image(path):
     """PS5 exFAT game image: pull sce_sys/param.json + icon0.png via FAT walk."""
     size = os.path.getsize(path)
     fs = _Exfat(path)
     try:
-        pj = fs.find(["sce_sys", "param.json"])
-        meta, title, extra = {}, "", []
-        if pj and not pj["is_dir"] and pj["size"] < 100_000:
-            try:
-                if pj["nofat"]:
-                    fs.f.seek(fs._clus_off(pj["first"]))
-                    raw = fs.f.read(pj["size"])
-                else:
-                    raw = fs.read_chain(pj["first"], pj["size"])
-                meta = json.loads(raw.decode("utf-8"))
-                title, extra = _param_json_meta(meta)
-            except Exception as e:
-                meta = {"_error": str(e)}
-        icon = fs.find(["sce_sys", "icon0.png"])
-        ents = []
-        if icon and not icon["is_dir"] and icon["size"] > 0:
-            ents.append({"id": 0, "name": "icon0.png", "size": icon["size"],
-                         "abs_off": ("exfat", icon["first"], icon["size"],
-                                     icon["nofat"])})
-        rows = [("Platform", "PS5 exFAT image"),
-                ("Size", fmt_size(size))]
-        rows += extra
-        return {"ok": True, "kind": "ps5", "path": path, "size": size,
-                "title": title or os.path.basename(path),
-                "rows": rows, "entries": ents, "meta": meta,
-                "icon_entry": "icon0.png", "exfat": True}
+        return _exfat_result(fs, path, size, "PS5 exFAT image")
     finally:
         fs.close()
+
+
+def parse_ffpfsc_image(path):
+    """Compressed PFS (.ffpfsc): open inner exFAT via mkpfs, then FAT walk."""
+    size = os.path.getsize(path)
+    view, fh, inner = _open_ffpfsc_view(path)
+    try:
+        fs = _Exfat(view)
+        try:
+            r = _exfat_result(fs, path, size, "PS5 ffpfsc image",
+                              inner_name=inner)
+        finally:
+            fs.close()
+        # Cache the icon bytes now; the PFS view closes with fh.
+        for e in r.get("entries", []):
+            try:
+                fs2 = _Exfat(view)
+                try:
+                    first = e["abs_off"][1]
+                    fsize = e["abs_off"][2]
+                    nofat = e["abs_off"][3]
+                    if nofat:
+                        fs2.f.seek(fs2._clus_off(first))
+                        e["cached"] = fs2.f.read(fsize)
+                    else:
+                        e["cached"] = fs2.read_chain(first, fsize)
+                finally:
+                    fs2.close()
+            except Exception:
+                pass
+            e["abs_off"] = -2
+        return r
+    finally:
+        try:
+            fh.close()
+        except Exception:
+            pass
+
+
+def _exfat_result(fs, path, size, platform, inner_name=None):
+    pj = fs.find(["sce_sys", "param.json"])
+    meta, title, extra = {}, "", []
+    if pj and not pj["is_dir"] and pj["size"] < 100_000:
+        try:
+            if pj["nofat"]:
+                fs.f.seek(fs._clus_off(pj["first"]))
+                raw = fs.f.read(pj["size"])
+            else:
+                raw = fs.read_chain(pj["first"], pj["size"])
+            meta = json.loads(raw.decode("utf-8"))
+            title, extra = _param_json_meta(meta)
+        except Exception as e:
+            meta = {"_error": str(e)}
+    icon = fs.find(["sce_sys", "icon0.png"])
+    ents = []
+    if icon and not icon["is_dir"] and icon["size"] > 0:
+        ents.append({"id": 0, "name": "icon0.png", "size": icon["size"],
+                     "abs_off": ("exfat", icon["first"], icon["size"],
+                                 icon["nofat"])})
+    rows = [("Platform", platform),
+            ("Size", fmt_size(size))]
+    if inner_name:
+        rows.append(("Inner file", inner_name))
+    rows += extra
+    return {"ok": True, "kind": "ps5", "path": path, "size": size,
+            "title": title or os.path.basename(path),
+            "rows": rows, "entries": ents, "meta": meta,
+            "icon_entry": "icon0.png", "exfat": True}
 
 
 def read_entry_bytes(path, abs_off, size, limit=32_000_000):
@@ -590,6 +662,10 @@ def copy_image_to_clipboard(pil_img):
 
 
 def print_info(path):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     r = parse_pkg(path)
     if "error" in r and not r.get("ok"):
         print("ERROR:", r["error"]); return
@@ -767,7 +843,7 @@ def run_gui(start_path=None):
         pass
     ttk.Button(header, text="Open", style="Accent.TButton",
                command=lambda: pick()).pack(side="left")
-    pathvar = tk.StringVar(value="Drop a .pkg / .exfat file or app folder here")
+    pathvar = tk.StringVar(value="Drop a .pkg / .exfat / .ffpfsc file or app folder here")
     ttk.Label(header, textvariable=pathvar, font=FONT_SMALL, foreground=MUTED).pack(
         side="left", padx=(14, 0))
 
@@ -841,8 +917,8 @@ def run_gui(start_path=None):
     nb.pack(fill="both", expand=True)
     tab_entries = ttk.Frame(nb)
     tab_meta = ttk.Frame(nb)
-    nb.add(tab_entries, text="  Files  ")
     nb.add(tab_meta, text="  Details  ")
+    nb.add(tab_entries, text="  Files  ")
 
     tree = ttk.Treeview(tab_entries, columns=("id", "size"), show="tree headings")
     tree.heading("#0", text="name", anchor="w")
@@ -999,7 +1075,9 @@ def run_gui(start_path=None):
         e = next((x for x in r["entries"] if x["name"] == name), None)
         if not e:
             return
-        data = read_entry_bytes(r["path"], e["abs_off"], e["size"])
+        data = e.get("cached")
+        if data is None:
+            data = read_entry_bytes(r["path"], e["abs_off"], e["size"])
         if data[:8] != b"\x89PNG\r\n\x1a\n":
             statusvar.set("Not a PNG")
             return
@@ -1037,6 +1115,8 @@ def run_gui(start_path=None):
             if e.get("local_path") and os.path.isfile(e["local_path"]):
                 with open(e["local_path"], "rb") as fh:
                     data = fh.read()
+            elif e.get("cached") is not None:
+                data = e["cached"]
             else:
                 data = read_entry_bytes(r["path"], e["abs_off"], e["size"])
         except Exception as ex:
