@@ -378,6 +378,30 @@ def _global_ctrl_keys(event, root, statusvar):
     return None
 
 
+def _app_base():
+    """Dir of .py or frozen exe."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _logo_image(size=(64, 64)):
+    """Load bundled logo.png; None if missing. Returns PIL image."""
+    try:
+        from PIL import Image as _I
+        p = os.path.join(_app_base(), "assets", "logo.png")
+        if not os.path.isfile(p):
+            p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "assets", "logo.png")
+        if not os.path.isfile(p):
+            return None
+        im = _I.open(p).convert("RGB")
+        im.thumbnail(size)
+        return im
+    except Exception:
+        return None
+
+
 def run_gui(start_path=None):
     import tkinter as tk
     from tkinter import filedialog, ttk
@@ -395,6 +419,12 @@ def run_gui(start_path=None):
     root.geometry("960x640")
     root.configure(bg=BG)
     root.minsize(820, 540)
+    try:
+        _ico = os.path.join(_app_base(), "assets", "logo.ico")
+        if os.path.isfile(_ico):
+            root.iconbitmap(_ico)
+    except Exception:
+        pass
 
     style = ttk.Style(root)
     try:
@@ -425,6 +455,15 @@ def run_gui(start_path=None):
     # header
     header = ttk.Frame(root, padding=(12, 10))
     header.pack(fill="x")
+    try:
+        _logo = _logo_image((40, 40))
+        if _logo is not None:
+            from PIL import ImageTk as _ITk
+            _lph = _ITk.PhotoImage(_logo)
+            state["logo_photo"] = _lph
+            tk.Label(header, image=_lph, bg=BG).pack(side="left", padx=(0, 10))
+    except Exception:
+        pass
     ttk.Button(header, text="Open PKG", style="Accent.TButton",
                command=lambda: pick()).pack(side="left")
     pathvar = tk.StringVar(value="Select a PKG file...")
