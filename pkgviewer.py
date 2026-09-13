@@ -267,6 +267,27 @@ def parse_app_folder(path):
                          "abs_off": -1, "local_path": icon})
         except OSError:
             pass
+    # every other PNG in sce_sys (pic0, icon variants, ...) for the gallery
+    try:
+        _sce = os.path.join(path, "sce_sys")
+        _eid = 1
+        for _fn in sorted(os.listdir(_sce)):
+            if _fn == "icon0.png" or not _fn.lower().endswith(".png"):
+                continue
+            _fp = os.path.join(_sce, _fn)
+            if not os.path.isfile(_fp):
+                continue
+            try:
+                _sz = os.path.getsize(_fp)
+            except OSError:
+                continue
+            if _sz <= 0:
+                continue
+            ents.append({"id": _eid, "name": _fn, "size": _sz,
+                         "abs_off": -1, "local_path": _fp})
+            _eid += 1
+    except OSError:
+        pass
     r = {"ok": True, "kind": "ps5", "path": path, "size": total,
          "title": title or os.path.basename(path.rstrip("/\\")),
          "rows": rows, "entries": ents, "meta": meta, "icon_entry": "icon0.png"}
@@ -421,6 +442,33 @@ class _Exfat:
             clus, size, nofat = first, sz, nf
         return None
 
+    def list_path(self, parts):
+        """List names in a subdir given as path parts; [] on error."""
+        clus, size, nofat = self.root_clus, 1 << 30, False
+        for depth, part in enumerate(parts):
+            if depth == 0 and (part == "" or part.lower().endswith(".exfat")):
+                continue
+            found = None
+            want = part.lower() if depth < len(parts) else None
+            for name, attrs, first, sz, nf in self.list_dir(clus, size, nofat,
+                                                            want=want):
+                if name.lower() == part.lower():
+                    found = (attrs, first, sz, nf)
+                    break
+            if found is None:
+                return []
+            attrs, first, sz, nf = found
+            if depth == len(parts) - 1:
+                if not (attrs & 0x10):
+                    return []
+                return [{"name": n, "first": f, "size": s, "nofat": nf2,
+                         "is_dir": bool(a & 0x10)}
+                        for n, a, f, s, nf2 in self.list_dir(first, sz, nf)]
+            if not (attrs & 0x10):
+                return []
+            clus, size, nofat = first, sz, nf
+        return []
+
 
 def _open_ffpfsc_view(path):
     """Open inner exFAT view of an .ffpfsc via mkpfs. Returns (view, fh, name).
@@ -505,6 +553,22 @@ def _exfat_result(fs, path, size, platform, inner_name=None):
         ents.append({"id": 0, "name": "icon0.png", "size": icon["size"],
                      "abs_off": ("exfat", icon["first"], icon["size"],
                                  icon["nofat"])})
+    # every other PNG in sce_sys (pic0, icon variants, ...) for the gallery
+    try:
+        _seen = {"icon0.png"}
+        _eid = 1
+        for _it in fs.list_path(["sce_sys"]):
+            _nm = _it["name"]
+            if (_it["is_dir"] or _nm in _seen or not _nm.lower().endswith(".png")
+                    or _it["size"] <= 0 or _it["size"] > 32_000_000):
+                continue
+            _seen.add(_nm)
+            ents.append({"id": _eid, "name": _nm, "size": _it["size"],
+                         "abs_off": ("exfat", _it["first"], _it["size"],
+                                     _it["nofat"])})
+            _eid += 1
+    except Exception:
+        pass
     rows = [("Platform", platform),
             ("Size", fmt_size(size))]
     if inner_name:
@@ -856,28 +920,53 @@ def run_gui(start_path=None):
     # ---- hero: cover + title/badges (left) ----
     left = ttk.Frame(body, style="Card.TFrame", padding=18)
     left.grid(row=0, column=0, sticky="ns", padx=(0, 14))
-    imglabel = tk.Label(left, bg=CARD, fg=MUTED,
+    imgframe = tk.Frame(left, bg=CARD, width=240, height=240)
+    imgframe.pack(pady=(10, 0))
+    imgframe.pack_propagate(False)
+    imglabel = tk.Label(imgframe, bg=CARD, fg=MUTED,
                         text="Drop a file or folder here\n\nor click Open",
                         font=FONT_MID, justify="center")
-    imglabel.pack(pady=40)
+    imglabel.place(relx=0.5, rely=0.5, anchor="center")
     titlevar = tk.StringVar(value="—")
     tk.Label(left, textvariable=titlevar, bg=CARD, fg=TEXT, font=FONT_BIG,
-             wraplength=300, justify="left").pack(pady=(14, 8), anchor="w")
+             wraplength=220, justify="left").pack(pady=(14, 8), anchor="w")
     badgerow = ttk.Frame(left, style="Card.TFrame")
     badgerow.pack(anchor="w", pady=(0, 4))
     badgevars = [tk.StringVar(value="") for _ in range(3)]
     badge_labels = []
     for bv in badgevars:
         lb = tk.Label(badgerow, textvariable=bv, bg=CARD2, fg=TEXT,
-                      font=FONT_BADGE, padx=10, pady=4)
-        lb.pack(side="left", padx=(0, 8))
+                      font=FONT_BADGE, padx=8, pady=3)
+        lb.pack(side="left", padx=(0, 6))
         badge_labels.append(lb)
     state["badges"] = badgevars
     state["badge_labels"] = badge_labels
-    ttk.Label(left, text="Image:", style="Muted.Card.TLabel").pack(anchor="w", pady=(14, 4))
-    imgchoice = ttk.Combobox(left, state="readonly", width=30)
-    imgchoice.pack(anchor="w")
+    imgrow = ttk.Frame(left, style="Card.TFrame")
+    imgrow.pack(anchor="w", pady=(12, 0))
+    ttk.Label(imgrow, text="Image:", style="Muted.Card.TLabel").pack(side="left")
+    state["imgcount"] = tk.StringVar(value="")
+    tk.Label(imgrow, textvariable=state["imgcount"], bg=CARD, fg=MUTED,
+             font=FONT_SMALL).pack(side="left", padx=(6, 0))
+    imgchoice = ttk.Combobox(left, state="readonly", width=24)
+    imgchoice.pack(anchor="w", pady=(2, 0))
     imgchoice.bind("<<ComboboxSelected>>", lambda _e: show_image(imgchoice.get()))
+    def _step_image(d):
+        vals = list(imgchoice["values"])
+        if not vals:
+            return
+        try:
+            i = vals.index(imgchoice.get())
+        except ValueError:
+            i = 0
+        i = (i + d) % len(vals)
+        imgchoice.set(vals[i])
+        show_image(vals[i])
+    imgnav = ttk.Frame(left, style="Card.TFrame")
+    imgnav.pack(anchor="w", pady=(6, 0))
+    ttk.Button(imgnav, text="< Prev", style="Ghost.TButton",
+               command=lambda: _step_image(-1)).pack(side="left", padx=(0, 6))
+    ttk.Button(imgnav, text="Next >", style="Ghost.TButton",
+               command=lambda: _step_image(1)).pack(side="left")
     imgbtns = ttk.Frame(left, style="Card.TFrame")
     imgbtns.pack(anchor="w", pady=(8, 0))
     ttk.Button(imgbtns, text="Save PNG", style="Ghost.TButton",
@@ -1027,6 +1116,10 @@ def run_gui(start_path=None):
         pngs = [e["name"] for e in r["entries"]
                 if e["name"].lower().endswith(".png") and e["size"] > 0]
         imgchoice["values"] = pngs
+        try:
+            state["imgcount"].set(f"{len(pngs)} images" if len(pngs) != 1 else "1 image")
+        except Exception:
+            pass
         if pngs:
             first = "icon0.png" if "icon0.png" in pngs else pngs[0]
             imgchoice.set(first)
@@ -1134,8 +1227,12 @@ def run_gui(start_path=None):
             im = Image.open(io.BytesIO(data))
             state["pil"] = im.copy()
             state["img_name"] = name
-            im.thumbnail((360, 360))
-            ph = ImageTk.PhotoImage(im)
+            im.thumbnail((220, 220))
+            # fixed-size canvas: pad with card bg so layout never shifts
+            canvas = Image.new("RGB", (240, 240), CARD)
+            canvas.paste(im, ((240 - im.size[0]) // 2,
+                              (240 - im.size[1]) // 2))
+            ph = ImageTk.PhotoImage(canvas)
             state["photo"] = ph
             imglabel.config(image=ph, text="")
             imglabel.image = ph
