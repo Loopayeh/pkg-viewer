@@ -135,9 +135,15 @@ def _param_json_meta(meta):
 
 
 def parse_pkg(path):
+    if os.path.isdir(path):
+        return parse_app_folder(path)
     size = os.path.getsize(path)
     with open(path, "rb") as f:
         magic = f.read(4)
+        if magic != FIH_MAGIC and magic != CNT_MAGIC:
+            f.seek(0)
+            if f.read(11)[3:11] == b"EXFAT   ":
+                return parse_exfat_image(path)
         f.seek(0)
         if magic == FIH_MAGIC:
             hdr = f.read(256)
@@ -228,7 +234,210 @@ def parse_pkg(path):
             return {"error": f"unknown magic {magic!r}"}
 
 
+def parse_app_folder(path):
+    """PS5 app dump folder: sce_sys/param.json + icon0.png, no container."""
+    pj = os.path.join(path, "sce_sys", "param.json")
+    icon = os.path.join(path, "sce_sys", "icon0.png")
+    meta, title, extra = {}, "", []
+    if os.path.isfile(pj):
+        try:
+            with open(pj, "r", encoding="utf-8") as fh:
+                meta = json.load(fh)
+            title, extra = _param_json_meta(meta)
+        except Exception as e:
+            meta = {"_error": str(e)}
+    total = 0
+    nfiles = 0
+    for _dp, _dn, fns in os.walk(path):
+        nfiles += len(fns)
+        for fn in fns:
+            try:
+                total += os.path.getsize(os.path.join(_dp, fn))
+            except OSError:
+                pass
+    rows = [("Platform", "PS5 app folder"),
+            ("Size", f"{fmt_size(total)} ({nfiles} files)")]
+    rows += extra
+    ents = []
+    if os.path.isfile(icon):
+        try:
+            ents.append({"id": 0, "name": "icon0.png", "size": os.path.getsize(icon),
+                         "abs_off": -1, "local_path": icon})
+        except OSError:
+            pass
+    r = {"ok": True, "kind": "ps5", "path": path, "size": total,
+         "title": title or os.path.basename(path.rstrip("/\\")),
+         "rows": rows, "entries": ents, "meta": meta, "icon_entry": "icon0.png"}
+    if os.path.isfile(icon):
+        r["folder_icon"] = icon
+    return r
+
+
+class _Exfat:
+    """Minimal read-only exFAT: boot sector, FAT walk, dir scan."""
+
+    def __init__(self, path):
+        self.path = path
+        self.f = open(path, "rb")
+        self.f.seek(0, 2)
+        self._img_size = self.f.tell()
+        self.f.seek(0)
+        bs = self.f.read(512)
+        if bs[3:11] != b"EXFAT   " or bs[510] != 0x55 or bs[511] != 0xAA:
+            raise ValueError("not an exFAT image")
+        self.bps = 1 << bs[108]
+        self.spc = 1 << bs[109]
+        self.clus_bytes = self.bps * self.spc
+        fat_off = struct.unpack_from("<I", bs, 80)[0]
+        data_off = struct.unpack_from("<I", bs, 88)[0]
+        root_clus = struct.unpack_from("<I", bs, 96)[0]
+        self.fat_sec = fat_off
+        self.data_sec = data_off
+        self.root_clus = root_clus
+
+    def close(self):
+        try:
+            self.f.close()
+        except Exception:
+            pass
+
+    def _clus_off(self, clus):
+        return (self.data_sec + (clus - 2) * self.spc) * self.bps
+
+    def _fat_next(self, clus):
+        self.f.seek(self.fat_sec * self.bps + clus * 4)
+        v = struct.unpack("<I", self.f.read(4))[0]
+        return None if v >= 0xFFFFFFF8 else v
+
+    def read_chain(self, first, size):
+        out = bytearray()
+        clus = first
+        while clus is not None and len(out) < size:
+            self.f.seek(self._clus_off(clus))
+            out += self.f.read(min(self.clus_bytes, size - len(out)))
+            nxt = self._fat_next(clus)
+            # Builder writes files contiguously but leaves FAT zeroed:
+            # fall through to the next cluster instead of stopping.
+            clus = nxt if nxt not in (None, 0) else clus + 1
+            if self._clus_off(clus) >= self._img_size:
+                break
+        return bytes(out[:size])
+
+    def _iter_dir(self, first, size, nofat):
+        if nofat:
+            self.f.seek(self._clus_off(first))
+            raw = self.f.read(size)
+        else:
+            raw = self.read_chain(first, size)
+        return raw
+
+    def list_dir(self, first, size, nofat):
+        raw = self._iter_dir(first, size, nofat)
+        items = []
+        i = 0
+        pending = None
+        while i + 32 <= len(raw):
+            etype = raw[i]
+            if etype == 0x00:
+                break
+            if etype == 0x85 and i + 32 <= len(raw):
+                nsec = raw[i + 1]
+                pending = {"attrs": struct.unpack_from("<H", raw, i + 4)[0],
+                           "names": [], "nsec": nsec}
+            elif etype == 0xC0 and pending is not None:
+                flags = struct.unpack_from("<H", raw, i + 2)[0]
+                pending["nofat"] = bool(flags & 0x02)
+                pending["first"] = struct.unpack_from("<I", raw, i + 20)[0]
+                pending["size"] = struct.unpack_from("<Q", raw, i + 24)[0]
+            elif etype == 0xC1 and pending is not None:
+                chars = struct.unpack_from("<15H", raw, i + 2)
+                pending["names"].append("".join(
+                    chr(c) for c in chars if c).rstrip("\x00"))
+                if len(pending["names"]) >= pending.get("nsec", 1) - 1:
+                    name = "".join(pending["names"])
+                    items.append((name, pending.get("attrs", 0),
+                                  pending.get("first", 0),
+                                  pending.get("size", 0),
+                                  pending.get("nofat", False)))
+                    pending = None
+            i += 32
+        return items
+
+    def find(self, parts):
+        clus, size, nofat = self.root_clus, 1 << 30, False
+        for depth, part in enumerate(parts):
+            if depth == 0 and (part == "" or part.lower().endswith(".exfat")):
+                continue
+            found = None
+            for name, attrs, first, sz, nf in self.list_dir(clus, size, nofat):
+                if name.lower() == part.lower():
+                    found = (attrs, first, sz, nf)
+                    break
+            if found is None:
+                return None
+            attrs, first, sz, nf = found
+            if depth == len(parts) - 1:
+                return {"first": first, "size": sz, "nofat": nf,
+                        "is_dir": bool(attrs & 0x10)}
+            if not (attrs & 0x10):
+                return None
+            clus, size, nofat = first, sz, nf
+        return None
+
+
+def parse_exfat_image(path):
+    """PS5 exFAT game image: pull sce_sys/param.json + icon0.png via FAT walk."""
+    size = os.path.getsize(path)
+    fs = _Exfat(path)
+    try:
+        pj = fs.find(["sce_sys", "param.json"])
+        meta, title, extra = {}, "", []
+        if pj and not pj["is_dir"] and pj["size"] < 100_000:
+            try:
+                if pj["nofat"]:
+                    fs.f.seek(fs._clus_off(pj["first"]))
+                    raw = fs.f.read(pj["size"])
+                else:
+                    raw = fs.read_chain(pj["first"], pj["size"])
+                meta = json.loads(raw.decode("utf-8"))
+                title, extra = _param_json_meta(meta)
+            except Exception as e:
+                meta = {"_error": str(e)}
+        icon = fs.find(["sce_sys", "icon0.png"])
+        ents = []
+        if icon and not icon["is_dir"] and icon["size"] > 0:
+            ents.append({"id": 0, "name": "icon0.png", "size": icon["size"],
+                         "abs_off": ("exfat", icon["first"], icon["size"],
+                                     icon["nofat"])})
+        root = fs.list_dir(fs.root_clus, 1 << 30, False)
+        ntop = len(root)
+        rows = [("Platform", "PS5 exFAT image"),
+                ("Size", fmt_size(size)),
+                ("Root entries", str(ntop))]
+        rows += extra
+        return {"ok": True, "kind": "ps5", "path": path, "size": size,
+                "title": title or os.path.basename(path),
+                "rows": rows, "entries": ents, "meta": meta,
+                "icon_entry": "icon0.png", "exfat": True}
+    finally:
+        fs.close()
+
+
 def read_entry_bytes(path, abs_off, size, limit=32_000_000):
+    if isinstance(abs_off, tuple) and abs_off and abs_off[0] == "exfat":
+        _, first, fsize, nofat = abs_off
+        if fsize <= 0 or fsize > limit:
+            return b""
+        fs = _Exfat(path)
+        try:
+            if nofat:
+                fs.f.seek(fs._clus_off(first))
+                return fs.f.read(fsize)
+            return fs.read_chain(first, fsize)
+        finally:
+            fs.close()
+    if isinstance(abs_off, int) and abs_off < 0:
+        return b""
     if size <= 0 or size > limit:
         return b""
     with open(path, "rb") as f:
@@ -535,9 +744,9 @@ def run_gui(start_path=None):
             tk.Label(header, image=_lph, bg=BG).pack(side="left", padx=(0, 12))
     except Exception:
         pass
-    ttk.Button(header, text="Open PKG", style="Accent.TButton",
+    ttk.Button(header, text="Open", style="Accent.TButton",
                command=lambda: pick()).pack(side="left")
-    pathvar = tk.StringVar(value="Drop a .pkg file here, or open one")
+    pathvar = tk.StringVar(value="Drop a .pkg / .exfat file or app folder here")
     ttk.Label(header, textvariable=pathvar, font=FONT_SMALL, foreground=MUTED).pack(
         side="left", padx=(14, 0))
 
@@ -551,7 +760,7 @@ def run_gui(start_path=None):
     left = ttk.Frame(body, style="Card.TFrame", padding=18)
     left.grid(row=0, column=0, sticky="ns", padx=(0, 14))
     imglabel = tk.Label(left, bg=CARD, fg=MUTED,
-                        text="Drop a .pkg file here\n\nor click Open PKG",
+                        text="Drop a file or folder here\n\nor click Open",
                         font=FONT_MID, justify="center")
     imglabel.pack(pady=40)
     titlevar = tk.StringVar(value="—")
@@ -652,10 +861,17 @@ def run_gui(start_path=None):
 
     # logic
     def pick():
-        p = filedialog.askopenfilename(title="Select PKG file",
-                                       filetypes=[("PKG", "*.pkg"), ("all", "*.*")])
+        p = filedialog.askopenfilename(title="Select PKG / image file",
+                                       filetypes=[("Game files", "*.pkg *.exfat *.ffpfsc"),
+                                                  ("PKG", "*.pkg"),
+                                                  ("exFAT image", "*.exfat"),
+                                                  ("all", "*.*")])
         if p:
             load(p)
+        else:
+            d = filedialog.askdirectory(title="...or select an app folder")
+            if d:
+                load(d)
 
     def load(p):
         statusvar.set("Reading...")
@@ -797,7 +1013,11 @@ def run_gui(start_path=None):
         statusvar.set(f"Extracting {name}...")
         root.update_idletasks()
         try:
-            data = read_entry_bytes(r["path"], e["abs_off"], e["size"])
+            if e.get("local_path") and os.path.isfile(e["local_path"]):
+                with open(e["local_path"], "rb") as fh:
+                    data = fh.read()
+            else:
+                data = read_entry_bytes(r["path"], e["abs_off"], e["size"])
         except Exception as ex:
             statusvar.set(f"Error: {ex}")
             return
@@ -823,12 +1043,12 @@ def run_gui(start_path=None):
             imglabel.config(text="(bad image)")
             statusvar.set(f"Error: {ex}")
 
-    if start_path and os.path.isfile(start_path):
+    if start_path and os.path.exists(start_path):
         root.after(200, lambda: load(start_path))
     if has_dnd:
         def _on_drop(ev):
             p = (ev.data or "").strip().strip("{}").split("} {")[0]
-            if p and os.path.isfile(p):
+            if p and os.path.exists(p):
                 load(p)
         try:
             root.drop_target_register(DND_FILES)
@@ -841,7 +1061,7 @@ def run_gui(start_path=None):
 if __name__ == "__main__":
     if len(sys.argv) >= 3 and sys.argv[1] == "--info":
         print_info(sys.argv[2])
-    elif len(sys.argv) >= 2 and os.path.isfile(sys.argv[1]):
+    elif len(sys.argv) >= 2 and os.path.exists(sys.argv[1]):
         run_gui(sys.argv[1])
     elif len(sys.argv) >= 2 and sys.argv[1] == "--info":
         print("usage: pkgviewer.py --info <file.pkg>")

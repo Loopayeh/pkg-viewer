@@ -1,5 +1,7 @@
 # PKG Viewer — PS4 / PS5
 
+![screenshot](screenshot.png)
+
 View PS4 (CNT) and PS5 (finalized FIH) package info: cover art, title, Title ID, Content ID, version, and file list — without extracting the whole PKG.
 
 ## Download
