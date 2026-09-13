@@ -2,7 +2,7 @@
 
 ![screenshot](screenshot.png)
 
-View PS4 (CNT) and PS5 (finalized FIH) package info: cover art, title, Title ID, Content ID, version, and file list — without extracting the whole PKG.
+View PS4 (CNT) and PS5 (finalized FIH) package info, plus PS5 exFAT images and app folders: cover art, title, Title ID, Content ID, version, region, and required firmware — without extracting anything.
 
 ## Download
 
@@ -11,15 +11,16 @@ Get `PKGViewer.exe` from [Releases](../../releases) — no Python needed, just r
 ## Features
 
 - Cover art preview (icon0.png, pic0.png, …) with Save PNG / Copy to clipboard
-- Spec card: Title ID, Content ID, version, size, SDK / required firmware (PS5)
+- Spec card: Title ID, Content ID, version, region, Min. System, SDK, DRM
 - Files tab: named entries with id + size
 - Details tab: curated param.sfo / param.json, Show all for the full dump
+- Drag & drop: PKG files, exFAT images, and app folders onto the window
 - Copy/paste works in every text field, on any keyboard layout
 - CLI mode: `pkgviewer.py --info file.pkg`
 
 ## Usage
 
-Drag & drop a `.pkg` file onto the exe, or open it from inside the app. To run from source (needs Python 3 + Pillow):
+Drag & drop a `.pkg` / `.exfat` file or an app folder onto the exe or the open window, or use Open. To run from source (needs Python 3 + Pillow + tkinterdnd2):
 
 ```bat
 PKGViewer.bat
@@ -29,6 +30,8 @@ PKGViewer.bat
 
 - **PS4** packages (`7F CNT`): reads the entry table and `param.sfo`
 - **PS5** finalized packages (FIH): reads the file table, `param.json`, and the icon
+- **PS5 exFAT images** (`.exfat`): reads `sce_sys/param.json` + icon straight from the image via FAT walk
+- **PS5 app folders**: reads `sce_sys/param.json` + icon directly — no container needed
 
 ## Build from source
 

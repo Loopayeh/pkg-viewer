@@ -331,8 +331,28 @@ class _Exfat:
             raw = self.read_chain(first, size)
         return raw
 
-    def list_dir(self, first, size, nofat):
-        raw = self._iter_dir(first, size, nofat)
+    def list_dir(self, first, size, nofat, want=None):
+        """List dir entries; if want is set, stop early once found (faster)."""
+        if nofat:
+            self.f.seek(self._clus_off(first))
+            raw = self.f.read(min(size, 1 << 20))
+            return self._parse_dir(raw, want)
+        out = bytearray()
+        clus = first
+        while clus is not None and len(out) < size:
+            self.f.seek(self._clus_off(clus))
+            out += self.f.read(min(self.clus_bytes, size - len(out)))
+            if want:
+                items = self._parse_dir(bytes(out), want)
+                if any(n.lower() == want for n, *_ in items):
+                    return items
+            nxt = self._fat_next(clus)
+            clus = nxt if nxt not in (None, 0) else clus + 1
+            if self._clus_off(clus) >= self._img_size:
+                break
+        return self._parse_dir(bytes(out[:size]), want)
+
+    def _parse_dir(self, raw, want=None):
         items = []
         i = 0
         pending = None
@@ -360,6 +380,8 @@ class _Exfat:
                                   pending.get("size", 0),
                                   pending.get("nofat", False)))
                     pending = None
+                    if want and name.lower() == want:
+                        break
             i += 32
         return items
 
@@ -369,7 +391,9 @@ class _Exfat:
             if depth == 0 and (part == "" or part.lower().endswith(".exfat")):
                 continue
             found = None
-            for name, attrs, first, sz, nf in self.list_dir(clus, size, nofat):
+            want = part.lower() if depth < len(parts) else None
+            for name, attrs, first, sz, nf in self.list_dir(clus, size, nofat,
+                                                            want=want):
                 if name.lower() == part.lower():
                     found = (attrs, first, sz, nf)
                     break
@@ -409,11 +433,8 @@ def parse_exfat_image(path):
             ents.append({"id": 0, "name": "icon0.png", "size": icon["size"],
                          "abs_off": ("exfat", icon["first"], icon["size"],
                                      icon["nofat"])})
-        root = fs.list_dir(fs.root_clus, 1 << 30, False)
-        ntop = len(root)
         rows = [("Platform", "PS5 exFAT image"),
-                ("Size", fmt_size(size)),
-                ("Root entries", str(ntop))]
+                ("Size", fmt_size(size))]
         rows += extra
         return {"ok": True, "kind": "ps5", "path": path, "size": size,
                 "title": title or os.path.basename(path),
