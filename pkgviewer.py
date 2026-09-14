@@ -239,6 +239,128 @@ def parse_pkg(path):
             return {"error": f"unknown magic {magic!r}"}
 
 
+# AMPR/LZ4 asset containers (LIZARD-style PS5 app dumps: AMPRPAK4/AMPRDAT3/...)
+AMPR_MAGICS = (b"AMPRPAK4", b"AMPRDAT3", b"AMPRIDX3", b"AMPRCRC1", b"AMPRCFG1")
+_UNITY_SIG = b"UnityFS\x00"
+_UNITY_COMP = {0: "raw", 1: "LZMA", 2: "LZ4", 3: "LZ4HC"}
+_UNITY_MARKERS = (b"2022.3.57f1", b"CAB-", b"AssetBundle", b".resS",
+                  b"globalgamemanagers")
+
+
+def _unity_comp_at(buf, pos):
+    """Parse a UnityFS header at buf-relative pos → comp name or ''."""
+    try:
+        p = pos + 8 + 4
+        e1 = buf.find(b"\x00", p)
+        if e1 < 0:
+            return ""
+        e2 = buf.find(b"\x00", e1 + 1)
+        if e2 < 0:
+            return ""
+        p = e2 + 1 + 8 + 4 + 4
+        fl = struct.unpack_from(">I", buf, p)[0]
+        return _UNITY_COMP.get(fl & 0x3F, "")
+    except Exception:
+        return ""
+
+
+def _probe_pak_lz4(fp, size):
+    """Strided probe of an AMPR .pak → 'LZ4HC' / 'LZ4' / 'Unity' / ''.
+
+    Reads 1MB windows every 16MB (small files read fully), parses any
+    UnityFS header (flags&0x3F: 2=LZ4, 3=LZ4HC), else falls back to lz4
+    tokens / Unity bundle markers. Early-exits on LZ4HC.
+    """
+    try:
+        f = open(fp, "rb")
+    except OSError:
+        return ""
+    comps = []
+    seen_lz4 = False
+    seen_unity = False
+    try:
+        if size <= 32 << 20:
+            offs = [0]
+            wn = int(size)
+        else:
+            step = 16 << 20
+            wn = 1 << 20
+            offs = list(range(0, size - wn + 1, step))
+            if offs[-1] != size - wn:
+                offs.append(size - wn)
+        for off in offs:
+            try:
+                f.seek(off)
+                buf = f.read(wn + 256)
+            except OSError:
+                continue
+            if not buf:
+                continue
+            i = 0
+            while True:
+                i = buf.find(_UNITY_SIG, i)
+                if i < 0 or len(comps) >= 3:
+                    break
+                c = _unity_comp_at(buf, i)
+                if c:
+                    comps.append(c)
+                    if c == "LZ4HC":
+                        f.close()
+                        return "LZ4HC"
+                i += 1
+            low = buf.lower()
+            if b"lz4" in low:
+                seen_lz4 = True
+            if not seen_unity:
+                for m in _UNITY_MARKERS:
+                    if m in buf:
+                        seen_unity = True
+                        break
+    finally:
+        try:
+            f.close()
+        except Exception:
+            pass
+    if any(c == "LZ4" for c in comps):
+        return "LZ4"
+    if any(c == "LZMA" for c in comps):
+        return "LZMA"
+    if seen_lz4:
+        return "LZ4"
+    if seen_unity or comps:
+        return "Unity"
+    return ""
+
+
+def _scan_ampr(path):
+    """Top-level AMPR container files: [(name, size, magic, codec)] or []."""
+    out = []
+    try:
+        for fn in sorted(os.listdir(path)):
+            fp = os.path.join(path, fn)
+            if not os.path.isfile(fp):
+                continue
+            ln = fn.lower()
+            if not (ln.startswith("ampr_") or ln.endswith((".pak", ".index",
+                                                            ".crc", ".runtime"))):
+                continue
+            try:
+                with open(fp, "rb") as fh:
+                    magic = fh.read(8)
+            except OSError:
+                continue
+            if magic in AMPR_MAGICS:
+                try:
+                    sz = os.path.getsize(fp)
+                except OSError:
+                    continue
+                codec = _probe_pak_lz4(fp, sz) if magic == b"AMPRDAT3" else ""
+                out.append((fn, sz, magic.decode("ascii"), codec))
+    except OSError:
+        pass
+    return out
+
+
 def parse_app_folder(path):
     """PS5 app dump folder: sce_sys/param.json + icon0.png, no container."""
     pj = os.path.join(path, "sce_sys", "param.json")
@@ -262,6 +384,19 @@ def parse_app_folder(path):
                 pass
     rows = [("Platform", "PS5 app folder"),
             ("Size", f"{fmt_size(total)} ({nfiles} files)")]
+    ampr = _scan_ampr(path)
+    if ampr:
+        _lz4 = sum(1 for t in ampr if t[3] == "LZ4")
+        _hc = sum(1 for t in ampr if t[3] == "LZ4HC")
+        _albl = f"{len(ampr)} AMPR containers ({fmt_size(sum(s for _, s, _, _ in ampr))})"
+        _codecs = []
+        if _lz4:
+            _codecs.append(f"LZ4 x{_lz4}" if _lz4 > 1 else "LZ4")
+        if _hc:
+            _codecs.append(f"LZ4HC x{_hc}" if _hc > 1 else "LZ4HC")
+        if _codecs:
+            _albl += " \u00b7 " + " \u00b7 ".join(_codecs)
+        rows.append(("Assets", _albl))
     rows += extra
     ents = []
     if os.path.isfile(icon):
@@ -291,9 +426,23 @@ def parse_app_folder(path):
             _eid += 1
     except OSError:
         pass
+    # AMPR/LZ4 asset containers in the Files tab (name + size + codec)
+    try:
+        _eid = max([e["id"] for e in ents], default=0) + 1
+        for _fn, _sz, _magic, _codec in ampr:
+            _nm = f"{_fn}  [{_codec}]" if _codec else _fn
+            ents.append({"id": _eid, "name": _nm, "size": _sz,
+                         "abs_off": -1, "local_path": os.path.join(path, _fn),
+                         "ampr": _magic, "codec": _codec or "-"})
+            _eid += 1
+    except OSError:
+        pass
     r = {"ok": True, "kind": "ps5", "path": path, "size": total,
          "title": title or os.path.basename(path.rstrip("/\\")),
          "rows": rows, "entries": ents, "meta": meta, "icon_entry": "icon0.png"}
+    if ampr:
+        r["ampr_lines"] = [f"{_fn} = {_mg}" + (f" / {_cd}" if _cd else "")
+                           for _fn, _sz, _mg, _cd in ampr]
     if os.path.isfile(icon):
         r["folder_icon"] = icon
     return r
@@ -811,7 +960,11 @@ def print_info(path):
         print(f"{k}: {v}")
     print(f"--- entries ({len(r['entries'])}) ---")
     for e in r["entries"]:
-        print(f"  id={e['id']} size={e['size']} name={e['name']!r}")
+        _cd = e.get("codec")
+        _tag = f" [{_cd}]" if _cd and _cd != "-" else ""
+        print(f"  id={e['id']} size={e['size']} name={e['name']!r}{_tag}")
+    for _al in r.get("ampr_lines", []):
+        print(f"  AMPR: {_al}")
 
 
 # ---------------- GUI ----------------
@@ -1079,13 +1232,15 @@ def run_gui(start_path=None):
     nb.add(tab_meta, text="  Details  ")
     nb.add(tab_entries, text="  Files  ")
 
-    tree = ttk.Treeview(tab_entries, columns=("id", "size"), show="tree headings")
+    tree = ttk.Treeview(tab_entries, columns=("id", "size", "codec"), show="tree headings")
     tree.heading("#0", text="name", anchor="w")
     tree.heading("id", text="id", anchor="w")
     tree.heading("size", text="size", anchor="e")
-    tree.column("#0", width=320)
-    tree.column("id", width=70)
+    tree.heading("codec", text="codec", anchor="w")
+    tree.column("#0", width=300)
+    tree.column("id", width=60)
     tree.column("size", width=110, anchor="e")
+    tree.column("codec", width=80)
     sb = ttk.Scrollbar(tab_entries, orient="vertical", command=tree.yview)
     tree.configure(yscrollcommand=sb.set)
     tree.pack(side="left", fill="both", expand=True)
@@ -1150,11 +1305,27 @@ def run_gui(start_path=None):
         badges = state.get("badges", [])
         _blabs = state.get("badge_labels", [])
         _type = _rd.get("Type", "")
-        _bvals = [plat,
+        _has_lz4 = "LZ4" in _rd.get("Assets", "")
+        _b0 = "LZ4" if _has_lz4 else plat
+        _bvals = [_b0,
                   _rd.get("Region", ""),
                   f"{fmt_size(r['size'])}",
                   _type]
-        _plat_col = "#3b82f6" if "PS5" in plat else "#22c55e"
+        _pl = plat.lower()
+        if _has_lz4:
+            _plat_col = "#22c55e"
+        elif "ffpkg" in _pl:
+            _plat_col = "#ec4899"
+        elif "ffpfsc" in _pl:
+            _plat_col = "#a855f7"
+        elif "exfat" in _pl:
+            _plat_col = "#f59e0b"
+        elif "ps4" in _pl or _pl.startswith("cnt"):
+            _plat_col = "#06b6d4"
+        elif "ps5" in _pl:
+            _plat_col = "#3b82f6"
+        else:
+            _plat_col = "#6b7280"
         _tl = _type.lower()
         _type_col = ("#f59e0b" if ("dlc" in _tl or "patch" in _tl or "update" in _tl)
                      else "#10b981" if _type else "#6b7280")
@@ -1184,7 +1355,8 @@ def run_gui(start_path=None):
         for e in r["entries"]:
             if not e["name"]:
                 continue
-            tree.insert("", "end", text=e["name"], values=(e["id"], fmt_size(e["size"])))
+            tree.insert("", "end", text=e["name"],
+                        values=(e["id"], fmt_size(e["size"]), e.get("codec", "")))
         metatext.delete("1.0", "end")
         refresh_details()
         # image choices: png entries
@@ -1213,6 +1385,8 @@ def run_gui(start_path=None):
             lines = full_meta_lines(r.get("meta"))
         else:
             lines = curated_meta_lines(r.get("kind"), r.get("meta"))
+        if r.get("ampr_lines"):
+            lines = list(lines) + ["", "-- AMPR containers --"] + list(r["ampr_lines"])
         metatext.insert("end", "\n".join(lines) + ("\n" if lines else ""))
 
     def toggle_details():

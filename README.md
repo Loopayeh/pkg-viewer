@@ -17,6 +17,7 @@ Get `PKGViewer.exe` from [Releases](../../releases) — no Python needed, just r
 - Files tab: named entries with id + size
 - Details tab: curated param.sfo / param.json, Show all for the full dump
 - Drag & drop: PKG files, exFAT / ffpfsc / ffpkg images, and app folders onto the window
+- AMPR / LZ4 asset containers (LIZARD dumps): listed with size in the spec card + Files tab
 - Copy/paste works in every text field, on any keyboard layout
 - CLI mode: `pkgviewer.py --info file.pkg`
 
@@ -34,7 +35,7 @@ PKGViewer.bat
 - **PS5 disk images** (`.exfat`) — game dumps
 - **PS5 compressed images** (`.ffpfsc`) — game dumps
 - **PS5 UFS2 images** (`.ffpkg`) — game dumps (needs pytsk3 from source)
-- **PS5 app folders** — extracted game folder
+- **PS5 app folders** — extracted game folder (incl. LIZARD AMPR/LZ4 dumps)
 
 ## Build from source
 
