@@ -1292,6 +1292,9 @@ def run_gui(start_path=None):
         pass
     ttk.Button(header, text="Open", style="Accent.TButton",
                command=lambda: pick()).pack(side="left")
+    updatebtn = ttk.Button(header, text="Check updates", style="Ghost.TButton",
+                           command=lambda: check_updates(manual=True))
+    updatebtn.pack(side="right")
     pathvar = tk.StringVar(value="Drop a .pkg / .exfat / .ffpfsc / .ffpkg file or app folder here")
     ttk.Label(header, textvariable=pathvar, font=FONT_SMALL, foreground=MUTED).pack(
         side="left", padx=(14, 0))
@@ -1432,9 +1435,6 @@ def run_gui(start_path=None):
     tk.Label(bottombar, textvariable=statusvar, bg=BG, fg=MUTED, font=FONT_SMALL,
              anchor="w", padx=12, pady=6).pack(
                  side="left", fill="x", expand=True)
-    updatebtn = ttk.Button(bottombar, text="Check updates", style="Ghost.TButton",
-                           command=lambda: check_updates(manual=True))
-    updatebtn.pack(side="right", padx=(0, 12), pady=4)
 
     def check_updates(manual=False):
         """Check GitHub releases for a newer build (stdlib only)."""
