@@ -1114,10 +1114,23 @@ def run_gui(start_path=None):
     style.map("Treeview", background=[("selected", ACCENT)])
     style.configure("TCombobox", fieldbackground=CARD2, background=CARD2, foreground=TEXT,
                     arrowcolor=MUTED)
+    style.map("TCombobox",
+              fieldbackground=[("readonly", CARD2), ("disabled", CARD2)],
+              foreground=[("readonly", TEXT), ("disabled", MUTED)],
+              background=[("readonly", CARD2)],
+              arrowcolor=[("disabled", MUTED)],
+              selectbackground=[("readonly", ACCENT)],
+              selectforeground=[("readonly", "#171717")])
     root.option_add("*TCombobox*Listbox.background", CARD)
     root.option_add("*TCombobox*Listbox.foreground", TEXT)
     root.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
     root.option_add("*TCombobox*Listbox.selectForeground", "#171717")
+    root.option_add("*TCombobox*Entry.background", CARD2)
+    root.option_add("*TCombobox*Entry.foreground", TEXT)
+    root.option_add("*TCombobox*Entry.readonlybackground", CARD2)
+    root.option_add("*TCombobox*Entry.selectBackground", ACCENT)
+    root.option_add("*TCombobox*Entry.selectForeground", "#171717")
+    root.option_add("*TCombobox*Entry.insertBackground", TEXT)
     style.configure("Ghost.TButton", background="#404040", foreground=TEXT, font=FONT,
                     borderwidth=0, padding=(12, 7))
     style.map("Ghost.TButton", background=[("active", "#2c3342")])
