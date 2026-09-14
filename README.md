@@ -1,7 +1,5 @@
 # PKG Viewer — PS4 / PS5
 
-![screenshot](screenshot.png)
-
 **PKG Viewer** shows what's inside a PS4 / PS5 game file without extracting it: cover art, title, Title ID, region, version, and required firmware.
 
 Works with `.pkg` packages, `.exfat` / `.ffpfsc` images, and app folders.
