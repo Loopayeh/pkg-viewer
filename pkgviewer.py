@@ -403,6 +403,44 @@ def _split_part_stub(path, size):
     return parse_ps5_retail_stub(path, size, hdr)
 
 
+_STORE_CACHE = {}
+_STORE_LOCALE = {"UP": "en-us", "EP": "en-gb", "JP": "ja-jp", "HP": "en-hk"}
+
+
+def fetch_store_cover(cid):
+    """(name, cover_url) from PlayStation Store product page. Cached per session."""
+    import re as _re
+    import urllib.request as _ureq
+    if not cid or "-" not in cid:
+        return None, None
+    if cid in _STORE_CACHE:
+        return _STORE_CACHE[cid]
+    loc = _STORE_LOCALE.get(cid.split("-")[0][:2].upper(), "en-us")
+    url = "https://store.playstation.com/%s/product/%s" % (loc, cid)
+    try:
+        req = _ureq.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with _ureq.urlopen(req, timeout=20) as r:
+            html = r.read().decode("utf-8", "replace")
+    except Exception:
+        _STORE_CACHE[cid] = (None, None)
+        return None, None
+    m = _re.search(r'"role":"GAMEHUB_COVER_ART"[^}]*?"url":"(https://[^"]+)"', html)
+    if not m:
+        m = _re.search(r'"url":"(https://[^"]+)"[^}]*?"role":"GAMEHUB_COVER_ART"', html)
+    cover = m.group(1) if m else None
+    mn = _re.search(r'"__typename":"Concept","name":"([^"]+)"', html)
+    name = mn.group(1) if mn else None
+    _STORE_CACHE[cid] = (name, cover)
+    return name, cover
+
+
+def download_url_bytes(url, timeout=30):
+    import urllib.request as _ureq
+    req = _ureq.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with _ureq.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
 def parse_ps5_retail_stub(path, size, hdr):
     """Retail (encrypted) PS5 PKG: metadata unreadable. Info from filename + split set."""
     import glob as _glob
@@ -434,7 +472,7 @@ def parse_ps5_retail_stub(path, size, hdr):
             ("Note", "metadata encrypted — title/files unavailable")]
     return {"ok": True, "kind": "ps5", "path": path, "size": size,
             "title": tid or base, "rows": rows, "entries": [],
-            "meta": {}, "icon_entry": "icon0.png"}
+            "meta": {}, "icon_entry": "icon0.png", "store_cid": cid or ""}
 
 
 def parse_ps3_pkg(path):
@@ -1787,6 +1825,14 @@ def run_gui(start_path=None):
             first = "icon0.png" if "icon0.png" in pngs else pngs[0]
             imgchoice.set(first)
             show_image(first)
+        elif r.get("store_cid"):
+            imgchoice.set("")
+            imglabel.config(image="", text="Fetching cover...")
+            try:
+                state["imgcount"].set("1 online image")
+            except Exception:
+                pass
+            fetch_store_async(r["store_cid"])
         else:
             imgchoice.set("")
             imglabel.config(image="", text="(no image)")
@@ -1831,13 +1877,15 @@ def run_gui(start_path=None):
             statusvar.set("No image selected")
             return
         e = next((x for x in r["entries"] if x["name"] == name), None)
-        if not e:
-            return
-        data = e.get("cached")
+        data = state.get("store_bytes") if (not e and name == "cover.jpg") else None
+        if data is None:
+            if not e:
+                return
+            data = e.get("cached")
         if data is None:
             data = read_entry_bytes(r["path"], e["abs_off"], e["size"])
-        if data[:8] != b"\x89PNG\r\n\x1a\n":
-            statusvar.set("Not a PNG")
+        if data[:8] != b"\x89PNG\r\n\x1a\n" and data[:2] != b"\xff\xd8":
+            statusvar.set("Not an image")
             return
         dest = filedialog.asksaveasfilename(
             title="Save image", defaultextension=".png",
@@ -1859,6 +1907,76 @@ def run_gui(start_path=None):
             return
         err = copy_image_to_clipboard(pil)
         statusvar.set("Copied to clipboard" if err is None else f"Copy failed: {err}")
+
+    def display_pil(im, label):
+        """Render a PIL image on the fixed canvas. Returns None or error str."""
+        try:
+            state["pil"] = im.copy()
+            state["img_name"] = label
+            im.thumbnail((380, 380))
+            canvas = Image.new("RGB", (400, 400), CARD)
+            canvas.paste(im, ((400 - im.size[0]) // 2,
+                              (400 - im.size[1]) // 2))
+            ph = ImageTk.PhotoImage(canvas)
+            state["photo"] = ph
+            imglabel.config(image=ph, text="")
+            imglabel.image = ph
+            return None
+        except Exception as ex:
+            return str(ex)
+
+    def fetch_store_async(cid):
+        """Background: store cover + title → display via root.after."""
+        def _work():
+            try:
+                name, url = fetch_store_cover(cid)
+            except Exception:
+                name, url = None, None
+            data = b""
+            if url:
+                try:
+                    data = download_url_bytes(url) or b""
+                except Exception:
+                    data = b""
+            try:
+                root.after(0, lambda: _store_done(name, data))
+            except Exception:
+                pass
+        import threading as _th
+        _th.Thread(target=_work, daemon=True).start()
+
+    def _store_done(name, data):
+        r = state.get("result")
+        if not r or not r.get("store_cid"):
+            return
+        if name and name != r["title"]:
+            titlevar.set(name)
+            r["title"] = name
+        state["store_bytes"] = data if data[:8] == b"\x89PNG\r\n\x1a\n" or \
+            data[:2] == b"\xff\xd8" else b""
+        if not state["store_bytes"]:
+            imglabel.config(image="", text="(cover unavailable)")
+            statusvar.set("OK - store cover not found")
+            return
+        if not has_pil:
+            imglabel.config(text="(Pillow not installed)")
+            return
+        try:
+            im = Image.open(io.BytesIO(state["store_bytes"]))
+        except Exception:
+            imglabel.config(image="", text="(bad image)")
+            return
+        err = display_pil(im, "cover.jpg")
+        if err:
+            imglabel.config(text="(bad image)")
+            statusvar.set(f"Error: {err}")
+        else:
+            try:
+                imgchoice["values"] = ["cover.jpg"]
+                imgchoice.set("cover.jpg")
+            except Exception:
+                pass
+            statusvar.set("OK - store cover")
 
     def show_image(name):
         r = state.get("result")
