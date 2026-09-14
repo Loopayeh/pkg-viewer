@@ -408,11 +408,11 @@ _STORE_LOCALE = {"UP": "en-us", "EP": "en-gb", "JP": "ja-jp", "HP": "en-hk"}
 
 
 def fetch_store_cover(cid):
-    """(name, cover_url) from PlayStation Store product page. Cached per session."""
+    """(name, cover_url, release, tagline) from PlayStation Store. Square MASTER art preferred."""
     import re as _re
     import urllib.request as _ureq
     if not cid or "-" not in cid:
-        return None, None
+        return None, None, None, None
     if cid in _STORE_CACHE:
         return _STORE_CACHE[cid]
     loc = _STORE_LOCALE.get(cid.split("-")[0][:2].upper(), "en-us")
@@ -422,16 +422,22 @@ def fetch_store_cover(cid):
         with _ureq.urlopen(req, timeout=20) as r:
             html = r.read().decode("utf-8", "replace")
     except Exception:
-        _STORE_CACHE[cid] = (None, None)
-        return None, None
-    m = _re.search(r'"role":"GAMEHUB_COVER_ART"[^}]*?"url":"(https://[^"]+)"', html)
-    if not m:
-        m = _re.search(r'"url":"(https://[^"]+)"[^}]*?"role":"GAMEHUB_COVER_ART"', html)
-    cover = m.group(1) if m else None
+        _STORE_CACHE[cid] = (None, None, None, None)
+        return None, None, None, None
+    arts = {}
+    for m in _re.finditer(r'"role":"([A-Z_0-9]+)"[^}]{0,400}?"url":"(https://[^"]+)"', html):
+        arts.setdefault(m.group(1), m.group(2))
+    for m in _re.finditer(r'"url":"(https://[^"]+)"[^}]{0,400}?"role":"([A-Z_0-9]+)"', html):
+        arts.setdefault(m.group(2), m.group(1))
+    cover = arts.get("MASTER") or arts.get("GAMEHUB_COVER_ART")
     mn = _re.search(r'"__typename":"Concept","name":"([^"]+)"', html)
     name = mn.group(1) if mn else None
-    _STORE_CACHE[cid] = (name, cover)
-    return name, cover
+    mr = _re.search(r'"releaseDate":"(\d{4}-\d{2}-\d{2})', html)
+    rel = mr.group(1) if mr else None
+    md = _re.search(r'"description":"([^"]{10,160})"', html)
+    tag = md.group(1) if md else None
+    _STORE_CACHE[cid] = (name, cover, rel, tag)
+    return name, cover, rel, tag
 
 
 def download_url_bytes(url, timeout=30):
@@ -1849,6 +1855,9 @@ def run_gui(start_path=None):
             lines = curated_meta_lines(r.get("kind"), r.get("meta"))
         if r.get("ampr_lines"):
             lines = list(lines) + ["", "-- AMPR containers --"] + list(r["ampr_lines"])
+        if r.get("store_lines"):
+            lines = list(lines) + ([""] if lines else []) + \
+                ["-- PlayStation Store --"] + list(r["store_lines"])
         metatext.insert("end", "\n".join(lines) + ("\n" if lines else ""))
 
     def toggle_details():
@@ -1929,9 +1938,9 @@ def run_gui(start_path=None):
         """Background: store cover + title → display via root.after."""
         def _work():
             try:
-                name, url = fetch_store_cover(cid)
+                name, url, rel, tag = fetch_store_cover(cid)
             except Exception:
-                name, url = None, None
+                name, url, rel, tag = None, None, None, None
             data = b""
             if url:
                 try:
@@ -1939,19 +1948,29 @@ def run_gui(start_path=None):
                 except Exception:
                     data = b""
             try:
-                root.after(0, lambda: _store_done(name, data))
+                root.after(0, lambda: _store_done(name, data, rel, tag))
             except Exception:
                 pass
         import threading as _th
         _th.Thread(target=_work, daemon=True).start()
 
-    def _store_done(name, data):
+    def _store_done(name, data, rel, tag):
         r = state.get("result")
         if not r or not r.get("store_cid"):
             return
         if name and name != r["title"]:
             titlevar.set(name)
             r["title"] = name
+        lines = []
+        if name:
+            lines.append(f"Title = {name}")
+        if rel:
+            lines.append(f"Release = {rel}")
+        if tag:
+            lines.append(f"Tagline = {tag}")
+        if lines:
+            r["store_lines"] = lines
+            refresh_details()
         state["store_bytes"] = data if data[:8] == b"\x89PNG\r\n\x1a\n" or \
             data[:2] == b"\xff\xd8" else b""
         if not state["store_bytes"]:
