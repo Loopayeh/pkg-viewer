@@ -6,8 +6,26 @@ import os
 import struct
 import sys
 
+APP_VERSION = "v1.6.0"  # bump on every release — the updater compares this
+UPDATE_REPO = "Loopayeh/pkg-viewer"
+UPDATE_EXE = "PKGViewer.exe"
+
 CNT_MAGIC = b"\x7fCNT"
 FIH_MAGIC = b"\x7fFIH"
+PS3_MAGIC = b"\x7fPKG"
+
+# PS3 NPDRM (from PyKG / ps3 pkg tools: fixed key, CTR with riv; debug = SHA1-XOR)
+PS3_KEY = bytes.fromhex("2e7b71d7c9c9a14ea3221f188828b8f8")
+PS3_HDR_FMT = ">4sHHIIIIQQQ48s16s16s"
+PS3_ITEM_FMT = ">IIQQII"
+PS3_DIR_FLAG = 0x04
+try:
+    from cryptography.hazmat.primitives.ciphers import Cipher as _Cipher
+    from cryptography.hazmat.primitives.ciphers import algorithms as _Algos
+    from cryptography.hazmat.primitives.ciphers import modes as _Modes
+    HAS_PS3_AES = True
+except ImportError:
+    HAS_PS3_AES = False
 
 # ---------------- parsing (verified on samples) ----------------
 
@@ -145,6 +163,8 @@ def parse_pkg(path):
         return parse_ffpkg_image(path)
     with open(path, "rb") as f:
         magic = f.read(4)
+        if magic == PS3_MAGIC:
+            return parse_ps3_pkg(path)
         if magic != FIH_MAGIC and magic != CNT_MAGIC:
             f.seek(0)
             if f.read(11)[3:11] == b"EXFAT   ":
@@ -237,6 +257,123 @@ def parse_pkg(path):
                     "icon_entry": "icon0.png"}
         else:
             return {"error": f"unknown magic {magic!r}"}
+
+
+# ---------------- PS3 NPDRM PKG (verified: Doodle God retail + 2 debug FIX) ----------------
+
+def _ps3_debug_keystream(qa, block_index):
+    import hashlib
+    qa0, qa1 = qa[:8], qa[8:16]
+    buf = bytearray(64)
+    buf[0:8] = qa0
+    buf[8:16] = qa0
+    buf[16:24] = qa1
+    buf[24:32] = qa1
+    buf[56:64] = struct.pack(">Q", block_index)
+    return hashlib.sha1(bytes(buf)).digest()[:16]
+
+
+def _ps3_decrypt(f, data_off, retail, keymat, pos, size):
+    """Decrypt a data-stream range (offsets relative to data_off). b"" on failure."""
+    if size <= 0 or pos < 0:
+        return b""
+    bs = pos & ~0xF
+    pre = pos - bs
+    nb = (pre + size + 15) // 16
+    if nb > 1 << 24:
+        return b""
+    f.seek(data_off + bs)
+    enc = f.read(nb * 16)
+    if len(enc) < nb * 16:
+        return b""
+    out = bytearray()
+    if not retail:
+        bi = bs // 16
+        for i in range(nb):
+            ks = _ps3_debug_keystream(keymat, bi + i)
+            out += bytes(a ^ b for a, b in zip(enc[i * 16:(i + 1) * 16], ks))
+    else:
+        if not HAS_PS3_AES:
+            return b""
+        e = _Cipher(_Algos.AES(PS3_KEY), _Modes.ECB()).encryptor()
+        ctr0 = (int.from_bytes(keymat, "big") + bs // 16) & ((1 << 128) - 1)
+        for i in range(nb):
+            ks = e.update(((ctr0 + i) & ((1 << 128) - 1)).to_bytes(16, "big"))
+            out += bytes(a ^ b for a, b in zip(enc[i * 16:(i + 1) * 16], ks))
+    return bytes(out[pre:pre + size])
+
+
+def _ps3_title_id_from_cid(cid):
+    try:
+        return cid.split("-")[1].split("_")[0]
+    except Exception:
+        return ""
+
+
+def parse_ps3_pkg(path):
+    size = os.path.getsize(path)
+    with open(path, "rb") as f:
+        hdr = f.read(128)
+        if len(hdr) < 128:
+            return {"error": "too small for PS3 PKG"}
+        magic, rev, typ, _mo, _mc, _hs, n, _tot, doff, dsz, cidraw, qa, riv = \
+            struct.unpack(PS3_HDR_FMT, hdr)
+        if magic != PS3_MAGIC:
+            return {"error": "bad PS3 magic"}
+        if typ != 1:
+            return {"error": f"not PS3 NPDRM (type {typ:#x})"}
+        cid = cidraw.split(b"\x00")[0].decode("ascii", errors="replace")
+        retail = (rev == 0x8000)
+        keymat = riv if retail else qa
+        sfo, ents = {}, []
+        if n and n < 1_000_000 and doff and dsz:
+            try:
+                tab = _ps3_decrypt(f, doff, retail, keymat, 0, n * 32)
+                if len(tab) == n * 32:
+                    recs = []
+                    for i in range(n):
+                        no, ns, fo, fs, fl, _pad = struct.unpack_from(PS3_ITEM_FMT, tab, i * 32)
+                        if ns > dsz or no + ns > dsz or fo + fs > dsz:
+                            continue
+                        nm = ""
+                        if ns:
+                            nm = _ps3_decrypt(f, doff, retail, keymat, no, ns)
+                            nm = nm.rstrip(b"\x00").decode("utf-8", errors="replace")
+                        recs.append((nm, fo, fs, fl))
+                    for i, (nm, fo, fs, fl) in enumerate(recs):
+                        if not nm:
+                            continue
+                        ents.append({"id": i, "name": nm, "size": fs,
+                                     "abs_off": ("ps3", retail, keymat, doff, fo)})
+                    for nm, fo, fs, _fl in recs:
+                        if nm.upper().endswith("PARAM.SFO") and 0 < fs < 1_000_000:
+                            raw = _ps3_decrypt(f, doff, retail, keymat, fo, fs)
+                            if raw[:4] == b"\x00PSF":
+                                sfo = parse_sfo(raw)
+                            break
+            except Exception:
+                pass
+    title = sfo.get("TITLE", "") if sfo else ""
+    tid = (sfo.get("TITLE_ID", "") if sfo else "") or _ps3_title_id_from_cid(cid)
+    ver = ""
+    if sfo:
+        ver = sfo.get("VERSION", "") or sfo.get("APP_VER", "")
+    rows = [("Platform", "PS3 NPDRM (%s)" % ("retail" if retail else "debug")),
+            ("Content ID", cid or "-"),
+            ("Title ID", tid or "-"),
+            ("Region", content_region(cid)),
+            ("Version", ver or "-"),
+            ("Min. System", sfo.get("PS3_SYSTEM_VER", "-") if sfo else "-"),
+            ("Size", fmt_size(size)),
+            ("Files", str(len(ents)) if ents else f"{n} (encrypted)")]
+    if not ents:
+        rows.append(("Note", "listing unavailable (AES lib missing)" if retail and not HAS_PS3_AES
+                     else "file table unreadable"))
+    icon = next((e["name"] for e in ents if e["name"].upper() == "ICON0.PNG"), "")
+    return {"ok": True, "kind": "ps3", "path": path, "size": size,
+            "title": title or tid or os.path.basename(path),
+            "rows": rows, "entries": ents, "meta": sfo,
+            "icon_entry": icon or "icon0.png"}
 
 
 # AMPR/LZ4 asset containers (LIZARD-style PS5 app dumps: AMPRPAK4/AMPRDAT3/...)
@@ -802,6 +939,12 @@ def _exfat_result(fs, path, size, platform, inner_name=None):
 
 
 def read_entry_bytes(path, abs_off, size, limit=32_000_000):
+    if isinstance(abs_off, tuple) and abs_off and abs_off[0] == "ps3":
+        _, retail, keymat, doff, fo = abs_off
+        if size <= 0 or size > limit:
+            return b""
+        with open(path, "rb") as f:
+            return _ps3_decrypt(f, doff, retail, keymat, fo, size)
     if isinstance(abs_off, tuple) and abs_off and abs_off[0] == "exfat":
         _, first, fsize, nofat = abs_off
         if fsize <= 0 or fsize > limit:
@@ -1073,7 +1216,7 @@ def run_gui(start_path=None):
         has_dnd = True
     except ImportError:
         root = tk.Tk()
-    root.title("PKG Viewer  •  PS4 / PS5")
+    root.title("PKG Viewer %s  •  PS3 / PS4 / PS5" % APP_VERSION)
     root.geometry("1060x700")
     root.configure(bg=BG)
     root.minsize(900, 600)
@@ -1283,9 +1426,135 @@ def run_gui(start_path=None):
                         command=lambda: select_all_text(metatext))
     metatext.bind("<Button-3>", lambda e: ctxmenu.tk_popup(e.x_root, e.y_root))
 
+    bottombar = ttk.Frame(root)
+    bottombar.pack(fill="x", side="bottom")
     statusvar = tk.StringVar(value="Ready")
-    tk.Label(root, textvariable=statusvar, bg=BG, fg=MUTED, font=FONT_SMALL,
-             anchor="w", padx=12, pady=6).pack(fill="x", side="bottom")
+    tk.Label(bottombar, textvariable=statusvar, bg=BG, fg=MUTED, font=FONT_SMALL,
+             anchor="w", padx=12, pady=6).pack(
+                 side="left", fill="x", expand=True)
+    updatebtn = ttk.Button(bottombar, text="Check updates", style="Ghost.TButton",
+                           command=lambda: check_updates(manual=True))
+    updatebtn.pack(side="right", padx=(0, 12), pady=4)
+
+    def check_updates(manual=False):
+        """Check GitHub releases for a newer build (stdlib only)."""
+        try:
+            import updater as _up
+        except Exception as e:
+            if manual:
+                statusvar.set("Update check failed: %s" % e)
+            return
+        if manual:
+            statusvar.set("Checking for updates...")
+
+        def _done(info):
+            def _ui():
+                if not info:
+                    if manual:
+                        statusvar.set("No releases found (or offline)")
+                    return
+                try:
+                    newer = _up.is_newer(info.get("tag", ""), APP_VERSION)
+                except Exception:
+                    newer = False
+                if newer:
+                    try:
+                        updatebtn.config(text="⬆ Update available",
+                                         style="Accent.TButton")
+                    except Exception:
+                        pass
+                    statusvar.set("Update available: %s" % info.get("tag", ""))
+                    if manual:
+                        _show_update_dialog(info)
+                elif manual:
+                    statusvar.set("Up to date (%s)" % APP_VERSION)
+            try:
+                root.after(0, _ui)
+            except Exception:
+                pass
+        _up.check_in_background(UPDATE_REPO, _done)
+
+    def _show_update_dialog(info):
+        try:
+            import updater as _up
+        except Exception:
+            return
+        tag = info.get("tag", "")
+        dlg = tk.Toplevel(root)
+        dlg.title("Update available")
+        dlg.configure(bg=BG)
+        try:
+            dlg.transient(root)
+            dlg.grab_set()
+        except Exception:
+            pass
+        tk.Label(dlg, text="A new version is available:", bg=BG, fg=MUTED,
+                 font=FONT_SMALL).pack(anchor="w", padx=16, pady=(14, 2))
+        tk.Label(dlg, text="%s  (you have %s)" % (info.get("name", tag),
+                                                  APP_VERSION),
+                 bg=BG, fg=TEXT, font=FONT).pack(anchor="w", padx=16)
+        _body = (info.get("body", "") or "").strip().split("\n")
+        _notes = "\n".join(_body[:12])
+        if _notes:
+            _tx = tk.Text(dlg, bg=CARD, fg=TEXT, font=FONT_SMALL,
+                          wrap="word", borderwidth=0, padx=10, pady=10,
+                          height=8, width=60)
+            _tx.pack(fill="both", expand=True, padx=16, pady=(10, 0))
+            _tx.insert("end", _notes)
+            _tx.config(state="disabled")
+        _prog = tk.StringVar(value="")
+        tk.Label(dlg, textvariable=_prog, bg=BG, fg=MUTED,
+                 font=FONT_SMALL).pack(anchor="w", padx=16, pady=(6, 0))
+        _btns = tk.Frame(dlg, bg=BG)
+        _btns.pack(fill="x", padx=16, pady=14)
+
+        def _dl():
+            _asset = _up.pick_exe_asset(info, (UPDATE_EXE,))
+            if not _asset:
+                _prog.set("No .exe found in this release")
+                return
+            _prog.set("Downloading %s..." % _asset["name"])
+            for _b in _btns.winfo_children():
+                try:
+                    _b.config(state="disabled")
+                except Exception:
+                    pass
+
+            def _work():
+                try:
+                    import tempfile as _tf
+                    _tmp = _tf.mkdtemp(prefix="update_")
+                    _dest = os.path.join(_tmp, _asset["name"])
+
+                    def _pg(got, total):
+                        if total:
+                            root.after(0, _prog.set,
+                                       "Downloading... %d%%"
+                                       % (got * 100 // total))
+                    _up.download(_asset["url"], _dest, progress=_pg)
+                except Exception as e:
+                    root.after(0, _prog.set, "Download failed: %s" % e)
+                    return
+
+                def _fin():
+                    try:
+                        if _up.stage_and_restart(_dest):
+                            try:
+                                dlg.destroy()
+                            except Exception:
+                                pass
+                            root.after(300, root.destroy)
+                        else:
+                            _prog.set("Saved to %s (dev mode)" % _dest)
+                    except Exception as e:
+                        _prog.set("Update failed: %s" % e)
+                root.after(0, _fin)
+            import threading as _th
+            _th.Thread(target=_work, daemon=True).start()
+        ttk.Button(_btns, text="Download + Restart",
+                   style="Accent.TButton", command=_dl).pack(side="left")
+        ttk.Button(_btns, text="Later", style="Ghost.TButton",
+                   command=dlg.destroy).pack(side="left", padx=(8, 0))
 
     # logic
     def pick():
@@ -1337,6 +1606,8 @@ def run_gui(start_path=None):
             _plat_col = "#b693f1"
         elif "exfat" in _pl:
             _plat_col = "#e2f985"
+        elif "ps3" in _pl:
+            _plat_col = "#e8a34c"
         elif "ps4" in _pl or _pl.startswith("cnt"):
             _plat_col = "#9efd88"
         elif "ps5" in _pl:
@@ -1519,6 +1790,7 @@ def run_gui(start_path=None):
             root.dnd_bind("<<Drop>>", _on_drop)
         except Exception as ex:
             statusvar.set(f"Drop disabled: {ex}")
+    root.after(2500, lambda: check_updates())
     root.mainloop()
 
 
