@@ -968,7 +968,7 @@ def print_info(path):
 
 
 # ---------------- GUI ----------------
-BG, CARD, CARD2, ACCENT = "#0f1115", "#1a1e26", "#222836", "#3b82f6"
+BG, CARD, CARD2, ACCENT = "#171717", "#202020", "#2a2a2a", "#91c8f6"
 TEXT, MUTED = "#f1f3f8", "#8b93a5"
 FONT = ("Segoe UI", 10)
 FONT_BIG = ("Segoe UI", 18, "bold")
@@ -1101,9 +1101,9 @@ def run_gui(start_path=None):
                     padding=(10, 4))
     style.configure("SpecKey.TLabel", background=CARD, foreground=MUTED, font=FONT_SMALL)
     style.configure("SpecVal.TLabel", background=CARD, foreground=TEXT, font=FONT_MID)
-    style.configure("Accent.TButton", background=ACCENT, foreground="white", font=FONT,
+    style.configure("Accent.TButton", background=ACCENT, foreground="#171717", font=FONT,
                     borderwidth=0, padding=(16, 9))
-    style.map("Accent.TButton", background=[("active", "#2f6fe0")])
+    style.map("Accent.TButton", background=[("active", "#7ab5e8")])
     style.configure("TNotebook", background=BG, borderwidth=0)
     style.configure("TNotebook.Tab", background=CARD, foreground=MUTED, padding=(18, 8), font=FONT)
     style.map("TNotebook.Tab", background=[("selected", CARD2)],
@@ -1114,7 +1114,11 @@ def run_gui(start_path=None):
     style.map("Treeview", background=[("selected", ACCENT)])
     style.configure("TCombobox", fieldbackground=CARD2, background=CARD2, foreground=TEXT,
                     arrowcolor=MUTED)
-    style.configure("Ghost.TButton", background=CARD2, foreground=TEXT, font=FONT,
+    root.option_add("*TCombobox*Listbox.background", CARD)
+    root.option_add("*TCombobox*Listbox.foreground", TEXT)
+    root.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
+    root.option_add("*TCombobox*Listbox.selectForeground", "#171717")
+    style.configure("Ghost.TButton", background="#404040", foreground=TEXT, font=FONT,
                     borderwidth=0, padding=(12, 7))
     style.map("Ghost.TButton", background=[("active", "#2c3342")])
 
@@ -1160,7 +1164,7 @@ def run_gui(start_path=None):
     badgevars = [tk.StringVar(value="") for _ in range(4)]
     badge_labels = []
     for bv in badgevars:
-        lb = tk.Label(badgerow, textvariable=bv, bg=CARD2, fg=TEXT,
+        lb = tk.Label(badgerow, textvariable=bv, bg=CARD2, fg="#171717",
                       font=FONT_BADGE, padx=8, pady=3)
         lb.pack(side="left", padx=(0, 6), pady=2)
         badge_labels.append(lb)
@@ -1255,11 +1259,11 @@ def run_gui(start_path=None):
     metatext = tk.Text(tab_meta, bg=CARD, fg=TEXT, font=("Consolas", 9),
                        wrap="none", borderwidth=0, padx=10, pady=10,
                        height=12, selectbackground=ACCENT,
-                       selectforeground="white", insertbackground=TEXT)
+                       selectforeground="#171717", insertbackground=TEXT)
     metatext.pack(fill="both", expand=True)
     root.bind_all("<KeyPress>", lambda e: _global_ctrl_keys(e, root, statusvar))
     ctxmenu = tk.Menu(root, tearoff=0, bg=CARD, fg=TEXT,
-                      activebackground=ACCENT, activeforeground="white")
+                      activebackground=ACCENT, activeforeground="#171717")
     ctxmenu.add_command(label="Copy",
                         command=lambda: copy_text_selection(metatext))
     ctxmenu.add_command(label="Select all",
@@ -1313,27 +1317,27 @@ def run_gui(start_path=None):
                   _type]
         _pl = plat.lower()
         if _has_lz4:
-            _plat_col = "#22c55e"
+            _plat_col = "#9efd88"
         elif "ffpkg" in _pl:
-            _plat_col = "#ec4899"
+            _plat_col = "#e17b7b"
         elif "ffpfsc" in _pl:
-            _plat_col = "#a855f7"
+            _plat_col = "#b693f1"
         elif "exfat" in _pl:
-            _plat_col = "#f59e0b"
+            _plat_col = "#e2f985"
         elif "ps4" in _pl or _pl.startswith("cnt"):
-            _plat_col = "#06b6d4"
+            _plat_col = "#9efd88"
         elif "ps5" in _pl:
-            _plat_col = "#3b82f6"
+            _plat_col = "#91c8f6"
         else:
             _plat_col = "#6b7280"
         _tl = _type.lower()
-        _type_col = ("#f59e0b" if ("dlc" in _tl or "patch" in _tl or "update" in _tl)
+        _type_col = ("#e17b7b" if ("dlc" in _tl or "patch" in _tl or "update" in _tl)
                      else "#10b981" if _type else "#6b7280")
-        _bcolors = [_plat_col, "#22c55e", "#6b7280", _type_col]
+        _bcolors = [_plat_col, "#9efd88", "#6b7280", _type_col]
         for bv, val, lb, col in zip(badges, _bvals, _blabs, _bcolors):
             bv.set(val or "")
             try:
-                lb.config(bg=col)
+                lb.config(bg=col, fg="#171717")
             except Exception:
                 pass
         _flat = [(k, v) for (k, v) in r["rows"]
