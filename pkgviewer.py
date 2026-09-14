@@ -138,8 +138,11 @@ def parse_pkg(path):
     if os.path.isdir(path):
         return parse_app_folder(path)
     size = os.path.getsize(path)
-    if path.lower().endswith(".ffpfsc"):
+    low = path.lower()
+    if low.endswith(".ffpfsc"):
         return parse_ffpfsc_image(path)
+    if low.endswith(".ffpkg"):
+        return parse_ffpkg_image(path)
     with open(path, "rb") as f:
         magic = f.read(4)
         if magic != FIH_MAGIC and magic != CNT_MAGIC:
@@ -533,6 +536,75 @@ def parse_ffpfsc_image(path):
             pass
 
 
+def parse_ffpkg_image(path):
+    """UFS2 game image (.ffpkg): read sce_sys/param.json + PNGs via pytsk3.
+
+    All PNG bytes are cached in memory so the image handle closes
+    immediately (like ffpfsc). Raises informative error if pytsk3 missing.
+    """
+    size = os.path.getsize(path)
+    try:
+        import pytsk3
+    except ImportError:
+        return {"error": "pytsk3 not installed (pip install pytsk3) - needed for .ffpkg"}
+    img = pytsk3.Img_Info(path)
+    try:
+        fs = pytsk3.FS_Info(img)
+        try:
+            _pjf = fs.open("/sce_sys/param.json")
+            _pjsz = _pjf.info.meta.size if _pjf.info.meta else 0
+            if _pjsz <= 0 or _pjsz > 100_000:
+                return {"error": "sce_sys/param.json bad size"}
+            raw = _pjf.read_random(0, _pjsz)
+        except Exception as e:
+            return {"error": f"sce_sys/param.json not found: {e}"}
+        try:
+            meta = json.loads(raw.decode("utf-8"))
+        except Exception as e:
+            return {"error": f"bad param.json: {e}"}
+        title, extra = _param_json_meta(meta)
+        ents = []
+        try:
+            d = fs.open_dir(path="/sce_sys")
+            names = []
+            for e in d:
+                try:
+                    nm = e.info.name.name.decode()
+                except Exception:
+                    continue
+                if nm in (".", ".."):
+                    continue
+                if not nm.lower().endswith(".png"):
+                    continue
+                sz = e.info.meta.size if e.info.meta else 0
+                if sz <= 0 or sz > 32_000_000:
+                    continue
+                names.append((nm, sz))
+        except Exception:
+            names = []
+        names.sort(key=lambda t: (t[0] != "icon0.png", t[0]))
+        for i, (nm, sz) in enumerate(names):
+            try:
+                data = fs.open("/sce_sys/" + nm).read_random(0, sz)
+            except Exception:
+                continue
+            if data[:8] != b"\x89PNG\r\n\x1a\n":
+                continue
+            ents.append({"id": i, "name": nm, "size": len(data),
+                         "abs_off": -2, "cached": bytes(data)})
+    finally:
+        try:
+            img.close()
+        except Exception:
+            pass
+    rows = [("Platform", "PS5 ffpkg image"),
+            ("Size", fmt_size(size))] + extra
+    return {"ok": True, "kind": "ps5", "path": path, "size": size,
+            "title": title or os.path.basename(path),
+            "rows": rows, "entries": ents, "meta": meta,
+            "icon_entry": "icon0.png", "ffpkg": True}
+
+
 def _exfat_result(fs, path, size, platform, inner_name=None):
     pj = fs.find(["sce_sys", "param.json"])
     meta, title, extra = {}, "", []
@@ -907,7 +979,7 @@ def run_gui(start_path=None):
         pass
     ttk.Button(header, text="Open", style="Accent.TButton",
                command=lambda: pick()).pack(side="left")
-    pathvar = tk.StringVar(value="Drop a .pkg / .exfat / .ffpfsc file or app folder here")
+    pathvar = tk.StringVar(value="Drop a .pkg / .exfat / .ffpfsc / .ffpkg file or app folder here")
     ttk.Label(header, textvariable=pathvar, font=FONT_SMALL, foreground=MUTED).pack(
         side="left", padx=(14, 0))
 
@@ -1046,7 +1118,7 @@ def run_gui(start_path=None):
     # logic
     def pick():
         p = filedialog.askopenfilename(title="Select PKG / image file",
-                                       filetypes=[("Game files", "*.pkg *.exfat *.ffpfsc"),
+                                       filetypes=[("Game files", "*.pkg *.exfat *.ffpfsc *.ffpkg"),
                                                   ("PKG", "*.pkg"),
                                                   ("exFAT image", "*.exfat"),
                                                   ("all", "*.*")])
