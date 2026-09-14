@@ -154,6 +154,8 @@ def _param_json_meta(meta):
 
 def parse_pkg(path):
     if os.path.isdir(path):
+        if _ps3_folder_base(path):
+            return parse_ps3_folder(path)
         return parse_app_folder(path)
     size = os.path.getsize(path)
     low = path.lower()
@@ -303,11 +305,81 @@ def _ps3_decrypt(f, data_off, retail, keymat, pos, size):
     return bytes(out[pre:pre + size])
 
 
+PS3_TID_REGION = {"NPEB": "Europe", "BCES": "Europe", "NPHB": "Asia",
+                  "BCAS": "Asia", "NPJB": "Japan", "BCJS": "Japan",
+                  "NPUB": "Americas", "BCUS": "Americas"}
+
+
 def _ps3_title_id_from_cid(cid):
     try:
         return cid.split("-")[1].split("_")[0]
     except Exception:
         return ""
+
+
+def _ps3_folder_base(path):
+    """Root of PS3 game data: dir itself (NPDRM extract) or PS3_GAME/ (disc extract). '' = not PS3."""
+    if os.path.isfile(os.path.join(path, "PS3_GAME", "PARAM.SFO")):
+        return os.path.join(path, "PS3_GAME")
+    if os.path.isfile(os.path.join(path, "PARAM.SFO")) and any(
+            os.path.exists(os.path.join(path, d)) for d in
+            ("USRDIR", "TROPDIR", "PS3_GAME", "PS3_UPDATE")):
+        return path
+    return ""
+
+
+def parse_ps3_folder(path):
+    base = _ps3_folder_base(path)
+    sfo = {}
+    try:
+        with open(os.path.join(base, "PARAM.SFO"), "rb") as fh:
+            raw = fh.read(1_000_000)
+        if raw[:4] == b"\x00PSF":
+            sfo = parse_sfo(raw)
+    except OSError:
+        pass
+    total, nfiles = 0, 0
+    for _dp, _dn, fns in os.walk(path):
+        nfiles += len(fns)
+        for fn in fns:
+            try:
+                total += os.path.getsize(os.path.join(_dp, fn))
+            except OSError:
+                pass
+    title = sfo.get("TITLE", "") if sfo else ""
+    tid = (sfo.get("TITLE_ID", "") if sfo else "") or os.path.basename(path.rstrip("/\\"))
+    ver = sfo.get("VERSION", "") or sfo.get("APP_VER", "") if sfo else ""
+    rows = [("Platform", "PS3 folder"),
+            ("Title ID", sfo.get("TITLE_ID", "-") if sfo else "-"),
+            ("Region", PS3_TID_REGION.get(
+                ((sfo.get("TITLE_ID", "") if sfo else "") or "")[:4].upper(), "-")),
+            ("Version", ver or "-"),
+            ("Min. System", sfo.get("PS3_SYSTEM_VER", "-") if sfo else "-"),
+            ("Size", f"{fmt_size(total)} ({nfiles} files)")]
+    ents, _eid = [], 0
+    try:
+        for fn in sorted(os.listdir(base)):
+            if not fn.lower().endswith(".png"):
+                continue
+            fp = os.path.join(base, fn)
+            if not os.path.isfile(fp):
+                continue
+            try:
+                sz = os.path.getsize(fp)
+            except OSError:
+                continue
+            if sz <= 0:
+                continue
+            ents.append({"id": _eid, "name": fn, "size": sz,
+                         "abs_off": -1, "local_path": fp})
+            _eid += 1
+    except OSError:
+        pass
+    icon = next((e["name"] for e in ents if e["name"].upper() == "ICON0.PNG"), "")
+    return {"ok": True, "kind": "ps3", "path": path, "size": total,
+            "title": title or tid,
+            "rows": rows, "entries": ents, "meta": sfo,
+            "icon_entry": icon or "icon0.png"}
 
 
 def parse_ps3_pkg(path):
@@ -361,7 +433,8 @@ def parse_ps3_pkg(path):
     rows = [("Platform", "PS3 NPDRM (%s)" % ("retail" if retail else "debug")),
             ("Content ID", cid or "-"),
             ("Title ID", tid or "-"),
-            ("Region", content_region(cid)),
+            ("Region", content_region(cid) if "-" in (cid or "")
+             else PS3_TID_REGION.get((tid or "")[:4].upper(), "-")),
             ("Version", ver or "-"),
             ("Min. System", sfo.get("PS3_SYSTEM_VER", "-") if sfo else "-"),
             ("Size", fmt_size(size)),
