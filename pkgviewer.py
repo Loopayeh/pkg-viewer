@@ -181,7 +181,7 @@ def parse_pkg(path):
             f.seek(emb)
             chdr = f.read(0x80)
             if chdr[:4] != CNT_MAGIC:
-                return {"error": "embedded CNT magic bad"}
+                return parse_ps5_retail_stub(path, size, hdr)
             n = u32be(chdr, 0x10)
             et = u32be(chdr, 0x18)
             cid = chdr[0x40:0x40 + 48].split(b"\x00")[0].decode("ascii", errors="replace")
@@ -258,6 +258,10 @@ def parse_pkg(path):
                     "rows": rows, "entries": ents, "meta": meta or sfo,
                     "icon_entry": "icon0.png"}
         else:
+            # split retail part without header? resolve via sibling _0.
+            stub = _split_part_stub(path, size)
+            if stub:
+                return stub
             return {"error": f"unknown magic {magic!r}"}
 
 
@@ -380,6 +384,57 @@ def parse_ps3_folder(path):
             "title": title or tid,
             "rows": rows, "entries": ents, "meta": sfo,
             "icon_entry": icon or "icon0.png"}
+
+
+def _split_part_stub(path, size):
+    """Part N>0 of a split set: reuse sibling _0 header to confirm, then stub."""
+    import re as _re
+    m = _re.search(r"^(.*)_\d+\.pkg$", os.path.basename(path), _re.IGNORECASE)
+    if not m:
+        return None
+    p0 = os.path.join(os.path.dirname(path), m.group(1) + "_0.pkg")
+    try:
+        with open(p0, "rb") as f:
+            if f.read(4) != FIH_MAGIC:
+                return None
+            hdr = f.read(252)
+    except OSError:
+        return None
+    return parse_ps5_retail_stub(path, size, hdr)
+
+
+def parse_ps5_retail_stub(path, size, hdr):
+    """Retail (encrypted) PS5 PKG: metadata unreadable. Info from filename + split set."""
+    import glob as _glob
+    import re as _re
+    base = os.path.basename(path)
+    m = _re.search(r"([A-Z]{2}\d{3,4}-[A-Z]{4}\d{5}_[0-9A-Z\-]+)", base)
+    cid = m.group(1) if m else ""
+    tid = _ps3_title_id_from_cid(cid) if cid else ""
+    parts, total = [path], size
+    m2 = _re.search(r"^(.*)_\d+\.pkg$", base, _re.IGNORECASE)
+    if m2:
+        sibs = sorted(_glob.glob(os.path.join(os.path.dirname(path), m2.group(1) + "_*.pkg")))
+        sibs = [p for p in sibs if _re.search(r"_\d+\.pkg$", p, _re.IGNORECASE)]
+        if len(sibs) > 1:
+            parts = sibs
+            try:
+                total = sum(os.path.getsize(p) for p in parts)
+            except OSError:
+                pass
+    idx = next((i for i, p in enumerate(parts)
+                if os.path.basename(p) == base), 0)
+    rows = [("Platform", "PS5 retail (encrypted)"),
+            ("Content ID", cid or "-"),
+            ("Title ID", tid or "-"),
+            ("Region", content_region(cid)),
+            ("Part", f"{idx + 1} of {len(parts)}" if len(parts) > 1 else "single"),
+            ("Size", f"{fmt_size(size)} (joined {fmt_size(total)})" if len(parts) > 1
+             else fmt_size(size)),
+            ("Note", "metadata encrypted — title/files unavailable")]
+    return {"ok": True, "kind": "ps5", "path": path, "size": size,
+            "title": tid or base, "rows": rows, "entries": [],
+            "meta": {}, "icon_entry": "icon0.png"}
 
 
 def parse_ps3_pkg(path):
