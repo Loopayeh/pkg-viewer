@@ -209,7 +209,9 @@ def parse_pkg(path):
                 rows.insert(2, ("Content ID", cid))
             return {"ok": True, "kind": "ps5", "path": path, "size": size,
                     "title": title or os.path.basename(path),
-                    "rows": rows, "entries": ents, "meta": meta, "icon_entry": "icon0.png"}
+                    "rows": rows, "entries": ents, "meta": meta, "icon_entry": "icon0.png",
+                    "patch_tid": meta.get("titleId", "") if isinstance(meta, dict) else "",
+                    "own_ver": meta.get("contentVersion", "") if isinstance(meta, dict) else ""}
         elif magic == CNT_MAGIC:
             hdr = f.read(0x500)
             n = u32be(hdr, 0x10)
@@ -256,7 +258,9 @@ def parse_pkg(path):
             return {"ok": True, "kind": "ps4", "path": path, "size": size,
                     "title": title or os.path.basename(path),
                     "rows": rows, "entries": ents, "meta": meta or sfo,
-                    "icon_entry": "icon0.png"}
+                    "icon_entry": "icon0.png",
+                    "patch_tid": sfo.get("TITLE_ID", "") if isinstance(sfo, dict) else "",
+                    "own_ver": sfo.get("VERSION", "") if isinstance(sfo, dict) else ""}
         else:
             # split retail part without header? resolve via sibling _0.
             stub = _split_part_stub(path, size)
@@ -447,6 +451,55 @@ def download_url_bytes(url, timeout=30):
         return r.read()
 
 
+_PATCH_CACHE = {}
+_PATCH_HOST = {"PPSA": "https://prosperopatches.com",
+               "CUSA": "https://orbispatches.com"}
+
+
+def fetch_latest_patch(tid):
+    """(latest_ver, patch_count) from patch trackers. Cached per session."""
+    import json as _json
+    import re as _re
+    import urllib.request as _ureq
+    if not tid:
+        return None, 0
+    tid = tid.upper()
+    if tid in _PATCH_CACHE:
+        return _PATCH_CACHE[tid]
+    host = _PATCH_HOST.get(tid[:4])
+    if not host:
+        _PATCH_CACHE[tid] = (None, 0)
+        return None, 0
+    try:
+        req = _ureq.Request(host + "/" + tid, headers={"User-Agent": "Mozilla/5.0"})
+        with _ureq.urlopen(req, timeout=20) as r:
+            html = r.read().decode("utf-8", "replace")
+        m = _re.search(r'dynpatch"\s+data-titleid="%s"\s+data-key="([0-9a-f]{64})"' % tid, html)
+        if not m:
+            m = _re.search(r"data-loadparams=\"\{\s*'titleid':\s*'%s',\s*'key':\s*'([0-9a-f]{64})'" % tid, html)
+        if not m:
+            m = _re.search(r'data-key="([0-9a-f]{64})"', html)
+        if not m:
+            _PATCH_CACHE[tid] = (None, 0)
+            return None, 0
+        body = _json.dumps({"titleid": tid, "key": m.group(1)}).encode()
+        req2 = _ureq.Request(host + "/api/internal/loadpatches", data=body,
+                             headers={"User-Agent": "Mozilla/5.0",
+                                      "Content-Type": "application/json"})
+        with _ureq.urlopen(req2, timeout=20) as r2:
+            j = _json.loads(r2.read())
+        patches = j.get("patches", []) if j.get("success") else []
+        latest = next((p.get("content_ver") or p.get("version")
+                       for p in patches if p.get("is_latest")), None)
+        if not latest and patches:
+            latest = patches[0].get("content_ver") or patches[0].get("version")
+        _PATCH_CACHE[tid] = (latest, len(patches))
+        return latest, len(patches)
+    except Exception:
+        _PATCH_CACHE[tid] = (None, 0)
+        return None, 0
+
+
 def parse_ps5_retail_stub(path, size, hdr):
     """Retail (encrypted) PS5 PKG: metadata unreadable. Info from filename + split set."""
     import glob as _glob
@@ -478,7 +531,8 @@ def parse_ps5_retail_stub(path, size, hdr):
             ("Note", "metadata encrypted — title/files unavailable")]
     return {"ok": True, "kind": "ps5", "path": path, "size": size,
             "title": tid or base, "rows": rows, "entries": [],
-            "meta": {}, "icon_entry": "icon0.png", "store_cid": cid or ""}
+            "meta": {}, "icon_entry": "icon0.png", "store_cid": cid or "",
+            "patch_tid": tid or "", "own_ver": ""}
 
 
 def parse_ps3_pkg(path):
@@ -1842,6 +1896,8 @@ def run_gui(start_path=None):
         else:
             imgchoice.set("")
             imglabel.config(image="", text="(no image)")
+        if r.get("patch_tid"):
+            fetch_patch_async(r["patch_tid"], r.get("own_ver", ""))
         statusvar.set(f"OK - {len(r['entries'])} entries")
 
     def refresh_details():
@@ -1858,6 +1914,9 @@ def run_gui(start_path=None):
         if r.get("store_lines"):
             lines = list(lines) + ([""] if lines else []) + \
                 ["-- PlayStation Store --"] + list(r["store_lines"])
+        if r.get("patch_lines"):
+            lines = list(lines) + ([""] if lines else []) + \
+                ["-- Updates --"] + list(r["patch_lines"])
         metatext.insert("end", "\n".join(lines) + ("\n" if lines else ""))
 
     def toggle_details():
@@ -1996,6 +2055,36 @@ def run_gui(start_path=None):
             except Exception:
                 pass
             statusvar.set("OK - store cover")
+
+    def fetch_patch_async(tid, own_ver):
+        """Background: latest patch version → Details via root.after."""
+        def _work():
+            try:
+                latest, count = fetch_latest_patch(tid)
+            except Exception:
+                latest, count = None, 0
+            try:
+                root.after(0, lambda: _patch_done(tid, own_ver, latest, count))
+            except Exception:
+                pass
+        import threading as _th
+        _th.Thread(target=_work, daemon=True).start()
+
+    def _patch_done(tid, own_ver, latest, count):
+        r = state.get("result")
+        if not r or r.get("patch_tid") != tid:
+            return
+        if not latest:
+            return
+        lines = [f"Latest patch = {latest} ({count} known)"]
+        if own_ver:
+            lines.append(f"PKG version = {own_ver} " +
+                         ("(up to date)" if own_ver.strip() == latest.strip()
+                          else "(behind latest)"))
+        else:
+            lines.append("PKG version unknown (encrypted)")
+        r["patch_lines"] = lines
+        refresh_details()
 
     def show_image(name):
         r = state.get("result")
