@@ -920,29 +920,29 @@ def run_gui(start_path=None):
     # ---- hero: cover + title/badges (left) ----
     left = ttk.Frame(body, style="Card.TFrame", padding=18)
     left.grid(row=0, column=0, sticky="ns", padx=(0, 14))
-    imgframe = tk.Frame(left, bg=CARD, width=240, height=240)
-    imgframe.pack(pady=(10, 0))
+    imgframe = tk.Frame(left, bg=CARD, width=400, height=400)
+    imgframe.pack(pady=(6, 0))
     imgframe.pack_propagate(False)
     imglabel = tk.Label(imgframe, bg=CARD, fg=MUTED,
                         text="Drop a file or folder here\n\nor click Open",
                         font=FONT_MID, justify="center")
     imglabel.place(relx=0.5, rely=0.5, anchor="center")
     titlevar = tk.StringVar(value="—")
-    tk.Label(left, textvariable=titlevar, bg=CARD, fg=TEXT, font=FONT_BIG,
-             wraplength=220, justify="left").pack(pady=(14, 8), anchor="w")
+    tk.Label(left, textvariable=titlevar, bg=CARD, fg=TEXT, font=(FONT[0], 13, "bold"),
+             wraplength=380, justify="left").pack(pady=(6, 4), anchor="w")
     badgerow = ttk.Frame(left, style="Card.TFrame")
-    badgerow.pack(anchor="w", pady=(0, 4))
-    badgevars = [tk.StringVar(value="") for _ in range(3)]
+    badgerow.pack(anchor="w", pady=(0, 2))
+    badgevars = [tk.StringVar(value="") for _ in range(4)]
     badge_labels = []
     for bv in badgevars:
         lb = tk.Label(badgerow, textvariable=bv, bg=CARD2, fg=TEXT,
                       font=FONT_BADGE, padx=8, pady=3)
-        lb.pack(side="left", padx=(0, 6))
+        lb.pack(side="left", padx=(0, 6), pady=2)
         badge_labels.append(lb)
     state["badges"] = badgevars
     state["badge_labels"] = badge_labels
     imgrow = ttk.Frame(left, style="Card.TFrame")
-    imgrow.pack(anchor="w", pady=(12, 0))
+    imgrow.pack(anchor="w", pady=(6, 0))
     ttk.Label(imgrow, text="Image:", style="Muted.Card.TLabel").pack(side="left")
     state["imgcount"] = tk.StringVar(value="")
     tk.Label(imgrow, textvariable=state["imgcount"], bg=CARD, fg=MUTED,
@@ -966,12 +966,10 @@ def run_gui(start_path=None):
     ttk.Button(imgnav, text="< Prev", style="Ghost.TButton",
                command=lambda: _step_image(-1)).pack(side="left", padx=(0, 6))
     ttk.Button(imgnav, text="Next >", style="Ghost.TButton",
-               command=lambda: _step_image(1)).pack(side="left")
-    imgbtns = ttk.Frame(left, style="Card.TFrame")
-    imgbtns.pack(anchor="w", pady=(8, 0))
-    ttk.Button(imgbtns, text="Save PNG", style="Ghost.TButton",
+               command=lambda: _step_image(1)).pack(side="left", padx=(0, 6))
+    ttk.Button(imgnav, text="Save", style="Ghost.TButton",
                command=lambda: save_current_image()).pack(side="left", padx=(0, 6))
-    ttk.Button(imgbtns, text="Copy", style="Ghost.TButton",
+    ttk.Button(imgnav, text="Copy", style="Ghost.TButton",
                command=lambda: copy_current_image()).pack(side="left")
 
     # right column
@@ -1079,11 +1077,16 @@ def run_gui(start_path=None):
         _rd = dict(r["rows"])
         badges = state.get("badges", [])
         _blabs = state.get("badge_labels", [])
+        _type = _rd.get("Type", "")
         _bvals = [plat,
                   _rd.get("Region", ""),
-                  f"{fmt_size(r['size'])}"]
-        _bcolors = ["#3b82f6" if "PS5" in plat else "#22c55e",
-                    "#22c55e", "#6b7280"]
+                  f"{fmt_size(r['size'])}",
+                  _type]
+        _plat_col = "#3b82f6" if "PS5" in plat else "#22c55e"
+        _tl = _type.lower()
+        _type_col = ("#f59e0b" if ("dlc" in _tl or "patch" in _tl or "update" in _tl)
+                     else "#10b981" if _type else "#6b7280")
+        _bcolors = [_plat_col, "#22c55e", "#6b7280", _type_col]
         for bv, val, lb, col in zip(badges, _bvals, _blabs, _bcolors):
             bv.set(val or "")
             try:
@@ -1227,11 +1230,11 @@ def run_gui(start_path=None):
             im = Image.open(io.BytesIO(data))
             state["pil"] = im.copy()
             state["img_name"] = name
-            im.thumbnail((220, 220))
+            im.thumbnail((380, 380))
             # fixed-size canvas: pad with card bg so layout never shifts
-            canvas = Image.new("RGB", (240, 240), CARD)
-            canvas.paste(im, ((240 - im.size[0]) // 2,
-                              (240 - im.size[1]) // 2))
+            canvas = Image.new("RGB", (400, 400), CARD)
+            canvas.paste(im, ((400 - im.size[0]) // 2,
+                              (400 - im.size[1]) // 2))
             ph = ImageTk.PhotoImage(canvas)
             state["photo"] = ph
             imglabel.config(image=ph, text="")
