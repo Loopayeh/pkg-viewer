@@ -50,7 +50,8 @@ def fetch_latest(repo, timeout=12):
     """Return the latest release dict, or None (no release / private repo /
     no network). Never raises. Keys: tag, name, body, assets[{name,url,size}].
     """
-    url = "https://api.github.com/repos/%s/releases/latest" % repo
+    url = _os.environ.get("PKGVIEWER_UPDATE_API") or \
+        "https://api.github.com/repos/%s/releases/latest" % repo
     req = _ureq.Request(url, headers={
         "Accept": "application/vnd.github+json",
         "User-Agent": "%s updater" % repo,
