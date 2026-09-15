@@ -30,6 +30,19 @@ Name: "{autodesktop}\PKG Viewer"; Filename: "{app}\PKGViewer.exe"; Tasks: deskto
 Name: "desktopicon"; Description: "Create a &desktop icon"; Flags: unchecked
 
 [Registry]
+; show in Settings -> Default apps (per-user, no admin)
+Root: HKCU; Subkey: "Software\Loopayeh\PKGViewer\Capabilities"; ValueType: string; ValueName: "ApplicationName"; ValueData: "PKG Viewer"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Loopayeh\PKGViewer\Capabilities"; ValueType: string; ValueName: "ApplicationDescription"; ValueData: "View PS3/PS4/PS5 package contents"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Loopayeh\PKGViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".pkg"; ValueData: "Loopayeh.PKGViewer.pkg"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Loopayeh\PKGViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".exfat"; ValueData: "Loopayeh.PKGViewer.exfat"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Loopayeh\PKGViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".ffpfsc"; ValueData: "Loopayeh.PKGViewer.ffpfsc"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Loopayeh\PKGViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".ffpkg"; ValueData: "Loopayeh.PKGViewer.ffpkg"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "PKG Viewer"; ValueData: "Software\Loopayeh\PKGViewer\Capabilities"; Flags: uninsdeletevalue
+; show in Open With menu
+Root: HKCU; Subkey: "Software\Classes\.pkg\OpenWithProgids"; ValueType: string; ValueName: "Loopayeh.PKGViewer.pkg"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\.exfat\OpenWithProgids"; ValueType: string; ValueName: "Loopayeh.PKGViewer.exfat"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\.ffpfsc\OpenWithProgids"; ValueType: string; ValueName: "Loopayeh.PKGViewer.ffpfsc"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\.ffpkg\OpenWithProgids"; ValueType: string; ValueName: "Loopayeh.PKGViewer.ffpkg"; ValueData: ""; Flags: uninsdeletevalue
 ; .pkg
 Root: HKCU; Subkey: "Software\Classes\.pkg"; ValueType: string; ValueName: ""; ValueData: "Loopayeh.PKGViewer.pkg"; Flags: uninsdeletevalue
 Root: HKCU; Subkey: "Software\Classes\Loopayeh.PKGViewer.pkg"; ValueType: string; ValueName: ""; ValueData: "PKG Package"; Flags: uninsdeletekey
