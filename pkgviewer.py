@@ -1722,13 +1722,24 @@ def run_gui(start_path=None):
                  side="left", fill="x", expand=True)
 
     def _register_open_with():
-        """Add the running exe to .pkg Open With (per-user, no admin)."""
+        """Add the running exe to Open With for all formats (per-user).
+
+        Also refreshes Explorer's cache, otherwise the entry only
+        appears after a restart / logoff.
+        """
         if not getattr(sys, "frozen", False):
             statusvar.set("Run the built exe to register Open With")
             return
         try:
+            import ctypes as _ct
             import winreg as _wr
             _exe = sys.executable
+            _name = os.path.basename(_exe)
+            with _wr.CreateKey(
+                    _wr.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\App Paths"
+                    r"\%s" % _name) as _k:
+                _wr.SetValue(_k, "", _wr.REG_SZ, _exe)
             with _wr.CreateKey(
                     _wr.HKEY_CURRENT_USER,
                     r"Software\Classes\Loopayeh.PKGViewer\shell\open"
@@ -1739,12 +1750,41 @@ def run_gui(start_path=None):
                     r"Software\Classes\Loopayeh.PKGViewer"
                     r"\DefaultIcon") as _k:
                 _wr.SetValue(_k, "", _wr.REG_SZ, '"%s",0' % _exe)
-            with _wr.CreateKey(
-                    _wr.HKEY_CURRENT_USER,
-                    r"Software\Classes\.pkg\OpenWithProgids") as _k:
-                _wr.SetValueEx(_k, "Loopayeh.PKGViewer", 0,
-                               _wr.REG_SZ, "")
-            statusvar.set("Added to Open With for .pkg (tick Always there)")
+            _n = 0
+            for _ext in (".pkg", ".exfat", ".ffpfsc", ".ffpkg"):
+                with _wr.CreateKey(
+                        _wr.HKEY_CURRENT_USER,
+                        r"Software\Classes\%s\OpenWithProgids" % _ext) as _k:
+                    _wr.SetValueEx(_k, "Loopayeh.PKGViewer", 0,
+                                   _wr.REG_SZ, "")
+                try:
+                    with _wr.CreateKey(
+                            _wr.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion"
+                            r"\Explorer\FileExts\%s\OpenWithList" % _ext
+                            ) as _k:
+                        _vals = {}
+                        try:
+                            _i = 0
+                            while True:
+                                _vn, _vd, _ = _wr.EnumValue(_k, _i)
+                                _vals[_vn] = _vd
+                                _i += 1
+                        except OSError:
+                            pass
+                        if _name.lower() not in [
+                                str(_v).lower() for _v in _vals.values()]:
+                            _next = chr(ord("a") + len(
+                                [v for v in _vals if len(v) == 1]))
+                            _wr.SetValueEx(_k, _next, 0, _wr.REG_SZ, _name)
+                except Exception:
+                    pass
+                _n += 1
+            try:
+                _ct.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)
+            except Exception:
+                pass
+            statusvar.set("Open With registered for %d formats" % _n)
         except Exception as e:
             statusvar.set("Open With failed: %s" % e)
 
@@ -1765,7 +1805,7 @@ def run_gui(start_path=None):
                                                          pady=(12, 0))
         _links = ttk.Frame(_ab, style="Card.TFrame")
         _links.pack(pady=(14, 0))
-        ttk.Button(_links, text="Add to Open With (.pkg)",
+        ttk.Button(_links, text="Add to Open With (all formats)",
                    style="Ghost.TButton",
                    command=_register_open_with).pack(side="left",
                                                      padx=(0, 8))
