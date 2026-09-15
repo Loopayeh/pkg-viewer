@@ -1481,7 +1481,7 @@ def _local_logo(size=(40, 40)):
 
 def run_gui(start_path=None):
     import tkinter as tk
-    from tkinter import filedialog, ttk
+    from tkinter import filedialog, messagebox, ttk
     try:
         from PIL import Image, ImageTk
         has_pil = True
@@ -1780,6 +1780,13 @@ def run_gui(start_path=None):
                         _show_update_dialog(info)
                 elif manual:
                     statusvar.set("Up to date (%s)" % APP_VERSION)
+                    try:
+                        messagebox.showinfo(
+                            "No updates",
+                            "You're up to date (%s)." % APP_VERSION,
+                            parent=root)
+                    except Exception:
+                        pass
             try:
                 root.after(0, _ui)
             except Exception:
