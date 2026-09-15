@@ -27,7 +27,7 @@ Name: "{group}\PKG Viewer"; Filename: "{app}\PKGViewer.exe"
 Name: "{autodesktop}\PKG Viewer"; Filename: "{app}\PKGViewer.exe"; Tasks: desktopicon
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a &desktop icon"; Flags: unchecked
+Name: "desktopicon"; Description: "Create a &desktop icon"
 
 [Registry]
 ; show in Settings -> Default apps (per-user, no admin)
