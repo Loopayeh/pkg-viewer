@@ -1891,7 +1891,7 @@ def run_gui(start_path=None):
                   _type]
         _pl = plat.lower()
         if _has_lz4:
-            _plat_col = "#9efd88"
+            _plat_col = "#6fd3c9"
         elif "ffpkg" in _pl:
             _plat_col = "#e17b7b"
         elif "ffpfsc" in _pl:
@@ -1901,7 +1901,7 @@ def run_gui(start_path=None):
         elif "ps3" in _pl:
             _plat_col = "#e8a34c"
         elif "ps4" in _pl or _pl.startswith("cnt"):
-            _plat_col = "#9efd88"
+            _plat_col = "#8fd694"
         elif "ps5" in _pl:
             _plat_col = "#91c8f6"
         else:
