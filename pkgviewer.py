@@ -1394,7 +1394,7 @@ def print_info(path):
 
 
 # ---------------- GUI ----------------
-BG, CARD, CARD2, ACCENT = "#171717", "#202020", "#2a2a2a", "#8fd694"
+BG, CARD, CARD2, ACCENT = "#171717", "#202020", "#2a2a2a", "#91c8f6"
 TEXT, MUTED = "#f1f3f8", "#8b93a5"
 FONT = ("Segoe UI", 10)
 FONT_BIG = ("Segoe UI", 18, "bold")
