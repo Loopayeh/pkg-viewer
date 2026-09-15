@@ -1721,99 +1721,12 @@ def run_gui(start_path=None):
              anchor="w", padx=12, pady=6).pack(
                  side="left", fill="x", expand=True)
 
-    def _register_open_with():
-        """Add the running exe to Open With for all formats (per-user).
-
-        Also refreshes Explorer's cache, otherwise the entry only
-        appears after a restart / logoff.
-        """
-        if not getattr(sys, "frozen", False):
-            statusvar.set("Run the built exe to register Open With")
-            return
-        try:
-            import ctypes as _ct
-            import winreg as _wr
-            _exe = sys.executable
-            _name = os.path.basename(_exe)
-            with _wr.CreateKey(
-                    _wr.HKEY_CURRENT_USER,
-                    r"Software\Microsoft\Windows\CurrentVersion\App Paths"
-                    r"\%s" % _name) as _k:
-                _wr.SetValue(_k, "", _wr.REG_SZ, _exe)
-            with _wr.CreateKey(
-                    _wr.HKEY_CURRENT_USER,
-                    r"Software\Classes\Loopayeh.PKGViewer\shell\open"
-                    r"\command") as _k:
-                _wr.SetValue(_k, "", _wr.REG_SZ, '"%s" "%%1"' % _exe)
-            with _wr.CreateKey(
-                    _wr.HKEY_CURRENT_USER,
-                    r"Software\Classes\Loopayeh.PKGViewer"
-                    r"\DefaultIcon") as _k:
-                _wr.SetValue(_k, "", _wr.REG_SZ, '"%s",0' % _exe)
-            _n = 0
-            for _ext in (".pkg", ".exfat", ".ffpfsc", ".ffpkg"):
-                with _wr.CreateKey(
-                        _wr.HKEY_CURRENT_USER,
-                        r"Software\Classes\%s\OpenWithProgids" % _ext) as _k:
-                    _wr.SetValueEx(_k, "Loopayeh.PKGViewer", 0,
-                                   _wr.REG_SZ, "")
-                try:
-                    with _wr.CreateKey(
-                            _wr.HKEY_CURRENT_USER,
-                            r"Software\Microsoft\Windows\CurrentVersion"
-                            r"\Explorer\FileExts\%s\OpenWithList" % _ext
-                            ) as _k:
-                        _vals = {}
-                        try:
-                            _i = 0
-                            while True:
-                                _vn, _vd, _ = _wr.EnumValue(_k, _i)
-                                _vals[_vn] = _vd
-                                _i += 1
-                        except OSError:
-                            pass
-                        if _name.lower() not in [
-                                str(_v).lower() for _v in _vals.values()]:
-                            _next = chr(ord("a") + len(
-                                [v for v in _vals if len(v) == 1]))
-                            _wr.SetValueEx(_k, _next, 0, _wr.REG_SZ, _name)
-                except Exception:
-                    pass
-                _n += 1
-            try:
-                _ct.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)
-            except Exception:
-                pass
-            statusvar.set("Open With registered for %d formats" % _n)
-        except Exception as e:
-            statusvar.set("Open With failed: %s" % e)
-
     def show_about():
-        import webbrowser as _wb
-        _ab = tk.Toplevel(root)
-        _ab.title("About PKG Viewer")
-        _ab.configure(bg=CARD)
-        _ab.transient(root)
-        _ab.grab_set()
-        _ab.resizable(False, False)
-        tk.Label(_ab, text="PKG Viewer %s" % APP_VERSION,
-                 bg=CARD, fg=TEXT, font=FONT).pack(padx=36, pady=(20, 0))
-        tk.Label(_ab, text="by Loopayeh",
-                 bg=CARD, fg=MUTED, font=FONT_SMALL).pack(pady=(2, 0))
-        tk.Label(_ab, text="View PS3 / PS4 / PS5 package info and cover art.",
-                 bg=CARD, fg=TEXT, font=FONT_SMALL).pack(padx=36,
-                                                         pady=(12, 0))
-        _links = ttk.Frame(_ab, style="Card.TFrame")
-        _links.pack(pady=(14, 0))
-        ttk.Button(_links, text="Add to Open With (all formats)",
-                   style="Ghost.TButton",
-                   command=_register_open_with).pack(side="left",
-                                                     padx=(0, 8))
-        ttk.Button(_links, text="Links", style="Ghost.TButton",
-                   command=lambda: _wb.open(
-                       "https://loopayeh.github.io")).pack(side="left")
-        ttk.Button(_ab, text="Close", style="Accent.TButton",
-                   command=_ab.destroy).pack(pady=(16, 20))
+        from tkinter import messagebox as _mb
+        _mb.showinfo("About PKG Viewer",
+                     "PKG Viewer %s\nby Loopayeh\n\n"
+                     "View PS3 / PS4 / PS5 package info and cover art.\n"
+                     "Contact: t.me/loopayeh" % APP_VERSION)
 
     def check_updates(manual=False):
         """Check GitHub releases for a newer build (stdlib only)."""
