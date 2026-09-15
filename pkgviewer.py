@@ -1817,9 +1817,15 @@ def run_gui(start_path=None):
         _btns.pack(fill="x", padx=16, pady=14)
 
         def _dl():
-            _asset = _up.pick_exe_asset(info, (UPDATE_EXE,))
+            try:
+                _installed = _up.is_installed()
+            except Exception:
+                _installed = False
+            _asset = (_up.pick_setup_asset(info) if _installed
+                      else _up.pick_exe_asset(info, (UPDATE_EXE,)))
             if not _asset:
-                _prog.set("No .exe found in this release")
+                _prog.set("No installer found in this release"
+                          if _installed else "No .exe found in this release")
                 return
             _prog.set("Downloading %s..." % _asset["name"])
             for _b in _btns.winfo_children():
@@ -1846,7 +1852,18 @@ def run_gui(start_path=None):
 
                 def _fin():
                     try:
-                        if _up.stage_and_restart(_dest):
+                        if _installed:
+                            root.after(0, _prog.set,
+                                       "Installing update, app will restart...")
+                            if _up.run_setup_and_exit(_dest):
+                                try:
+                                    dlg.destroy()
+                                except Exception:
+                                    pass
+                                root.after(300, root.destroy)
+                            else:
+                                _prog.set("Update failed: cannot launch installer")
+                        elif _up.stage_and_restart(_dest):
                             try:
                                 dlg.destroy()
                             except Exception:

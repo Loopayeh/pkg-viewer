@@ -1,0 +1,71 @@
+; PKG Viewer installer — per-user, file icons, no admin needed.
+#define AppVer "1.7.2"
+
+[Setup]
+AppName=PKG Viewer
+AppVersion={#AppVer}
+AppPublisher=Loopayeh
+DefaultDirName={autopf}\PKG Viewer
+DefaultGroupName=PKG Viewer
+OutputDir=D:\Hermes\projects\pkg-viewer
+OutputBaseFilename=PKGViewer-Setup-1.7.2
+PrivilegesRequired=lowest
+Compression=lzma2/max
+SolidCompression=yes
+UninstallDisplayName=PKG Viewer
+WizardStyle=modern
+
+[Files]
+Source: "D:\Hermes\projects\pkg-viewer\PKGViewer.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "D:\Hermes\projects\pkg-viewer\assets\icons\pkg.ico"; DestDir: "{app}\icons"; Flags: ignoreversion
+Source: "D:\Hermes\projects\pkg-viewer\assets\icons\exfat.ico"; DestDir: "{app}\icons"; Flags: ignoreversion
+Source: "D:\Hermes\projects\pkg-viewer\assets\icons\ffpfsc.ico"; DestDir: "{app}\icons"; Flags: ignoreversion
+Source: "D:\Hermes\projects\pkg-viewer\assets\icons\ffpkg.ico"; DestDir: "{app}\icons"; Flags: ignoreversion
+
+[Icons]
+Name: "{group}\PKG Viewer"; Filename: "{app}\PKGViewer.exe"
+Name: "{autodesktop}\PKG Viewer"; Filename: "{app}\PKGViewer.exe"; Tasks: desktopicon
+
+[Tasks]
+Name: "desktopicon"; Description: "Create a &desktop icon"; Flags: unchecked
+
+[Registry]
+; .pkg
+Root: HKCU; Subkey: "Software\Classes\.pkg"; ValueType: string; ValueName: ""; ValueData: "Loopayeh.PKGViewer.pkg"; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\Loopayeh.PKGViewer.pkg"; ValueType: string; ValueName: ""; ValueData: "PKG Package"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\Loopayeh.PKGViewer.pkg\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\icons\pkg.ico,0"
+Root: HKCU; Subkey: "Software\Classes\Loopayeh.PKGViewer.pkg\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\PKGViewer.exe"" ""%1"""
+; .exfat
+Root: HKCU; Subkey: "Software\Classes\.exfat"; ValueType: string; ValueName: ""; ValueData: "Loopayeh.PKGViewer.exfat"; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\Loopayeh.PKGViewer.exfat"; ValueType: string; ValueName: ""; ValueData: "exFAT Image"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\Loopayeh.PKGViewer.exfat\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\icons\exfat.ico,0"
+Root: HKCU; Subkey: "Software\Classes\Loopayeh.PKGViewer.exfat\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\PKGViewer.exe"" ""%1"""
+; .ffpfsc
+Root: HKCU; Subkey: "Software\Classes\.ffpfsc"; ValueType: string; ValueName: ""; ValueData: "Loopayeh.PKGViewer.ffpfsc"; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\Loopayeh.PKGViewer.ffpfsc"; ValueType: string; ValueName: ""; ValueData: "FFPFSC Image"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\Loopayeh.PKGViewer.ffpfsc\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\icons\ffpfsc.ico,0"
+Root: HKCU; Subkey: "Software\Classes\Loopayeh.PKGViewer.ffpfsc\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\PKGViewer.exe"" ""%1"""
+; .ffpkg
+Root: HKCU; Subkey: "Software\Classes\.ffpkg"; ValueType: string; ValueName: ""; ValueData: "Loopayeh.PKGViewer.ffpkg"; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\Loopayeh.PKGViewer.ffpkg"; ValueType: string; ValueName: ""; ValueData: "FFPKG Image"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\Loopayeh.PKGViewer.ffpkg\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\icons\ffpkg.ico,0"
+Root: HKCU; Subkey: "Software\Classes\Loopayeh.PKGViewer.ffpkg\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\PKGViewer.exe"" ""%1"""
+
+[Code]
+procedure SHChangeNotify(wEventID: Integer; uFlags: Cardinal; dwItem1, dwItem2: Cardinal);
+  external 'SHChangeNotify@shell32.dll stdcall';
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    // refresh explorer icon cache so new icons show immediately
+    try
+      SHChangeNotify($08000000, 0, 0, 0);
+    except
+    end;
+  end;
+end;
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\icons"

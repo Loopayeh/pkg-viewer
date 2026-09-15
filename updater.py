@@ -91,17 +91,67 @@ def check_in_background(repo, callback):
 
 
 def pick_exe_asset(info, exe_names=()):
-    """Best .exe asset: exact exe name match first, else first .exe."""
-    exes = [a for a in (info or {}).get("assets", [])
-            if a.get("name", "").lower().endswith(".exe")
-            and a.get("url")]
-    if not exes:
+    """Legacy: best portable .exe (exact name first, else first .exe)."""
+    assets = [a for a in (info or {}).get("assets", []) or []
+              if (a.get("name", "") or "").lower().endswith(".exe")
+              and a.get("url")]
+    if not assets:
         return None
     want = {n.lower() for n in (exe_names or ())}
-    for a in exes:
+    for a in assets:
         if a["name"].lower() in want:
             return a
-    return exes[0]
+    return assets[0]
+
+
+def pick_setup_asset(info):
+    """Setup installer asset: PKGViewer-Setup-*.exe first, else first Setup*.exe."""
+    assets = (info or {}).get("assets", []) or []
+    for a in assets:
+        n = (a.get("name", "") or "").lower()
+        if n.startswith("pkgviewer-setup") and n.endswith(".exe") and a.get("url"):
+            return a
+    for a in assets:
+        n = (a.get("name", "") or "").lower()
+        if "setup" in n and n.endswith(".exe") and a.get("url"):
+            return a
+    return None
+
+
+def install_dir():
+    """Install dir when running as installed exe, else None."""
+    try:
+        if not getattr(_sys, "frozen", False):
+            return None
+        d = _os.path.dirname(_os.path.abspath(_sys.executable))
+        if _os.path.isfile(_os.path.join(d, "unins000.exe")):
+            return d
+    except Exception:
+        pass
+    return None
+
+
+def is_installed():
+    """True when running from an Inno-installed location."""
+    return install_dir() is not None
+
+
+def run_setup_and_exit(setup_path):
+    """Launch Setup installer (silent, per-user) and return True.
+
+    Caller must exit immediately so Setup can overwrite the running exe.
+    """
+    try:
+        flags = getattr(_subprocess, "DETACHED_PROCESS", 0)
+        _subprocess.Popen(
+            [setup_path, "/SP-", "/SILENT", "/NORESTART",
+             "/CLOSEAPPLICATIONS"],
+            stdin=_subprocess.DEVNULL, stdout=_subprocess.DEVNULL,
+            stderr=_subprocess.DEVNULL, creationflags=flags,
+            close_fds=False)
+        return True
+    except Exception:
+        return False
 
 
 def download(url, dest, progress=None, timeout=120):
