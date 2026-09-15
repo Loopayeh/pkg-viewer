@@ -1529,7 +1529,7 @@ def run_gui(start_path=None):
     style.configure("SpecVal.TLabel", background=CARD, foreground=TEXT, font=FONT_MID)
     style.configure("Accent.TButton", background=ACCENT, foreground="#171717", font=FONT,
                     borderwidth=0, padding=(16, 9))
-    style.map("Accent.TButton", background=[("active", "#7ab5e8")])
+    style.map("Accent.TButton", background=[("active", "#6fa8ff")])
     style.configure("TNotebook", background=BG, borderwidth=0)
     style.configure("TNotebook.Tab", background=CARD, foreground=MUTED, padding=(18, 8), font=FONT)
     style.map("TNotebook.Tab", background=[("selected", CARD2)],
@@ -1940,7 +1940,8 @@ def run_gui(start_path=None):
         else:
             _plat_col = "#6b7280"
         _tl = _type.lower()
-        _type_col = ("#f59e5b" if ("dlc" in _tl or "patch" in _tl or "update" in _tl)
+        _type_col = ("#5fa8ff" if "update" in _tl
+                     else "#f59e5b" if ("dlc" in _tl or "patch" in _tl)
                      else "#10b981" if _type else "#6b7280")
         _bcolors = [_plat_col, "#9bff7a", "#6b7280", _type_col]
         for bv, val, lb, col in zip(badges, _bvals, _blabs, _bcolors):
