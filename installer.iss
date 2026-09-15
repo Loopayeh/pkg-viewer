@@ -69,7 +69,18 @@ procedure SHChangeNotify(wEventID: Integer; uFlags: Cardinal; dwItem1, dwItem2: 
   external 'SHChangeNotify@shell32.dll stdcall';
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
 begin
+  if CurStep = ssInstall then
+  begin
+    // auto-close running app so files are not locked (silent, no prompt)
+    try
+      Exec('taskkill.exe', '/F /IM PKGViewer.exe', '', SW_HIDE,
+           ewWaitUntilTerminated, ResultCode);
+    except
+    end;
+  end;
   if CurStep = ssPostInstall then
   begin
     // refresh explorer icon cache so new icons show immediately
