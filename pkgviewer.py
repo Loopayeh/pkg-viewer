@@ -1838,6 +1838,18 @@ def run_gui(start_path=None):
         tk.Label(dlg, text="%s  (you have %s)" % (info.get("name", tag),
                                                   APP_VERSION),
                  bg=BG, fg=TEXT, font=FONT).pack(anchor="w", padx=16)
+        try:
+            _has_setup = _up.pick_setup_asset(info) is not None
+            _portable = not _up.is_installed()
+        except Exception:
+            _has_setup, _portable = False, False
+        if _has_setup and _portable:
+            tk.Label(dlg, text="Tip: the installer version is recommended — "
+                               "own icon per format, double-click to open, "
+                               "silent self-updates.",
+                     bg=BG, fg="#4F8EF7", font=FONT_SMALL,
+                     wraplength=460, justify="left").pack(anchor="w",
+                                                          padx=16, pady=(6, 0))
         _body = (info.get("body", "") or "").strip().split("\n")
         _notes = "\n".join(_body[:12])
         if _notes:
