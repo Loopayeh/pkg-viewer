@@ -1943,7 +1943,7 @@ def run_gui(start_path=None):
         _type_col = ("#5fa8ff" if "update" in _tl
                      else "#f59e5b" if ("dlc" in _tl or "patch" in _tl)
                      else "#10b981" if _type else "#6b7280")
-        _bcolors = [_plat_col, "#9bff7a", "#6b7280", _type_col]
+        _bcolors = [_plat_col, "#e17b7b", "#6b7280", _type_col]
         for bv, val, lb, col in zip(badges, _bvals, _blabs, _bcolors):
             bv.set(val or "")
             try:
