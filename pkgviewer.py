@@ -1500,6 +1500,10 @@ def run_gui(start_path=None):
     except ImportError:
         root = tk.Tk()
     root.title("PKG Viewer %s  •  PS3 / PS4 / PS5  •  by Loopayeh" % APP_VERSION)
+    try:
+        root.attributes("-topmost", True)
+    except Exception:
+        pass
     root.geometry("1060x700")
     root.configure(bg=BG)
     root.minsize(900, 600)
@@ -1580,6 +1584,20 @@ def run_gui(start_path=None):
     updatebtn.pack(side="right")
     ttk.Button(header, text="About", style="Ghost.TButton",
                command=lambda: show_about()).pack(side="right", padx=(0, 8))
+    def _toggle_top():
+        _topv["on"] = not _topv["on"]
+        try:
+            root.attributes("-topmost", _topv["on"])
+        except Exception:
+            pass
+        try:
+            topbtn.config(text="Top: ON" if _topv["on"] else "Top")
+        except Exception:
+            pass
+    _topv = {"on": True}
+    topbtn = ttk.Button(header, text="Top: ON", style="Ghost.TButton",
+                        command=_toggle_top)
+    topbtn.pack(side="right", padx=(0, 8))
     pathvar = tk.StringVar(value="Drop a .pkg / .exfat / .ffpfsc / .ffpkg file or app folder here")
     ttk.Label(header, textvariable=pathvar, font=FONT_SMALL, foreground=MUTED).pack(
         side="left", padx=(14, 0))
