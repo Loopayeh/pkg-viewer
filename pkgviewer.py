@@ -1717,9 +1717,13 @@ def run_gui(start_path=None):
     bottombar = ttk.Frame(root)
     bottombar.pack(fill="x", side="bottom")
     statusvar = tk.StringVar(value="Ready")
-    tk.Label(bottombar, textvariable=statusvar, bg=BG, fg=MUTED, font=FONT_SMALL,
-             anchor="w", padx=12, pady=6).pack(
-                 side="left", fill="x", expand=True)
+    _status_lbl = tk.Label(bottombar, textvariable=statusvar, bg=BG, fg=MUTED,
+                           font=FONT_SMALL, anchor="w", justify="left",
+                           padx=12, pady=6)
+    _status_lbl.pack(side="left", fill="x", expand=True)
+    # wrap status text on narrow windows instead of clipping it
+    bottombar.bind("<Configure>",
+                   lambda e: _status_lbl.config(wraplength=max(200, e.width - 24)))
 
     def show_about():
         import webbrowser as _wb
