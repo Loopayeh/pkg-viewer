@@ -10,6 +10,16 @@ Works with `.pkg` packages, `.exfat` / `.ffpfsc` / `.ffpkg` images, and game fol
 
 Get `PKGViewer.exe` from [Releases](../../releases) — no Python needed, just run it.
 
+## Installer version (recommended)
+
+![file icons](screenshot-icons.png)
+
+Grab `PKGViewer-Setup-X.Y.Z.exe` from [Releases](../../releases) — no admin needed:
+- every format gets its own icon (`.pkg` / `.exfat` / `.ffpfsc` / `.ffpkg`) and opens on double-click — no Open With setup
+- shows up in `Settings → Default apps`, so all four formats go Always in one place
+- updates itself in place, no reinstall hassle
+- uninstall wipes everything clean (files, icons, registry)
+
 ## Features
 
 - Cover art preview (icon0.png, pic0.png, …) with Save / Copy to clipboard — online Store cover for encrypted retail PKGs
