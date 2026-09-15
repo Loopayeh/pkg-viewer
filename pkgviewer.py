@@ -456,20 +456,46 @@ _PATCH_HOST = {"PPSA": "https://prosperopatches.com",
                "CUSA": "https://orbispatches.com"}
 
 
+def _ago(date_str):
+    """'2024-11-21...' -> '8 mo ago'. '' on parse failure."""
+    import datetime as _dt
+    import re as _re
+    m = _re.search(r"(\d{4})-(\d{2})-(\d{2})", date_str or "")
+    if not m:
+        return ""
+    try:
+        d = _dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        days = (_dt.date.today() - d).days
+    except ValueError:
+        return ""
+    if days < 0:
+        return ""
+    if days == 0:
+        return "today"
+    if days < 30:
+        return f"{days} day{'s' if days > 1 else ''} ago"
+    months = days // 30
+    if months < 12:
+        return f"{months} mo ago"
+    years = months // 12
+    rem = months % 12
+    return f"{years}y {rem}m ago" if rem else f"{years}y ago"
+
+
 def fetch_latest_patch(tid):
-    """(latest_ver, patch_count) from patch trackers. Cached per session."""
+    """(latest_ver, patch_count, date_str) from patch trackers. Cached per session."""
     import json as _json
     import re as _re
     import urllib.request as _ureq
     if not tid:
-        return None, 0
+        return None, 0, ""
     tid = tid.upper()
     if tid in _PATCH_CACHE:
         return _PATCH_CACHE[tid]
     host = _PATCH_HOST.get(tid[:4])
     if not host:
-        _PATCH_CACHE[tid] = (None, 0)
-        return None, 0
+        _PATCH_CACHE[tid] = (None, 0, "")
+        return None, 0, ""
     try:
         req = _ureq.Request(host + "/" + tid, headers={"User-Agent": "Mozilla/5.0"})
         with _ureq.urlopen(req, timeout=20) as r:
@@ -480,8 +506,8 @@ def fetch_latest_patch(tid):
         if not m:
             m = _re.search(r'data-key="([0-9a-f]{64})"', html)
         if not m:
-            _PATCH_CACHE[tid] = (None, 0)
-            return None, 0
+            _PATCH_CACHE[tid] = (None, 0, "")
+            return None, 0, ""
         body = _json.dumps({"titleid": tid, "key": m.group(1)}).encode()
         req2 = _ureq.Request(host + "/api/internal/loadpatches", data=body,
                              headers={"User-Agent": "Mozilla/5.0",
@@ -489,15 +515,16 @@ def fetch_latest_patch(tid):
         with _ureq.urlopen(req2, timeout=20) as r2:
             j = _json.loads(r2.read())
         patches = j.get("patches", []) if j.get("success") else []
-        latest = next((p.get("content_ver") or p.get("version")
-                       for p in patches if p.get("is_latest")), None)
-        if not latest and patches:
-            latest = patches[0].get("content_ver") or patches[0].get("version")
-        _PATCH_CACHE[tid] = (latest, len(patches))
-        return latest, len(patches)
+        pick = next((p for p in patches if p.get("is_latest")), None)
+        if not pick and patches:
+            pick = patches[0]
+        latest = (pick.get("content_ver") or pick.get("version")) if pick else None
+        date = (pick.get("import_date") or pick.get("creation_date") or "") if pick else ""
+        _PATCH_CACHE[tid] = (latest, len(patches), date)
+        return latest, len(patches), date
     except Exception:
-        _PATCH_CACHE[tid] = (None, 0)
-        return None, 0
+        _PATCH_CACHE[tid] = (None, 0, "")
+        return None, 0, ""
 
 
 def parse_ps5_retail_stub(path, size, hdr):
@@ -2060,23 +2087,27 @@ def run_gui(start_path=None):
         """Background: latest patch version → Details via root.after."""
         def _work():
             try:
-                latest, count = fetch_latest_patch(tid)
+                latest, count, date = fetch_latest_patch(tid)
             except Exception:
-                latest, count = None, 0
+                latest, count, date = None, 0, ""
             try:
-                root.after(0, lambda: _patch_done(tid, own_ver, latest, count))
+                root.after(0, lambda: _patch_done(tid, own_ver, latest, count, date))
             except Exception:
                 pass
         import threading as _th
         _th.Thread(target=_work, daemon=True).start()
 
-    def _patch_done(tid, own_ver, latest, count):
+    def _patch_done(tid, own_ver, latest, count, date):
         r = state.get("result")
         if not r or r.get("patch_tid") != tid:
             return
         if not latest:
             return
-        lines = [f"Latest patch = {latest} ({count} known)"]
+        ago = _ago(date)
+        line1 = f"Latest patch = {latest} ({count} known)"
+        if date:
+            line1 += f" — {date[:10]}" + (f" ({ago})" if ago else "")
+        lines = [line1]
         if own_ver:
             lines.append(f"PKG version = {own_ver} " +
                          ("(up to date)" if own_ver.strip() == latest.strip()
