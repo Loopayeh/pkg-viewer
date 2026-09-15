@@ -1725,6 +1725,20 @@ def run_gui(start_path=None):
     bottombar.bind("<Configure>",
                    lambda e: _status_lbl.config(wraplength=max(200, e.width - 24)))
 
+    def _set_status(base=None):
+        # persistent base (e.g. file entries) + update note, shown together
+        try:
+            if base is not None:
+                state["status_base"] = base
+            _b = state.get("status_base", "")
+            _n = state.get("update_note", "")
+            if _b and _n:
+                statusvar.set(_b + "  •  " + _n)
+            else:
+                statusvar.set(_b or _n or "Ready")
+        except Exception:
+            pass
+
     def show_about():
         import webbrowser as _wb
         _ab = tk.Toplevel(root)
@@ -1775,11 +1789,13 @@ def run_gui(start_path=None):
                                          style="Accent.TButton")
                     except Exception:
                         pass
-                    statusvar.set("Update available: %s" % info.get("tag", ""))
+                    state["update_note"] = "Update available: %s" % info.get("tag", "")
+                    _set_status()
                     if manual:
                         _show_update_dialog(info)
                 elif manual:
-                    statusvar.set("Up to date (%s)" % APP_VERSION)
+                    state["update_note"] = "Up to date (%s)" % APP_VERSION
+                    _set_status()
                     try:
                         messagebox.showinfo(
                             "No updates",
@@ -2009,7 +2025,7 @@ def run_gui(start_path=None):
             imglabel.config(image="", text="(no image)")
         if r.get("patch_tid"):
             fetch_patch_async(r["patch_tid"], r.get("own_ver", ""))
-        statusvar.set(f"OK - {len(r['entries'])} entries")
+        _set_status(f"OK - {len(r['entries'])} entries")
 
     def refresh_details():
         r = state.get("result")
