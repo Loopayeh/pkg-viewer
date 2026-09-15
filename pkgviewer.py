@@ -399,12 +399,41 @@ def _split_part_stub(path, size):
     p0 = os.path.join(os.path.dirname(path), m.group(1) + "_0.pkg")
     try:
         with open(p0, "rb") as f:
-            if f.read(4) != FIH_MAGIC:
+            mg = f.read(4)
+            if mg == CNT_MAGIC:
+                return _split_part_ps4(path, size, p0)
+            if mg != FIH_MAGIC:
                 return None
             hdr = f.read(252)
     except OSError:
         return None
     return parse_ps5_retail_stub(path, size, hdr)
+
+
+def _split_part_ps4(path, size, p0):
+    """PS4 split part: metadata lives in _0 — parse it, relabel part/size."""
+    import glob as _glob
+    import re as _re
+    r = parse_pkg(p0)
+    if not r.get("ok"):
+        return r
+    base = os.path.basename(path)
+    sibs = sorted(_glob.glob(os.path.join(os.path.dirname(path), base.rsplit("_", 1)[0] + "_*.pkg")))
+    sibs = [p for p in sibs if _re.search(r"_\d+\.pkg$", p, _re.IGNORECASE)]
+    sibs.sort(key=lambda p: int(_re.search(r"_(\d+)\.pkg$", p, _re.IGNORECASE).group(1)))
+    idx = next((i for i, p in enumerate(sibs) if os.path.basename(p) == base), 0)
+    try:
+        total = sum(os.path.getsize(p) for p in sibs) if len(sibs) > 1 else size
+    except OSError:
+        total = size
+    rows = []
+    for k, v in r["rows"]:
+        if k == "Size":
+            v = f"{fmt_size(size)} (joined {fmt_size(total)})"
+        rows.append((k, v))
+    rows.append(("Part", f"{idx + 1} of {len(sibs)}" if len(sibs) > 1 else "single"))
+    r["rows"] = rows
+    return r
 
 
 _STORE_CACHE = {}
@@ -540,6 +569,7 @@ def parse_ps5_retail_stub(path, size, hdr):
     if m2:
         sibs = sorted(_glob.glob(os.path.join(os.path.dirname(path), m2.group(1) + "_*.pkg")))
         sibs = [p for p in sibs if _re.search(r"_\d+\.pkg$", p, _re.IGNORECASE)]
+        sibs.sort(key=lambda p: int(_re.search(r"_(\d+)\.pkg$", p, _re.IGNORECASE).group(1)))
         if len(sibs) > 1:
             parts = sibs
             try:
