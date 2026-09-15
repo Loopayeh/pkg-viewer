@@ -2215,6 +2215,9 @@ def run_gui(start_path=None):
         except Exception as ex:
             statusvar.set(f"Drop disabled: {ex}")
     root.after(2500, lambda: check_updates())
+    if len(sys.argv) > 1 and os.path.exists(sys.argv[1]):
+        _startup = sys.argv[1]
+        root.after(100, lambda: load(_startup))
     root.mainloop()
 
 
