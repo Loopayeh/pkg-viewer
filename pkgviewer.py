@@ -1394,7 +1394,7 @@ def print_info(path):
 
 
 # ---------------- GUI ----------------
-BG, CARD, CARD2, ACCENT = "#171717", "#202020", "#2a2a2a", "#91c8f6"
+BG, CARD, CARD2, ACCENT = "#171717", "#202020", "#2a2a2a", "#4f8ef7"
 TEXT, MUTED = "#f1f3f8", "#8b93a5"
 FONT = ("Segoe UI", 10)
 FONT_BIG = ("Segoe UI", 18, "bold")
@@ -1926,11 +1926,11 @@ def run_gui(start_path=None):
         if _has_lz4:
             _plat_col = "#6fd3c9"
         elif "ffpkg" in _pl:
-            _plat_col = "#e17b7b"
+            _plat_col = "#9b6ddb"
         elif "ffpfsc" in _pl:
-            _plat_col = "#b693f1"
+            _plat_col = "#f2b84b"
         elif "exfat" in _pl:
-            _plat_col = "#e2f985"
+            _plat_col = "#3dd6b0"
         elif "ps3" in _pl:
             _plat_col = "#e8a34c"
         elif "ps4" in _pl or _pl.startswith("cnt"):
@@ -1940,9 +1940,9 @@ def run_gui(start_path=None):
         else:
             _plat_col = "#6b7280"
         _tl = _type.lower()
-        _type_col = ("#e17b7b" if ("dlc" in _tl or "patch" in _tl or "update" in _tl)
+        _type_col = ("#f59e5b" if ("dlc" in _tl or "patch" in _tl or "update" in _tl)
                      else "#10b981" if _type else "#6b7280")
-        _bcolors = [_plat_col, "#9efd88", "#6b7280", _type_col]
+        _bcolors = [_plat_col, "#9bff7a", "#6b7280", _type_col]
         for bv, val, lb, col in zip(badges, _bvals, _blabs, _bcolors):
             bv.set(val or "")
             try:
