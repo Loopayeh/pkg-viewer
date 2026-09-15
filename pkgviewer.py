@@ -1499,7 +1499,7 @@ def run_gui(start_path=None):
         has_dnd = True
     except ImportError:
         root = tk.Tk()
-    root.title("PKG Viewer %s  •  PS3 / PS4 / PS5" % APP_VERSION)
+    root.title("PKG Viewer %s  •  PS3 / PS4 / PS5  •  by Loopayeh" % APP_VERSION)
     root.geometry("1060x700")
     root.configure(bg=BG)
     root.minsize(900, 600)
@@ -1578,6 +1578,8 @@ def run_gui(start_path=None):
     updatebtn = ttk.Button(header, text="Check updates", style="Ghost.TButton",
                            command=lambda: check_updates(manual=True))
     updatebtn.pack(side="right")
+    ttk.Button(header, text="About", style="Ghost.TButton",
+               command=lambda: show_about()).pack(side="right", padx=(0, 8))
     pathvar = tk.StringVar(value="Drop a .pkg / .exfat / .ffpfsc / .ffpkg file or app folder here")
     ttk.Label(header, textvariable=pathvar, font=FONT_SMALL, foreground=MUTED).pack(
         side="left", padx=(14, 0))
@@ -1718,6 +1720,13 @@ def run_gui(start_path=None):
     tk.Label(bottombar, textvariable=statusvar, bg=BG, fg=MUTED, font=FONT_SMALL,
              anchor="w", padx=12, pady=6).pack(
                  side="left", fill="x", expand=True)
+
+    def show_about():
+        from tkinter import messagebox as _mb
+        _mb.showinfo("About PKG Viewer",
+                     "PKG Viewer %s\nby Loopayeh\n\n"
+                     "View PS3 / PS4 / PS5 package info and cover art.\n"
+                     "Contact: t.me/loopayeh" % APP_VERSION)
 
     def check_updates(manual=False):
         """Check GitHub releases for a newer build (stdlib only)."""
