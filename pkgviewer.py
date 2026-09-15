@@ -1722,11 +1722,27 @@ def run_gui(start_path=None):
                  side="left", fill="x", expand=True)
 
     def show_about():
-        from tkinter import messagebox as _mb
-        _mb.showinfo("About PKG Viewer",
-                     "PKG Viewer %s\nby Loopayeh\n\n"
-                     "View PS3 / PS4 / PS5 package info and cover art.\n"
-                     "Contact: t.me/loopayeh" % APP_VERSION)
+        import webbrowser as _wb
+        _ab = tk.Toplevel(root)
+        _ab.title("About PKG Viewer")
+        _ab.configure(bg=CARD)
+        _ab.transient(root)
+        _ab.grab_set()
+        _ab.resizable(False, False)
+        tk.Label(_ab, text="PKG Viewer %s" % APP_VERSION,
+                 bg=CARD, fg=TEXT, font=FONT).pack(padx=36, pady=(20, 0))
+        tk.Label(_ab, text="by Loopayeh",
+                 bg=CARD, fg=MUTED, font=FONT_SMALL).pack(pady=(2, 0))
+        tk.Label(_ab, text="View PS3 / PS4 / PS5 package info and cover art.",
+                 bg=CARD, fg=TEXT, font=FONT_SMALL).pack(padx=36,
+                                                         pady=(12, 0))
+        _links = ttk.Frame(_ab, style="Card.TFrame")
+        _links.pack(pady=(14, 0))
+        ttk.Button(_links, text="Links", style="Ghost.TButton",
+                   command=lambda: _wb.open(
+                       "https://loopayeh.github.io/")).pack(side="left")
+        ttk.Button(_ab, text="Close", style="Accent.TButton",
+                   command=_ab.destroy).pack(pady=(16, 20))
 
     def check_updates(manual=False):
         """Check GitHub releases for a newer build (stdlib only)."""
