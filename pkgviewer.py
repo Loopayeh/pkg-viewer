@@ -1761,6 +1761,16 @@ def run_gui(start_path=None):
                        "https://loopayeh.github.io/")).pack(side="left")
         ttk.Button(_ab, text="Close", style="Accent.TButton",
                    command=_ab.destroy).pack(pady=(16, 20))
+        # center over main window instead of top-left corner
+        try:
+            _ab.update_idletasks()
+            _rx, _ry = root.winfo_x(), root.winfo_y()
+            _rw, _rh = root.winfo_width(), root.winfo_height()
+            _aw, _ah = _ab.winfo_width(), _ab.winfo_height()
+            _ab.geometry("+%d+%d" % (_rx + (_rw - _aw) // 2,
+                                     _ry + (_rh - _ah) // 2))
+        except Exception:
+            pass
 
     def check_updates(manual=False):
         """Check GitHub releases for a newer build (stdlib only)."""
