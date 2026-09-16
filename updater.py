@@ -102,7 +102,10 @@ def pick_exe_asset(info, exe_names=()):
     for a in assets:
         if a["name"].lower() in want:
             return a
-    return assets[0]
+    for a in assets:
+        if "setup" not in a["name"].lower():
+            return a
+    return None
 
 
 def pick_setup_asset(info):
