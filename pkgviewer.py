@@ -1865,11 +1865,13 @@ def run_gui(start_path=None):
         _btns = tk.Frame(dlg, bg=BG)
         _btns.pack(fill="x", padx=16, pady=14)
 
-        def _dl():
+        def _dl(prefer_setup=False):
             try:
                 _installed = _up.is_installed()
             except Exception:
                 _installed = False
+            if prefer_setup:
+                _installed = True
             _asset = (_up.pick_setup_asset(info) if _installed
                       else _up.pick_exe_asset(info, (UPDATE_EXE,)))
             if not _asset:
@@ -1925,10 +1927,19 @@ def run_gui(start_path=None):
                 root.after(0, _fin)
             import threading as _th
             _th.Thread(target=_work, daemon=True).start()
-        ttk.Button(_btns, text="Download + Restart",
-                   style="Accent.TButton", command=_dl).pack(side="left")
-        ttk.Button(_btns, text="Later", style="Ghost.TButton",
-                   command=dlg.destroy).pack(side="left", padx=(8, 0))
+        if _has_setup and _portable:
+            ttk.Button(_btns, text="Switch to Installer Version",
+                       style="Accent.TButton",
+                       command=lambda: _dl(prefer_setup=True)).pack(side="left")
+            ttk.Button(_btns, text="Portable instead", style="Ghost.TButton",
+                       command=_dl).pack(side="left", padx=(8, 0))
+            ttk.Button(_btns, text="Later", style="Ghost.TButton",
+                       command=dlg.destroy).pack(side="left", padx=(8, 0))
+        else:
+            ttk.Button(_btns, text="Download + Restart",
+                       style="Accent.TButton", command=_dl).pack(side="left")
+            ttk.Button(_btns, text="Later", style="Ghost.TButton",
+                       command=dlg.destroy).pack(side="left", padx=(8, 0))
 
     # logic
     def pick():
