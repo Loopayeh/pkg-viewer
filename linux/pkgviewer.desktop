@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=PKG Viewer
+Comment=View PS3/PS4/PS5 package contents
+Exec=pkgviewer %F
+Icon=pkgviewer
+Terminal=false
+Categories=Utility;Game;
+StartupWMClass=PKG Viewer
+MimeType=application/x-pkgviewer-pkg;application/x-pkgviewer-exfat;application/x-pkgviewer-ffpfsc;application/x-pkgviewer-ffpkg;

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-pkgviewer-pkg">
+    <comment>PlayStation Package</comment>
+    <icon name="application-x-pkgviewer-pkg"/>
+    <glob pattern="*.pkg"/>
+  </mime-type>
+  <mime-type type="application/x-pkgviewer-exfat">
+    <comment>PS5 exFAT Disk Image</comment>
+    <icon name="application-x-pkgviewer-exfat"/>
+    <glob pattern="*.exfat"/>
+  </mime-type>
+  <mime-type type="application/x-pkgviewer-ffpfsc">
+    <comment>PS5 Compressed PFS Image</comment>
+    <icon name="application-x-pkgviewer-ffpfsc"/>
+    <glob pattern="*.ffpfsc"/>
+  </mime-type>
+  <mime-type type="application/x-pkgviewer-ffpkg">
+    <comment>PS5 UFS2 Image</comment>
+    <icon name="application-x-pkgviewer-ffpkg"/>
+    <glob pattern="*.ffpkg"/>
+  </mime-type>
+</mime-info>

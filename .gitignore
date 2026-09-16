@@ -5,6 +5,8 @@ dist/
 *.spec
 PKGViewer.exe
 builds/
+*.deb
+PKGViewer-linux-*.tar.gz
 assets/*
 !assets/icons/
 !assets/icons/*.ico
