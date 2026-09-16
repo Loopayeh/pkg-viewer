@@ -1471,8 +1471,8 @@ def _local_logo(size=(40, 40)):
             cands.insert(0, os.path.join(sys._MEIPASS, "assets", "logo.png"))
         for p in cands:
             if os.path.isfile(p):
-                im = _I.open(p).convert("RGB")
-                im.thumbnail(size)
+                im = _I.open(p).convert("RGBA")
+                im.thumbnail(size, _I.LANCZOS)
                 return im
         return None
     except Exception:
