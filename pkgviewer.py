@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.7.5"  # bump on every release — the updater compares this
+APP_VERSION = "v1.7.6"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 UPDATE_EXE = "PKGViewer.exe"
 
@@ -1869,7 +1869,8 @@ def run_gui(start_path=None):
             _portable = not _up.is_installed()
         except Exception:
             _has_setup, _portable = False, False
-        if _has_setup and _portable:
+        _is_linux = sys.platform.startswith("linux")
+        if _has_setup and _portable and not _is_linux:
             tk.Label(dlg, text="Tip: the installer version is recommended — "
                                "own icon per format, double-click to open, "
                                "silent self-updates.",
@@ -1891,7 +1892,74 @@ def run_gui(start_path=None):
         _btns = tk.Frame(dlg, bg=BG)
         _btns.pack(fill="x", padx=16, pady=14)
 
+        def _reenable():
+            for _b in _btns.winfo_children():
+                try:
+                    _b.config(state="normal")
+                except Exception:
+                    pass
+
+        def _dl_linux():
+            try:
+                _asset = _up.pick_deb_asset(info)
+            except Exception:
+                _asset = None
+            if not _asset:
+                _prog.set("No .deb found in this release")
+                return
+            _prog.set("Downloading %s..." % _asset["name"])
+            for _b in _btns.winfo_children():
+                try:
+                    _b.config(state="disabled")
+                except Exception:
+                    pass
+
+            def _work():
+                try:
+                    import tempfile as _tf
+                    _tmp = _tf.mkdtemp(prefix="update_")
+                    _dest = os.path.join(_tmp, _asset["name"])
+
+                    def _pg(got, total):
+                        if total:
+                            root.after(0, _prog.set,
+                                       "Downloading... %d%%"
+                                       % (got * 100 // total))
+                    _up.download(_asset["url"], _dest, progress=_pg)
+                except Exception as e:
+                    root.after(0, _prog.set, "Download failed: %s" % e)
+                    root.after(0, _reenable)
+                    return
+                root.after(0, _prog.set,
+                           "Installing update — confirm the password prompt...")
+                try:
+                    ok, msg = _up.install_deb(_dest)
+                except Exception as e:
+                    ok, msg = False, str(e)
+                if ok:
+                    def _rst():
+                        _prog.set("Installed — restarting...")
+                        try:
+                            _up.relaunch_linux_app()
+                        except Exception:
+                            pass
+                        try:
+                            dlg.destroy()
+                        except Exception:
+                            pass
+                        root.after(300, root.destroy)
+                    root.after(0, _rst)
+                else:
+                    root.after(0, _prog.set,
+                               "Install failed: %s (%s)" % (msg, _dest))
+                    root.after(0, _reenable)
+            import threading as _th
+            _th.Thread(target=_work, daemon=True).start()
+
         def _dl(prefer_setup=False):
+            if sys.platform.startswith("linux"):
+                _dl_linux()
+                return
             try:
                 _installed = _up.is_installed()
             except Exception:
@@ -1962,7 +2030,12 @@ def run_gui(start_path=None):
                 root.after(0, _fin)
             import threading as _th
             _th.Thread(target=_work, daemon=True).start()
-        if _has_setup and _portable:
+        if _is_linux:
+            ttk.Button(_btns, text="Download + Install",
+                       style="Accent.TButton", command=_dl).pack(side="left")
+            ttk.Button(_btns, text="Later", style="Ghost.TButton",
+                       command=dlg.destroy).pack(side="left", padx=(8, 0))
+        elif _has_setup and _portable:
             ttk.Button(_btns, text="Switch to Installer Version",
                        style="Accent.TButton",
                        command=lambda: _dl(prefer_setup=True)).pack(side="left")

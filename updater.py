@@ -122,6 +122,79 @@ def pick_setup_asset(info):
     return None
 
 
+def pick_deb_asset(info):
+    """System .deb asset: PKGViewer-*.deb first, else first .deb with a URL."""
+    assets = (info or {}).get("assets", []) or []
+    for a in assets:
+        n = (a.get("name", "") or "").lower()
+        if n.startswith("pkgviewer") and n.endswith(".deb") and a.get("url"):
+            return a
+    for a in assets:
+        n = (a.get("name", "") or "").lower()
+        if n.endswith(".deb") and a.get("url"):
+            return a
+    return None
+
+
+def is_linux_deb():
+    """True when running from the system .deb install (/usr/share/pkgviewer)."""
+    if not _sys.platform.startswith("linux"):
+        return False
+    try:
+        if _os.path.isfile("/usr/share/pkgviewer/pkgviewer.py"):
+            return True
+    except Exception:
+        pass
+    try:
+        r = _subprocess.run(["dpkg-query", "-W", "-f=${Status}", "pkgviewer"],
+                            capture_output=True, text=True, timeout=10)
+        if "install ok installed" in (r.stdout or ""):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def install_deb(deb_path, timeout=600):
+    """Install a .deb via a GUI password prompt. Blocking. (ok, message).
+
+    Uses pkexec + apt-get so postinst (mime/icons) runs. Caller must run
+    this off the UI thread, then relaunch + exit on success.
+    """
+    import shutil as _shutil
+    if not _shutil.which("pkexec"):
+        return False, "no pkexec — install manually: sudo apt install %s" % deb_path
+    try:
+        r = _subprocess.run(["pkexec", "apt-get", "install", "-y", deb_path],
+                            capture_output=True, text=True, timeout=timeout)
+    except Exception as e:
+        return False, str(e)
+    if r.returncode == 0:
+        return True, ""
+    err = (r.stderr or r.stdout or "").strip().split("\n")
+    return False, (err[-1] if err else "apt-get failed")[:160]
+
+
+def relaunch_linux_app():
+    """Relaunch the app after a .deb upgrade. Returns True if launched."""
+    import shutil as _shutil
+    cands = []
+    if _shutil.which("pkgviewer"):
+        cands.append(["pkgviewer"])
+    if _os.path.isfile("/usr/bin/pkgviewer"):
+        cands.append(["/usr/bin/pkgviewer"])
+    cands.append([_sys.executable] + list(_sys.argv))
+    for cmd in cands:
+        try:
+            _subprocess.Popen(cmd, stdin=_subprocess.DEVNULL,
+                              stdout=_subprocess.DEVNULL,
+                              stderr=_subprocess.DEVNULL, close_fds=True)
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def install_dir():
     """Install dir when running as installed exe, else None."""
     try:
