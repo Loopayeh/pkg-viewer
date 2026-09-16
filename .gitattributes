@@ -1,0 +1,4 @@
+linux/*.sh text eol=lf
+linux/*.desktop text eol=lf
+linux/*.xml text eol=lf
+*.py text eol=lf
