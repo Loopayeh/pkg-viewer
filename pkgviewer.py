@@ -1479,6 +1479,27 @@ def _local_logo(size=(40, 40)):
         return None
 
 
+def _format_icon_image(name, size=(28, 28)):
+    """Load assets/icons/<name>.ico (pkg/exfat/ffpfsc/ffpkg) for in-app badge."""
+    try:
+        from PIL import Image as _I
+        here = os.path.dirname(os.path.abspath(__file__))
+        cands = [os.path.join(os.getcwd(), "assets", "icons", name + ".ico"),
+                 os.path.join(here, "assets", "icons", name + ".ico")]
+        if getattr(sys, "frozen", False):
+            cands.insert(0, os.path.join(sys._MEIPASS, "assets", "icons", name + ".ico"))
+            cands.insert(0, os.path.join(os.path.dirname(sys.executable),
+                                         "assets", "icons", name + ".ico"))
+        for p in cands:
+            if os.path.isfile(p):
+                im = _I.open(p).convert("RGBA")
+                im.thumbnail(size, _I.LANCZOS)
+                return im
+        return None
+    except Exception:
+        return None
+
+
 def run_gui(start_path=None):
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
@@ -1601,8 +1622,13 @@ def run_gui(start_path=None):
                         font=FONT_MID, justify="center")
     imglabel.place(relx=0.5, rely=0.5, anchor="center")
     titlevar = tk.StringVar(value="—")
-    tk.Label(left, textvariable=titlevar, bg=CARD, fg=TEXT, font=(FONT[0], 13, "bold"),
-             wraplength=380, justify="left").pack(pady=(6, 4), anchor="w")
+    titlerow = tk.Frame(left, bg=CARD)
+    titlerow.pack(pady=(6, 4), anchor="w", fill="x")
+    fmtlabel = tk.Label(titlerow, bg=CARD, fg=MUTED, text="")
+    fmtlabel.pack(side="left", padx=(0, 8))
+    state["fmtlabel"] = fmtlabel
+    tk.Label(titlerow, textvariable=titlevar, bg=CARD, fg=TEXT, font=(FONT[0], 13, "bold"),
+             wraplength=340, justify="left").pack(side="left", anchor="w")
     badgerow = ttk.Frame(left, style="Card.TFrame")
     badgerow.pack(anchor="w", pady=(0, 2))
     badgevars = [tk.StringVar(value="") for _ in range(4)]
@@ -1971,6 +1997,26 @@ def run_gui(start_path=None):
         detailvar.set("Show all")
         pathvar.set(os.path.basename(p))
         titlevar.set(r["title"])
+        try:
+            _ext = os.path.splitext(p)[1].lower()
+            _fmt = {".ffpkg": "ffpkg", ".ffpfsc": "ffpfsc",
+                    ".exfat": "exfat", ".pkg": "pkg"}.get(_ext, "")
+            _fl = state.get("fmtlabel")
+            if _fl is not None:
+                if _fmt and has_pil:
+                    _fim = _format_icon_image(_fmt, (28, 28))
+                    if _fim is not None:
+                        _fph = ImageTk.PhotoImage(_fim)
+                        state["fmt_photo"] = _fph
+                        _fl.config(image=_fph, text="")
+                    else:
+                        state["fmt_photo"] = None
+                        _fl.config(image="", text="")
+                else:
+                    state["fmt_photo"] = None
+                    _fl.config(image="", text="")
+        except Exception:
+            pass
         plat = r["rows"][0][1] if r["rows"] else ""
         _rd = dict(r["rows"])
         badges = state.get("badges", [])
