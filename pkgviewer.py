@@ -1898,8 +1898,17 @@ def run_gui(start_path=None):
                 _installed = False
             if prefer_setup:
                 _installed = True
-            _asset = (_up.pick_setup_asset(info) if _installed
-                      else _up.pick_exe_asset(info, (UPDATE_EXE,)))
+            try:
+                _setup = _up.pick_setup_asset(info)
+            except Exception:
+                _setup = None
+            if _setup is not None:
+                # installer-only releases: portable migrates via Setup.
+                _asset, _installed = _setup, True
+            elif not _installed:
+                _asset = _up.pick_exe_asset(info, (UPDATE_EXE,))
+            else:
+                _asset = None
             if not _asset:
                 _prog.set("No installer found in this release"
                           if _installed else "No .exe found in this release")
@@ -1957,8 +1966,6 @@ def run_gui(start_path=None):
             ttk.Button(_btns, text="Switch to Installer Version",
                        style="Accent.TButton",
                        command=lambda: _dl(prefer_setup=True)).pack(side="left")
-            ttk.Button(_btns, text="Portable instead", style="Ghost.TButton",
-                       command=_dl).pack(side="left", padx=(8, 0))
             ttk.Button(_btns, text="Later", style="Ghost.TButton",
                        command=dlg.destroy).pack(side="left", padx=(8, 0))
         else:

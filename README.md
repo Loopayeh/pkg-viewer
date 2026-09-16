@@ -8,9 +8,9 @@ Works with `.pkg` packages, `.exfat` / `.ffpfsc` / `.ffpkg` images, and game fol
 
 ## Download
 
-Get `PKGViewer.exe` from [Releases](../../releases) — no Python needed, just run it.
+Get `PKGViewer-Setup-X.Y.Z.exe` from [Releases](../../releases) — no Python needed, no admin needed.
 
-## Installer version (recommended)
+## Why the installer
 
 ![file icons](screenshot-icons.png)
 
