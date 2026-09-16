@@ -8,3 +8,5 @@ builds/
 assets/*
 !assets/icons/
 !assets/icons/*.ico
+!assets/logo.png
+!assets/logo.ico
