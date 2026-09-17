@@ -8,7 +8,6 @@ import sys
 
 APP_VERSION = "v1.7.7"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
-UPDATE_EXE = "PKGViewer.exe"
 
 
 def _settings_path():
@@ -2307,19 +2306,6 @@ def run_gui(start_path=None):
         tk.Label(dlg, text="%s  (you have %s)" % (info.get("name", tag),
                                                   APP_VERSION),
                  bg=BG, fg=TEXT, font=FONT).pack(anchor="w", padx=16)
-        try:
-            _has_setup = _up.pick_setup_asset(info) is not None
-            _portable = not _up.is_installed()
-        except Exception:
-            _has_setup, _portable = False, False
-        _is_linux = sys.platform.startswith("linux")
-        if _has_setup and _portable and not _is_linux:
-            tk.Label(dlg, text="Tip: the installer version is recommended — "
-                               "own icon per format, double-click to open, "
-                               "silent self-updates.",
-                     bg=BG, fg="#4F8EF7", font=FONT_SMALL,
-                     wraplength=460, justify="left").pack(anchor="w",
-                                                          padx=16, pady=(6, 0))
         _body = (info.get("body", "") or "").strip().split("\n")
         _notes = "\n".join(_body[:12])
         if _notes:
@@ -2400,30 +2386,18 @@ def run_gui(start_path=None):
             import threading as _th
             _th.Thread(target=_work, daemon=True).start()
 
-        def _dl(prefer_setup=False):
+        def _dl():
+            # installed builds only: Windows needs the Setup installer,
+            # Linux installs the .deb (handled in _dl_linux).
             if sys.platform.startswith("linux"):
                 _dl_linux()
                 return
             try:
-                _installed = _up.is_installed()
+                _asset = _up.pick_setup_asset(info)
             except Exception:
-                _installed = False
-            if prefer_setup:
-                _installed = True
-            try:
-                _setup = _up.pick_setup_asset(info)
-            except Exception:
-                _setup = None
-            if _setup is not None:
-                # installer-only releases: portable migrates via Setup.
-                _asset, _installed = _setup, True
-            elif not _installed:
-                _asset = _up.pick_exe_asset(info, (UPDATE_EXE,))
-            else:
                 _asset = None
-            if not _asset:
-                _prog.set("No installer found in this release"
-                          if _installed else "No .exe found in this release")
+            if _asset is None:
+                _prog.set("No installer found in this release")
                 return
             _prog.set("Downloading %s..." % _asset["name"])
             for _b in _btns.winfo_children():
@@ -2450,46 +2424,25 @@ def run_gui(start_path=None):
 
                 def _fin():
                     try:
-                        if _installed:
-                            root.after(0, _prog.set,
-                                       "Installing update, app will restart...")
-                            if _up.run_setup_and_exit(_dest):
-                                try:
-                                    dlg.destroy()
-                                except Exception:
-                                    pass
-                                root.after(300, root.destroy)
-                            else:
-                                _prog.set("Update failed: cannot launch installer")
-                        elif _up.stage_and_restart(_dest):
+                        root.after(0, _prog.set,
+                                   "Installing update, app will restart...")
+                        if _up.run_setup_and_exit(_dest):
                             try:
                                 dlg.destroy()
                             except Exception:
                                 pass
                             root.after(300, root.destroy)
                         else:
-                            _prog.set("Saved to %s (dev mode)" % _dest)
+                            _prog.set("Update failed: cannot launch installer")
                     except Exception as e:
                         _prog.set("Update failed: %s" % e)
                 root.after(0, _fin)
             import threading as _th
             _th.Thread(target=_work, daemon=True).start()
-        if _is_linux:
-            mkbtn(_btns, text="Download + Install",
-                       style="Accent.TButton", command=_dl).pack(side="left")
-            mkbtn(_btns, text="Later", style="Ghost.TButton",
-                       command=dlg.destroy).pack(side="left", padx=(8, 0))
-        elif _has_setup and _portable:
-            mkbtn(_btns, text="Switch to Installer Version",
-                       style="Accent.TButton",
-                       command=lambda: _dl(prefer_setup=True)).pack(side="left")
-            mkbtn(_btns, text="Later", style="Ghost.TButton",
-                       command=dlg.destroy).pack(side="left", padx=(8, 0))
-        else:
-            mkbtn(_btns, text="Download + Restart",
-                       style="Accent.TButton", command=_dl).pack(side="left")
-            mkbtn(_btns, text="Later", style="Ghost.TButton",
-                       command=dlg.destroy).pack(side="left", padx=(8, 0))
+        mkbtn(_btns, text="Download + Install",
+                   style="Accent.TButton", command=_dl).pack(side="left")
+        mkbtn(_btns, text="Later", style="Ghost.TButton",
+                   command=dlg.destroy).pack(side="left", padx=(8, 0))
 
     # logic
     def pick():
