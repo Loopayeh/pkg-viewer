@@ -10,6 +10,45 @@ APP_VERSION = "v1.7.6"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 UPDATE_EXE = "PKGViewer.exe"
 
+
+def _settings_path():
+    """User settings file (compact mode etc.). Never raises."""
+    try:
+        if sys.platform.startswith("win"):
+            base = os.environ.get("APPDATA") or os.path.expanduser("~")
+            d = os.path.join(base, "PKGViewer")
+        else:
+            d = os.path.join(os.path.expanduser("~"), ".config", "pkgviewer")
+        os.makedirs(d, exist_ok=True)
+        return os.path.join(d, "settings.json")
+    except Exception:
+        return None
+
+
+def _load_settings():
+    try:
+        p = _settings_path()
+        if p and os.path.isfile(p):
+            with open(p, "r", encoding="utf-8-sig") as f:
+                d = json.load(f)
+            return d if isinstance(d, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def _save_settings(patch):
+    try:
+        p = _settings_path()
+        if not p:
+            return
+        d = _load_settings()
+        d.update(patch or {})
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(d, f)
+    except Exception:
+        pass
+
 # ---------------- rounded buttons (PIL face on a real tk.Button) ----------------
 try:
     import tkinter as _tk
@@ -1941,9 +1980,13 @@ def run_gui(start_path=None):
     updatebtn.pack(side="right")
     mkbtn(header, text="About", style="Ghost.TButton",
                command=lambda: show_about()).pack(side="right", padx=(0, 8))
+    compactbtn = mkbtn(header, text="Compact", style="Ghost.TButton",
+                       command=lambda: set_compact(not state.get("compact")))
+    compactbtn.pack(side="right", padx=(0, 8))
     pathvar = tk.StringVar(value="Drop a .pkg / .exfat / .ffpfsc / .ffpkg file or app folder here")
-    ttk.Label(header, textvariable=pathvar, font=FONT_SMALL, foreground=MUTED).pack(
-        side="left", padx=(14, 0))
+    pathlabel = ttk.Label(header, textvariable=pathvar, font=FONT_SMALL, foreground=MUTED)
+    pathlabel.pack(side="left", padx=(14, 0))
+    state["pathlabel"] = pathlabel
 
     # body
     body = ttk.Frame(root, padding=(16, 4))
@@ -2009,6 +2052,38 @@ def run_gui(start_path=None):
            command=lambda: save_current_image()).pack(side="left", padx=(0, 6))
     mkbtn(imgnav, text="Copy", style="Ghost.TButton", bg=CARD,
            command=lambda: copy_current_image()).pack(side="left")
+
+    # ---- compact summary (small cover + badges + key info) ----
+    compact = ttk.Frame(body, style="Card.TFrame", padding=14)
+    cimgframe = tk.Frame(compact, bg=CARD, width=160, height=160)
+    cimgframe.pack(pady=(2, 0))
+    cimgframe.pack_propagate(False)
+    cimglabel = tk.Label(cimgframe, bg=CARD, fg=MUTED,
+                         text="(no image)", font=FONT_SMALL)
+    cimglabel.place(relx=0.5, rely=0.5, anchor="center")
+    state["compact_imglabel"] = cimglabel
+    tk.Label(compact, textvariable=titlevar, bg=CARD, fg=TEXT,
+             font=(FONT[0], 11, "bold"),
+             wraplength=220, justify="center").pack(pady=(8, 2))
+    cbadgerow = ttk.Frame(compact, style="Card.TFrame")
+    cbadgerow.pack(pady=(0, 2))
+    compact_badge_labels = []
+    for bv in badgevars:
+        lb = mkpill(cbadgerow, textvariable=bv, parent_bg=CARD)
+        lb.pack(side="left", padx=(0, 6), pady=2)
+        compact_badge_labels.append(lb)
+    state["compact_badge_labels"] = compact_badge_labels
+    state["compact_ver"] = tk.StringVar(value="—")
+    state["compact_tid"] = tk.StringVar(value="—")
+    for _ck, _cv in (("VERSION", state["compact_ver"]),
+                     ("TITLE ID", state["compact_tid"])):
+        _cr = ttk.Frame(compact, style="Card.TFrame")
+        _cr.pack(anchor="w", pady=1)
+        ttk.Label(_cr, text=_ck, style="SpecKey.TLabel").pack(side="left")
+        tk.Label(_cr, textvariable=_cv, bg=CARD, fg=TEXT,
+                 font=FONT_MID).pack(side="left", padx=(6, 0))
+    mkbtn(compact, text="Show details »", style="Ghost.TButton", bg=CARD,
+          command=lambda: set_compact(False)).pack(pady=(10, 0))
 
     # right column
     right = ttk.Frame(body)
@@ -2495,12 +2570,24 @@ def run_gui(start_path=None):
                      else "#f59e5b" if ("dlc" in _tl or "patch" in _tl)
                      else "#10b981" if _type else "#6b7280")
         _bcolors = [_plat_col, "#e17b7b", "#6b7280", _type_col]
-        for bv, val, lb, col in zip(badges, _bvals, _blabs, _bcolors):
+        for i, (bv, val, lb, col) in enumerate(zip(badges, _bvals, _blabs, _bcolors)):
             bv.set(val or "")
             try:
                 lb.config(bg=col, fg="#171717")
             except Exception:
                 pass
+            try:
+                _cl = state.get("compact_badge_labels", []) or []
+                if i < len(_cl):
+                    _cl[i].config(bg=col, fg="#171717")
+            except Exception:
+                pass
+        try:
+            state["compact_ver"].set(
+                _rd.get("Version", "") or _rd.get("Content Ver", "") or "—")
+            state["compact_tid"].set(_rd.get("Title ID", "") or "—")
+        except Exception:
+            pass
         _flat = [(k, v) for (k, v) in r["rows"]
                  if k not in ("Platform", "Size", "Region")]
         _flat = _flat[:10]
@@ -2539,6 +2626,7 @@ def run_gui(start_path=None):
         elif r.get("store_cid"):
             imgchoice.set("")
             imglabel.config(image="", text="Fetching cover...")
+            _sync_compact_cover("Fetching cover...")
             try:
                 state["imgcount"].set("1 online image")
             except Exception:
@@ -2547,6 +2635,7 @@ def run_gui(start_path=None):
         else:
             imgchoice.set("")
             imglabel.config(image="", text="(no image)")
+            _sync_compact_cover("(no image)")
         if r.get("patch_tid"):
             fetch_patch_async(r["patch_tid"], r.get("own_ver", ""))
         _set_status(f"OK - {len(r['entries'])} entries")
@@ -2640,9 +2729,63 @@ def run_gui(start_path=None):
             state["photo"] = ph
             imglabel.config(image=ph, text="")
             imglabel.image = ph
+            _sync_compact_cover()
             return None
         except Exception as ex:
             return str(ex)
+
+    def _sync_compact_cover(msg=None):
+        """Mirror cover / no-image state into the compact summary art."""
+        try:
+            cl = state.get("compact_imglabel")
+            if cl is None:
+                return
+            if msg is not None:
+                cl.config(image="", text=msg)
+                return
+            im = state.get("pil")
+            if im is None or not has_pil:
+                cl.config(image="", text="(no image)")
+                return
+            t = im.copy()
+            t.thumbnail((150, 150))
+            c = Image.new("RGB", (160, 160), CARD)
+            c.paste(t, ((160 - t.size[0]) // 2, (160 - t.size[1]) // 2))
+            ph = ImageTk.PhotoImage(c)
+            state["compact_photo"] = ph
+            cl.config(image=ph, text="")
+            cl.image = ph
+        except Exception:
+            pass
+
+    def set_compact(on, save=True):
+        """Toggle compact summary mode (small window, cover+badges+key info)."""
+        state["compact"] = bool(on)
+        try:
+            if state["compact"]:
+                left.grid_remove()
+                right.grid_remove()
+                _pl = state.get("pathlabel")
+                if _pl is not None:
+                    _pl.pack_forget()
+                compact.grid(row=0, column=0, sticky="n", pady=(10, 0))
+                root.geometry("440x560")
+                root.minsize(400, 500)
+                compactbtn.config(text="Expand")
+            else:
+                compact.grid_remove()
+                left.grid()
+                right.grid()
+                _pl = state.get("pathlabel")
+                if _pl is not None:
+                    _pl.pack(side="left", padx=(14, 0))
+                root.geometry("1060x700")
+                root.minsize(900, 600)
+                compactbtn.config(text="Compact")
+        except Exception:
+            pass
+        if save:
+            _save_settings({"compact": state["compact"]})
 
     def fetch_store_async(cid):
         """Background: store cover + title → display via root.after."""
@@ -2685,19 +2828,23 @@ def run_gui(start_path=None):
             data[:2] == b"\xff\xd8" else b""
         if not state["store_bytes"]:
             imglabel.config(image="", text="(cover unavailable)")
+            _sync_compact_cover("(cover unavailable)")
             statusvar.set("OK - store cover not found")
             return
         if not has_pil:
             imglabel.config(text="(Pillow not installed)")
+            _sync_compact_cover("(Pillow not installed)")
             return
         try:
             im = Image.open(io.BytesIO(state["store_bytes"]))
         except Exception:
             imglabel.config(image="", text="(bad image)")
+            _sync_compact_cover("(bad image)")
             return
         err = display_pil(im, "cover.jpg")
         if err:
             imglabel.config(text="(bad image)")
+            _sync_compact_cover("(bad image)")
             statusvar.set(f"Error: {err}")
         else:
             try:
@@ -2763,10 +2910,12 @@ def run_gui(start_path=None):
             return
         if data[:8] != b"\x89PNG\r\n\x1a\n":
             imglabel.config(image="", text="(not a PNG)")
+            _sync_compact_cover("(not a PNG)")
             statusvar.set("OK")
             return
         if not has_pil:
             imglabel.config(text=f"PNG {fmt_size(len(data))}\n(Pillow not installed)")
+            _sync_compact_cover("image info")
             statusvar.set("OK")
             return
         try:
@@ -2782,9 +2931,11 @@ def run_gui(start_path=None):
             state["photo"] = ph
             imglabel.config(image=ph, text="")
             imglabel.image = ph
+            _sync_compact_cover()
             statusvar.set(f"OK - {name} ({im.size[0]}x{im.size[1]})")
         except Exception as ex:
             imglabel.config(text="(bad image)")
+            _sync_compact_cover("(bad image)")
             statusvar.set(f"Error: {ex}")
 
     if start_path and os.path.exists(start_path):
@@ -2800,6 +2951,11 @@ def run_gui(start_path=None):
         except Exception as ex:
             statusvar.set(f"Drop disabled: {ex}")
     root.after(2500, lambda: check_updates())
+    try:
+        if _load_settings().get("compact"):
+            set_compact(True, save=False)
+    except Exception:
+        pass
     if len(sys.argv) > 1 and os.path.exists(sys.argv[1]):
         _startup = sys.argv[1]
         root.after(100, lambda: load(_startup))
