@@ -22,9 +22,13 @@ if ! python3 -c "import tkinter" 2>/dev/null; then
   echo "  ! tkinter missing — Debian/Ubuntu: sudo apt install -y python3-tk"
   echo "  ! Arch/Manjaro: sudo pacman -S --needed tk"
 fi
-pip3 install --user -q pillow tkinterdnd2 cryptography 2>&1 | tail -2 || true
+# PEP 668 (Debian 12+/Ubuntu 23.04+/Arch): plain pip --user is blocked,
+# retry with --break-system-packages so install never silently skips deps.
+_pip() { pip3 install --user -q "$@" 2>&1 | tail -2 || \
+        pip3 install --user -q --break-system-packages "$@" 2>&1 | tail -2 || true; }
+_pip pillow tkinterdnd2 cryptography
 # optional: full .ffpfsc / .ffpkg support
-pip3 install --user -q mkpfs pytsk3 2>&1 | tail -1 || true
+_pip mkpfs pytsk3
 
 echo "[3/5] mime types"
 mkdir -p "${HOME}/.local/share/mime/packages"
