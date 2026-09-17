@@ -2233,10 +2233,10 @@ def run_gui(start_path=None):
                  bg=CARD, fg=TEXT, font=FONT_SMALL).pack(padx=36,
                                                          pady=(12, 0))
         tk.Label(_ab, text="If you enjoy what I build and want to support my work,\n"
-                              "you can donate \U0001F499",
+                              "you can donate",
                  bg=CARD, fg=TEXT, font=FONT_SMALL, justify="center").pack(padx=36,
                                                                           pady=(12, 0))
-        tk.Label(_ab, text="Every bit of support means a lot. \U0001F64F",
+        tk.Label(_ab, text="Every bit of support means a lot.\U0001F499",
                  bg=CARD, fg=TEXT, font=FONT_SMALL).pack(pady=(2, 0))
         tk.Label(_ab, text="USDT (BEP-20) — click address to copy:",
                  bg=CARD, fg=MUTED, font=FONT_SMALL).pack(pady=(8, 0))
