@@ -64,7 +64,7 @@ except ImportError:
     _PILImage = _PILDraw = _PILImageTk = None
     _PIL_OK = False
 
-_RBTN_RADIUS = 11
+_RBTN_RADIUS = 4
 _RBTN_PAD = {"accent": (16, 9), "ghost": (12, 7)}
 _RBTN_FACE = {
     "accent": {"face": "#4f8ef7", "hover": "#6fa8ff", "pressed": "#3b70c9",
@@ -1891,6 +1891,12 @@ def run_gui(start_path=None):
         has_dnd = True
     except ImportError:
         root = tk.Tk()
+    try:
+        # hide until layout + saved mode (compact) is applied:
+        # avoids white flash + resize jump on startup
+        root.withdraw()
+    except Exception:
+        pass
     root.title("PKG Viewer %s  •  PS3 / PS4 / PS5  •  by Loopayeh" % APP_VERSION)
     root.geometry("1060x700")
     root.configure(bg=BG)
@@ -2924,6 +2930,12 @@ def run_gui(start_path=None):
     if len(sys.argv) > 1 and os.path.exists(sys.argv[1]):
         _startup = sys.argv[1]
         root.after(100, lambda: load(_startup))
+    try:
+        # show once, already at final size — no white flash / shrink jump
+        root.update_idletasks()
+        root.deiconify()
+    except Exception:
+        pass
     root.mainloop()
 
 
