@@ -24,11 +24,13 @@ if ! python3 -c "import tkinter" 2>/dev/null; then
 fi
 # PEP 668 (Debian 12+/Ubuntu 23.04+/Arch): plain pip --user is blocked,
 # retry with --break-system-packages so install never silently skips deps.
-_pip() { pip3 install --user -q "$@" 2>&1 | tail -2 || \
-        pip3 install --user -q --break-system-packages "$@" 2>&1 | tail -2 || true; }
-_pip pillow tkinterdnd2 cryptography
-# optional: full .ffpfsc / .ffpkg support
-_pip mkpfs pytsk3
+# One package per invocation: a single unreachable package must not sink
+# the rest (pillow/cover art matters most, tkinterdnd2 is drag-drop only).
+_pip() { pip3 install --user -q "$@" 2>&1 | tail -1 || \
+        pip3 install --user -q --break-system-packages "$@" 2>&1 | tail -1; }
+for _p in pillow tkinterdnd2 cryptography mkpfs pytsk3; do
+  _pip "$_p" || echo "  ! failed: $_p (app still runs without it)"
+done
 
 echo "[3/5] mime types"
 mkdir -p "${HOME}/.local/share/mime/packages"
