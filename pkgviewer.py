@@ -10,6 +10,226 @@ APP_VERSION = "v1.7.6"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 UPDATE_EXE = "PKGViewer.exe"
 
+# ---------------- rounded buttons (PIL face on a real tk.Button) ----------------
+try:
+    import tkinter as _tk
+    from tkinter import font as _tkfont
+    _TK_OK = True
+except ImportError:
+    _tk = None
+    _tkfont = None
+    _TK_OK = False
+try:
+    from PIL import Image as _PILImage, ImageDraw as _PILDraw, ImageTk as _PILImageTk
+    _PIL_OK = True
+except ImportError:
+    _PILImage = _PILDraw = _PILImageTk = None
+    _PIL_OK = False
+
+_RBTN_RADIUS = 11
+_RBTN_PAD = {"accent": (16, 9), "ghost": (12, 7)}
+_RBTN_FACE = {
+    "accent": {"face": "#4f8ef7", "hover": "#6fa8ff", "pressed": "#3b70c9",
+               "fg": "#171717", "disabled_face": "#2a2a2a", "disabled_fg": "#8b93a5"},
+    "ghost": {"face": "#404040", "hover": "#2c3342", "pressed": "#333a44",
+              "fg": "#f1f3f8", "disabled_face": "#2a2a2a", "disabled_fg": "#8b93a5"},
+}
+_RBTN_DEFAULT_BG = "#171717"
+_RBTN_DEFAULT_FONT = ("Segoe UI", 10)
+
+
+def _rbtn_kind_of(style):
+    if style and "Ghost" in style:
+        return "ghost"
+    return "accent"
+
+
+def _rbtn_face_image(w, h, radius, color):
+    s = 3
+    img = _PILImage.new("RGBA", (w * s, h * s), (0, 0, 0, 0))
+    _PILDraw.Draw(img).rounded_rectangle([0, 0, w * s - 1, h * s - 1],
+                                         radius=radius * s, fill=color)
+    return img.resize((w, h), _PILImage.LANCZOS)
+
+
+class RoundedButton(_tk.Button):
+    """tk.Button with a rounded-rectangle face rendered by PIL.
+
+    Drop-in for the ttk.Button call sites in run_gui: same text /
+    textvariable / command options, same pack/grid/place API, plus
+    .config(text=...), .config(style=...) and .config(state=...).
+    See mkbtn for the PIL-missing fallback.
+    """
+
+    def __init__(self, parent, text="", textvariable=None, style="Accent.TButton",
+                 kind=None, command=None, bg=_RBTN_DEFAULT_BG,
+                 font=_RBTN_DEFAULT_FONT, radius=_RBTN_RADIUS,
+                 cursor="hand2", **kw):
+        self._kind = kind or _rbtn_kind_of(style)
+        self._text = text
+        self._var = textvariable
+        self._radius = radius
+        self._font = _tkfont.Font(font=font)
+        self._padx, self._pady = _RBTN_PAD[self._kind]
+        self._pal = _RBTN_FACE[self._kind]
+        self._imgs = {}
+        self._pil = {}
+        self._pressed = False
+        self._hovered = False
+        super().__init__(parent, text=text, textvariable=textvariable,
+                         font=font, fg=self._pal["fg"],
+                         activeforeground=self._pal["fg"],
+                         disabledforeground=self._pal["disabled_fg"],
+                         bg=bg, activebackground=bg,
+                         borderwidth=0, relief="flat", highlightthickness=0,
+                         overrelief="flat", padx=0, pady=0, cursor=cursor,
+                         compound="center", command=command, **kw)
+        self._refresh()
+        self.bind("<Enter>", lambda _e: self._set_hover(True))
+        self.bind("<Leave>", lambda _e: self._set_hover(False))
+        self.bind("<ButtonPress-1>", lambda _e: self._set_pressed(True))
+        self.bind("<ButtonRelease-1>", lambda _e: self._set_pressed(False))
+        self._watch_var()
+
+    # -- internals --
+    def _watch_var(self):
+        if self._var is not None:
+            try:
+                self._var.trace_add("write", lambda *_a: self._refresh())
+            except Exception:
+                pass
+
+    def _label(self):
+        try:
+            if self._var is not None:
+                return self._var.get()
+        except Exception:
+            pass
+        return self._text
+
+    def _refresh(self):
+        label = self._label()
+        tw = self._font.measure(label) if label else 0
+        lh = self._font.metrics("linespace")
+        w = max(tw + 2 * self._padx, 2 * self._radius + 12)
+        h = lh + 2 * self._pady
+        pal = self._pal
+        self._pil = {k: _rbtn_face_image(w, h, self._radius, pal[c])
+                     for k, c in (("normal", "face"), ("hover", "hover"),
+                                   ("pressed", "pressed"),
+                                   ("disabled", "disabled_face"))}
+        self._imgs = {k: _PILImageTk.PhotoImage(im)
+                      for k, im in self._pil.items()}
+        try:
+            super().configure(width=w, height=h)
+        except Exception:
+            pass
+        self._show(self._current_face())
+
+    def _current_face(self):
+        try:
+            st = super().cget("state")
+        except Exception:
+            st = "normal"
+        if st == "disabled":
+            return "disabled"
+        if self._pressed:
+            return "pressed"
+        if self._hovered:
+            return "hover"
+        return "normal"
+
+    def _show(self, which):
+        try:
+            super().configure(image=self._imgs[which])
+        except Exception:
+            pass
+
+    def _set_hover(self, on):
+        self._hovered = on
+        self._show(self._current_face())
+
+    def _set_pressed(self, on):
+        self._pressed = on
+        self._show(self._current_face())
+
+    # -- ttk-compatible option API --
+    def configure(self, cnf=None, **kw):
+        if cnf is None and not kw:
+            return super().configure()
+        if isinstance(cnf, dict):
+            kw = dict(cnf, **kw)
+            cnf = None
+        if isinstance(cnf, str) and not kw:
+            if cnf == "text":
+                return self._text
+            return super().configure(cnf)
+        opts = dict(kw)
+        dirty = False
+        if "style" in opts:
+            kind = _rbtn_kind_of(opts.pop("style"))
+            if kind != self._kind:
+                self._kind = kind
+                self._padx, self._pady = _RBTN_PAD[kind]
+                self._pal = _RBTN_FACE[kind]
+                try:
+                    super().configure(fg=self._pal["fg"],
+                                      activeforeground=self._pal["fg"])
+                except Exception:
+                    pass
+                dirty = True
+        if "kind" in opts:
+            kind = opts.pop("kind")
+            if kind in _RBTN_FACE and kind != self._kind:
+                self._kind = kind
+                self._padx, self._pady = _RBTN_PAD[kind]
+                self._pal = _RBTN_FACE[kind]
+                dirty = True
+        if "textvariable" in opts:
+            self._var = opts.pop("textvariable")
+            opts["textvariable"] = self._var
+            self._watch_var()
+            dirty = True
+        if "text" in opts:
+            self._text = opts.pop("text")
+            opts["text"] = self._text
+            dirty = True
+        if "bg" in opts or "background" in opts:
+            opts["activebackground"] = opts.get("bg", opts.get("background"))
+        if opts:
+            try:
+                super().configure(**opts)
+            except Exception:
+                pass
+        if dirty or "state" in opts:
+            self._refresh()
+        return None
+
+    config = configure
+
+    def cget(self, key):
+        if key == "text":
+            return self._text
+        return super().cget(key)
+
+    def __setitem__(self, key, value):
+        self.configure(**{key: value})
+
+    def __getitem__(self, key):
+        return self.cget(key)
+
+
+def mkbtn(parent, text="", textvariable=None, style="Accent.TButton",
+          command=None, bg=_RBTN_DEFAULT_BG, font=_RBTN_DEFAULT_FONT, **kw):
+    """Make a rounded button; falls back to ttk.Button without PIL."""
+    if _TK_OK and _PIL_OK:
+        return RoundedButton(parent, text=text, textvariable=textvariable,
+                             style=style, command=command, bg=bg, font=font,
+                             **kw)
+    from tkinter import ttk as _ttk
+    return _mkbtn(parent, text=text, textvariable=textvariable,
+                       style=style, command=command, **kw)
+
 CNT_MAGIC = b"\x7fCNT"
 FIH_MAGIC = b"\x7fFIH"
 PS3_MAGIC = b"\x7fPKG"
@@ -1594,12 +1814,12 @@ def run_gui(start_path=None):
             tk.Label(header, image=_lph, bg=BG).pack(side="left", padx=(0, 12))
     except Exception:
         pass
-    ttk.Button(header, text="Open", style="Accent.TButton",
+    mkbtn(header, text="Open", style="Accent.TButton",
                command=lambda: pick()).pack(side="left")
-    updatebtn = ttk.Button(header, text="Check updates", style="Ghost.TButton",
+    updatebtn = mkbtn(header, text="Check updates", style="Ghost.TButton",
                            command=lambda: check_updates(manual=True))
     updatebtn.pack(side="right")
-    ttk.Button(header, text="About", style="Ghost.TButton",
+    mkbtn(header, text="About", style="Ghost.TButton",
                command=lambda: show_about()).pack(side="right", padx=(0, 8))
     pathvar = tk.StringVar(value="Drop a .pkg / .exfat / .ffpfsc / .ffpkg file or app folder here")
     ttk.Label(header, textvariable=pathvar, font=FONT_SMALL, foreground=MUTED).pack(
@@ -1662,14 +1882,14 @@ def run_gui(start_path=None):
         show_image(vals[i])
     imgnav = ttk.Frame(left, style="Card.TFrame")
     imgnav.pack(anchor="w", pady=(6, 0))
-    ttk.Button(imgnav, text="< Prev", style="Ghost.TButton",
-               command=lambda: _step_image(-1)).pack(side="left", padx=(0, 6))
-    ttk.Button(imgnav, text="Next >", style="Ghost.TButton",
-               command=lambda: _step_image(1)).pack(side="left", padx=(0, 6))
-    ttk.Button(imgnav, text="Save", style="Ghost.TButton",
-               command=lambda: save_current_image()).pack(side="left", padx=(0, 6))
-    ttk.Button(imgnav, text="Copy", style="Ghost.TButton",
-               command=lambda: copy_current_image()).pack(side="left")
+    mkbtn(imgnav, text="< Prev", style="Ghost.TButton", bg=CARD,
+           command=lambda: _step_image(-1)).pack(side="left", padx=(0, 6))
+    mkbtn(imgnav, text="Next >", style="Ghost.TButton", bg=CARD,
+           command=lambda: _step_image(1)).pack(side="left", padx=(0, 6))
+    mkbtn(imgnav, text="Save", style="Ghost.TButton", bg=CARD,
+           command=lambda: save_current_image()).pack(side="left", padx=(0, 6))
+    mkbtn(imgnav, text="Copy", style="Ghost.TButton", bg=CARD,
+           command=lambda: copy_current_image()).pack(side="left")
 
     # right column
     right = ttk.Frame(body)
@@ -1782,11 +2002,11 @@ def run_gui(start_path=None):
                                                          pady=(12, 0))
         _links = ttk.Frame(_ab, style="Card.TFrame")
         _links.pack(pady=(14, 0))
-        ttk.Button(_links, text="Links", style="Ghost.TButton",
-                   command=lambda: _wb.open(
-                       "https://loopayeh.github.io/")).pack(side="left")
-        ttk.Button(_ab, text="Close", style="Accent.TButton",
-                   command=_ab.destroy).pack(pady=(16, 20))
+        mkbtn(_links, text="Links", style="Ghost.TButton", bg=CARD,
+               command=lambda: _wb.open(
+                   "https://loopayeh.github.io/")).pack(side="left")
+        mkbtn(_ab, text="Close", style="Accent.TButton", bg=CARD,
+               command=_ab.destroy).pack(pady=(16, 20))
         # center over main window instead of top-left corner
         try:
             _ab.update_idletasks()
@@ -2031,20 +2251,20 @@ def run_gui(start_path=None):
             import threading as _th
             _th.Thread(target=_work, daemon=True).start()
         if _is_linux:
-            ttk.Button(_btns, text="Download + Install",
+            mkbtn(_btns, text="Download + Install",
                        style="Accent.TButton", command=_dl).pack(side="left")
-            ttk.Button(_btns, text="Later", style="Ghost.TButton",
+            mkbtn(_btns, text="Later", style="Ghost.TButton",
                        command=dlg.destroy).pack(side="left", padx=(8, 0))
         elif _has_setup and _portable:
-            ttk.Button(_btns, text="Switch to Installer Version",
+            mkbtn(_btns, text="Switch to Installer Version",
                        style="Accent.TButton",
                        command=lambda: _dl(prefer_setup=True)).pack(side="left")
-            ttk.Button(_btns, text="Later", style="Ghost.TButton",
+            mkbtn(_btns, text="Later", style="Ghost.TButton",
                        command=dlg.destroy).pack(side="left", padx=(8, 0))
         else:
-            ttk.Button(_btns, text="Download + Restart",
+            mkbtn(_btns, text="Download + Restart",
                        style="Accent.TButton", command=_dl).pack(side="left")
-            ttk.Button(_btns, text="Later", style="Ghost.TButton",
+            mkbtn(_btns, text="Later", style="Ghost.TButton",
                        command=dlg.destroy).pack(side="left", padx=(8, 0))
 
     # logic
