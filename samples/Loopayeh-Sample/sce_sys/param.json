@@ -1,0 +1,17 @@
+{
+  "titleId": "LOOP00001",
+  "contentId": "UP9000-LOOP00001_00-SAMPLE0000000001",
+  "contentVersion": "01.00",
+  "masterVersion": "01.00",
+  "conceptId": "10000001",
+  "applicationCategoryType": 0,
+  "applicationDrmType": "paid",
+  "requiredSystemSoftwareVersion": 648518346341351424,
+  "sdkVersion": 648518346341351424,
+  "localizedParameters": {
+    "defaultLanguage": "en-US",
+    "en-US": {
+      "titleName": "Loopayeh Sample"
+    }
+  }
+}
