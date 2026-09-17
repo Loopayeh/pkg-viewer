@@ -1,6 +1,7 @@
 # PKG Viewer — PS3 / PS4 / PS5
 
 ![screenshot](screenshot.png)
+![compact mode](screenshot-compact.png)
 
 **PKG Viewer** shows what's inside a PlayStation game file without extracting it: cover art, title, Title ID, region, version, and required firmware. Retail (original) PKGs fully supported — including split multi-part sets.
 
