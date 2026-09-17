@@ -4,6 +4,7 @@ build/
 dist/
 *.spec
 PKGViewer.exe
+PKGViewer-Setup-*.exe
 builds/
 *.deb
 PKGViewer-linux-*.tar.gz
