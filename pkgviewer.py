@@ -8,6 +8,10 @@ import sys
 
 APP_VERSION = "v1.7.8"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
+SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
+SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
+               "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"
+               "&token_id=0x55d398326f99059fF775485246999027B3197955")
 
 
 def _settings_path():
@@ -2228,11 +2232,29 @@ def run_gui(start_path=None):
         tk.Label(_ab, text="View PS3 / PS4 / PS5 package info and cover art.",
                  bg=CARD, fg=TEXT, font=FONT_SMALL).pack(padx=36,
                                                          pady=(12, 0))
+        tk.Label(_ab, text="Support with USDT (BEP-20) — click address to copy:",
+                 bg=CARD, fg=MUTED, font=FONT_SMALL).pack(padx=36,
+                                                          pady=(12, 0))
+        _addr = tk.Label(_ab, text=SUPPORT_ADDR,
+                         bg=CARD, fg=TEXT, font=FONT_SMALL, cursor="hand2")
+        _addr.pack(pady=(2, 0))
+
+        def _copy_addr(_e=None):
+            try:
+                _ab.clipboard_clear()
+                _ab.clipboard_append(SUPPORT_ADDR)
+                _addr.config(text="copied ✓")
+                _ab.after(1200, lambda: _addr.config(text=SUPPORT_ADDR))
+            except Exception:
+                pass
+        _addr.bind("<Button-1>", _copy_addr)
         _links = ttk.Frame(_ab, style="Card.TFrame")
         _links.pack(pady=(14, 0))
         mkbtn(_links, text="Links  ↗", style="Ghost.TButton", bg=CARD,
                command=lambda: _wb.open(
                    "https://loopayeh.github.io/")).pack(side="left", ipadx=10, ipady=4)
+        mkbtn(_links, text="Support  ↗", style="Ghost.TButton", bg=CARD,
+               command=lambda: _wb.open(SUPPORT_URL)).pack(side="left", ipadx=10, ipady=4)
         mkbtn(_ab, text="Close", style="Accent.TButton", bg=CARD,
                command=_ab.destroy).pack(pady=(16, 20))
         # center over main window instead of top-left corner
