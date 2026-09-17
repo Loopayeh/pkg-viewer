@@ -2066,9 +2066,10 @@ def run_gui(start_path=None):
     state["compact_imglabel"] = cimglabel
     cinfo = ttk.Frame(crow, style="Card.TFrame")
     cinfo.pack(side="left", padx=(12, 0), anchor="n")
-    tk.Label(cinfo, textvariable=titlevar, bg=CARD, fg=TEXT,
-             font=(FONT[0], 11, "bold"),
-             wraplength=200, justify="left").pack(anchor="w", pady=(0, 6))
+    tk.Entry(cinfo, textvariable=titlevar, bg=CARD, fg=TEXT,
+             font=(FONT[0], 11, "bold"), relief="flat",
+             readonlybackground=CARD, highlightthickness=0,
+             state="readonly", width=24).pack(anchor="w", pady=(0, 6))
     state["compact_ver"] = tk.StringVar(value="—")
     state["compact_tid"] = tk.StringVar(value="—")
     for _ck, _cv in (("TITLE ID", state["compact_tid"]),
