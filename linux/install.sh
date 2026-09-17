@@ -56,5 +56,20 @@ for m in application/x-pkgviewer-pkg application/x-pkgviewer-exfat \
          application/x-pkgviewer-ffpfsc application/x-pkgviewer-ffpkg; do
   xdg-mime default pkgviewer.desktop "$m" 2>/dev/null || true
 done
+# KDE (Dolphin) uses its own cache, not gtk's
+if command -v kbuildsycoca6 >/dev/null 2>&1; then
+  kbuildsycoca6 >/dev/null 2>&1 || true
+elif command -v kbuildsycoca5 >/dev/null 2>&1; then
+  kbuildsycoca5 >/dev/null 2>&1 || true
+fi
+
+echo "[verify] icon/mime tools"
+for t in update-mime-database update-desktop-database gtk-update-icon-cache; do
+  if ! command -v "$t" >/dev/null 2>&1; then
+    echo "  ! $t missing — icons may not show."
+    echo "    Debian/Ubuntu: sudo apt install -y shared-mime-info desktop-file-utils gtk3"
+    echo "    Arch/Manjaro: sudo pacman -S --needed shared-mime-info desktop-file-utils gtk3"
+  fi
+done
 
 echo "done — double-click a .pkg/.exfat/.ffpfsc/.ffpkg to open. icons may need a file-manager refresh."
