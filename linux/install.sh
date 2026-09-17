@@ -9,7 +9,7 @@ BIN="${HOME}/.local/bin/pkgviewer"
 
 echo "[1/5] copy app -> ${PREFIX}"
 mkdir -p "${PREFIX}" "${HOME}/.local/bin"
-cp "${ROOT}/pkgviewer.py" "${ROOT}/updater.py" "${PREFIX}/"
+cp "${ROOT}/pkgviewer.py" "${ROOT}/updater.py" "${ROOT}/assets_about.png" "${PREFIX}/"
 cp -r "${ROOT}/assets" "${PREFIX}/"
 cat > "${BIN}" <<'EOF'
 #!/usr/bin/env bash
@@ -19,7 +19,8 @@ chmod +x "${BIN}"
 
 echo "[2/5] python deps (pillow, tkinterdnd2, cryptography)"
 if ! python3 -c "import tkinter" 2>/dev/null; then
-  echo "  ! python3-tk missing — run: sudo apt install -y python3-tk"
+  echo "  ! tkinter missing — Debian/Ubuntu: sudo apt install -y python3-tk"
+  echo "  ! Arch/Manjaro: sudo pacman -S --needed tk"
 fi
 pip3 install --user -q pillow tkinterdnd2 cryptography 2>&1 | tail -2 || true
 # optional: full .ffpfsc / .ffpkg support
