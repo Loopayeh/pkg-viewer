@@ -28,7 +28,14 @@ fi
 # the rest (pillow/cover art matters most, tkinterdnd2 is drag-drop only).
 _pip() { pip3 install --user -q "$@" 2>&1 | tail -1 || \
         pip3 install --user -q --break-system-packages "$@" 2>&1 | tail -1; }
-for _p in pillow tkinterdnd2 cryptography mkpfs pytsk3; do
+# drag-and-drop needs no network: wheel vendored in linux/vendor/ (MIT).
+_dnd_whl="$(ls "${SRC}/vendor"/tkinterdnd2-*.whl 2>/dev/null | head -1 || true)"
+if [ -n "${_dnd_whl:-}" ]; then
+  pip3 install --user -q --no-index "$_dnd_whl" 2>&1 | tail -1 || \
+  pip3 install --user -q --no-index --break-system-packages "$_dnd_whl" 2>&1 | tail -1 || \
+  echo "  ! failed: tkinterdnd2 (drag-and-drop disabled, app still runs)"
+fi
+for _p in pillow cryptography mkpfs pytsk3; do
   _pip "$_p" || echo "  ! failed: $_p (app still runs without it)"
 done
 
