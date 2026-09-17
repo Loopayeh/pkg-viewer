@@ -59,6 +59,14 @@ pip install pyinstaller pillow
 python -m PyInstaller --noconfirm --clean --onefile --windowed --name PKGViewer --collect-submodules PIL pkgviewer.py
 ```
 
+## Support
+
+If this tool was useful, you can support me with USDT (BEP-20 / BNB Smart Chain):
+
+`0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50`
+
+[Pay via Trust Wallet](https://link.trustwallet.com/send?coin=20000714&address=0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50&token_id=0x55d398326f99059fF775485246999027B3197955)
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
