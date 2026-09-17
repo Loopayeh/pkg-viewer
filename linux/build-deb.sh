@@ -10,7 +10,7 @@ PKG="$STAGE/pkgviewer"
 
 mkdir -p "$PKG/DEBIAN" "$PKG/usr/bin" "$PKG/usr/share/pkgviewer" \
          "$PKG/usr/share/applications" "$PKG/usr/share/mime/packages"
-cp "$SRC/pkgviewer.py" "$SRC/updater.py" "$PKG/usr/share/pkgviewer/"
+cp "$SRC/pkgviewer.py" "$SRC/updater.py" "$SRC/assets_about.png" "$PKG/usr/share/pkgviewer/"
 cp -r "$SRC/assets" "$PKG/usr/share/pkgviewer/"
 cp -r "$SRC/linux/icons" "$PKG/usr/share/icons" 2>/dev/null || \
   cp -r "$SRC/linux/icons/hicolor" "$PKG/usr/share/icons/hicolor"
