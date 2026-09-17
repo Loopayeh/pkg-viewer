@@ -227,8 +227,121 @@ def mkbtn(parent, text="", textvariable=None, style="Accent.TButton",
                              style=style, command=command, bg=bg, font=font,
                              **kw)
     from tkinter import ttk as _ttk
-    return _mkbtn(parent, text=text, textvariable=textvariable,
+    return _ttk.Button(parent, text=text, textvariable=textvariable,
                        style=style, command=command, **kw)
+
+
+class PillLabel(_tk.Label):
+    """tk.Label with a rounded-pill face rendered by PIL (for badges).
+
+    Same palette, just rounded. Supports .config(text=...), .config(bg=...)
+    (face color) and textvariable; parent_bg paints the corners.
+    Falls back to a plain label only via mkpill(has_pil=False) path.
+    """
+
+    def __init__(self, parent, text="", textvariable=None, bg="#2a2a2a",
+                 fg="#171717", font=_RBTN_DEFAULT_FONT, padx=8, pady=3,
+                 radius=8, parent_bg="#202020", **kw):
+        self._text = text
+        self._var = textvariable
+        self._face = bg
+        self._parent_bg = parent_bg
+        self._font = _tkfont.Font(font=font)
+        self._padx, self._pady = padx, pady
+        self._radius = radius
+        self._img = None
+        self._pil = None
+        super().__init__(parent, text=text, textvariable=textvariable,
+                         font=font, fg=fg, bg=parent_bg,
+                         borderwidth=0, highlightthickness=0,
+                         padx=0, pady=0, **kw)
+        self._refresh()
+        if self._var is not None:
+            try:
+                self._var.trace_add("write", lambda *_a: self._refresh())
+            except Exception:
+                pass
+
+    def _label(self):
+        try:
+            if self._var is not None:
+                return self._var.get()
+        except Exception:
+            pass
+        return self._text
+
+    def _refresh(self):
+        label = self._label()
+        tw = self._font.measure(label) if label else 0
+        lh = self._font.metrics("linespace")
+        w = max(tw + 2 * self._padx, 2 * self._radius + 10)
+        h = lh + 2 * self._pady
+        self._pil = _rbtn_face_image(w, h, self._radius, self._face)
+        self._img = _PILImageTk.PhotoImage(self._pil)
+        try:
+            super().configure(image=self._img, compound="center",
+                              width=w, height=h)
+        except Exception:
+            pass
+
+    def configure(self, cnf=None, **kw):
+        if cnf is None and not kw:
+            return super().configure()
+        if isinstance(cnf, dict):
+            kw = dict(cnf, **kw)
+            cnf = None
+        if isinstance(cnf, str) and not kw:
+            if cnf == "text":
+                return self._text
+            return super().configure(cnf)
+        opts = dict(kw)
+        dirty = False
+        if "text" in opts:
+            self._text = opts.pop("text")
+            opts["text"] = self._text
+            dirty = True
+        if "textvariable" in opts:
+            self._var = opts.pop("textvariable")
+            opts["textvariable"] = self._var
+            if self._var is not None:
+                try:
+                    self._var.trace_add("write",
+                                        lambda *_a: self._refresh())
+                except Exception:
+                    pass
+            dirty = True
+        if "bg" in opts or "background" in opts:
+            self._face = opts.pop("bg", opts.pop("background", self._face))
+            dirty = True
+        if "fg" in opts or "foreground" in opts:
+            pass
+        if opts:
+            try:
+                super().configure(**opts)
+            except Exception:
+                pass
+        if dirty:
+            self._refresh()
+        return None
+
+    config = configure
+
+    def cget(self, key):
+        if key == "text":
+            return self._text
+        if key in ("bg", "background"):
+            return self._face
+        return super().cget(key)
+
+
+def mkpill(parent, text="", textvariable=None, bg="#2a2a2a", fg="#171717",
+           font=_RBTN_DEFAULT_FONT, parent_bg="#202020", **kw):
+    """Make a rounded pill badge; falls back to tk.Label without PIL."""
+    if _TK_OK and _PIL_OK:
+        return PillLabel(parent, text=text, textvariable=textvariable, bg=bg,
+                         fg=fg, font=font, parent_bg=parent_bg, **kw)
+    return _tk.Label(parent, text=text, textvariable=textvariable, bg=bg,
+                     fg=fg, font=font, padx=8, pady=3, **kw)
 
 CNT_MAGIC = b"\x7fCNT"
 FIH_MAGIC = b"\x7fFIH"
@@ -1771,13 +1884,20 @@ def run_gui(start_path=None):
     style.configure("Accent.TButton", background=ACCENT, foreground="#171717", font=FONT,
                     borderwidth=0, padding=(16, 9))
     style.map("Accent.TButton", background=[("active", "#6fa8ff")])
-    style.configure("TNotebook", background=BG, borderwidth=0)
-    style.configure("TNotebook.Tab", background=CARD, foreground=MUTED, padding=(18, 8), font=FONT)
+    style.configure("TNotebook", background=BG, borderwidth=0,
+                    lightcolor=BG, darkcolor=BG, bordercolor=BG)
+    style.configure("TNotebook.Tab", background=CARD, foreground=MUTED, padding=(18, 8), font=FONT,
+                    borderwidth=0, lightcolor=CARD, darkcolor=CARD, bordercolor=CARD)
     style.map("TNotebook.Tab", background=[("selected", CARD2)],
-              foreground=[("selected", TEXT)])
+              foreground=[("selected", TEXT)],
+              lightcolor=[("selected", CARD2)], darkcolor=[("selected", CARD2)])
     style.configure("Treeview", background=CARD, fieldbackground=CARD, foreground=TEXT,
-                    font=FONT, rowheight=26, borderwidth=0)
-    style.configure("Treeview.Heading", background=CARD2, foreground=MUTED, font=FONT_SMALL)
+                    font=FONT, rowheight=26, borderwidth=0, relief="flat",
+                    lightcolor=CARD, darkcolor=CARD, bordercolor=CARD)
+    style.configure("Treeview.Heading", background=CARD2, foreground=MUTED, font=FONT_SMALL,
+                    relief="flat", borderwidth=0,
+                    lightcolor=CARD2, darkcolor=CARD2)
+    style.map("Treeview.Heading", background=[("active", CARD2)])
     style.map("Treeview", background=[("selected", ACCENT)])
     style.configure("TCombobox", fieldbackground=CARD2, background=CARD2, foreground=TEXT,
                     arrowcolor=MUTED)
@@ -1854,8 +1974,7 @@ def run_gui(start_path=None):
     badgevars = [tk.StringVar(value="") for _ in range(4)]
     badge_labels = []
     for bv in badgevars:
-        lb = tk.Label(badgerow, textvariable=bv, bg=CARD2, fg="#171717",
-                      font=FONT_BADGE, padx=8, pady=3)
+        lb = mkpill(badgerow, textvariable=bv, parent_bg=CARD)
         lb.pack(side="left", padx=(0, 6), pady=2)
         badge_labels.append(lb)
     state["badges"] = badgevars
@@ -1947,7 +2066,7 @@ def run_gui(start_path=None):
                            command=lambda: toggle_details())
     detailbtn.pack(side="right")
     metatext = tk.Text(tab_meta, bg=CARD, fg=TEXT, font=("Consolas", 9),
-                       wrap="none", borderwidth=0, padx=10, pady=10,
+                       wrap="none", borderwidth=0, highlightthickness=0, padx=10, pady=10,
                        height=12, selectbackground=ACCENT,
                        selectforeground="#171717", insertbackground=TEXT)
     metatext.pack(fill="both", expand=True)
@@ -1993,8 +2112,33 @@ def run_gui(start_path=None):
         _ab.transient(root)
         _ab.grab_set()
         _ab.resizable(False, False)
+        _logo = None
+        try:
+            from PIL import Image as _Img, ImageTk as _ImgTk
+            import os as _os
+            _p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                               "assets_about.png")
+            if _os.path.exists(_p):
+                _im = _Img.open(_p).convert("L")
+                # crop to the dark mark, drop the white page background
+                _bbox = _im.point(lambda v: 255 if v < 128 else 0).getbbox()
+                if _bbox:
+                    _im = _im.crop(_bbox)
+                # dark mark -> near-white, background -> transparent (dark dialog)
+                _a = _im.point(lambda v: 255 - v)
+                _im = _Img.merge("RGBA", (_Img.new("L", _im.size, 0xf1),
+                                          _Img.new("L", _im.size, 0xf3),
+                                          _Img.new("L", _im.size, 0xf8), _a))
+                _w = 190
+                _h = max(1, round(_im.size[1] * _w / _im.size[0]))
+                _logo = _ImgTk.PhotoImage(_im.resize((_w, _h), _Img.LANCZOS))
+        except Exception:
+            _logo = None
+        if _logo is not None:
+            tk.Label(_ab, image=_logo, bg=CARD).pack(padx=36, pady=(20, 0))
+            _ab._logo_ref = _logo
         tk.Label(_ab, text="PKG Viewer %s" % APP_VERSION,
-                 bg=CARD, fg=TEXT, font=FONT).pack(padx=36, pady=(20, 0))
+                 bg=CARD, fg=TEXT, font=FONT).pack(padx=36, pady=(12, 0))
         tk.Label(_ab, text="by Loopayeh",
                  bg=CARD, fg=MUTED, font=FONT_SMALL).pack(pady=(2, 0))
         tk.Label(_ab, text="View PS3 / PS4 / PS5 package info and cover art.",
@@ -2002,9 +2146,9 @@ def run_gui(start_path=None):
                                                          pady=(12, 0))
         _links = ttk.Frame(_ab, style="Card.TFrame")
         _links.pack(pady=(14, 0))
-        mkbtn(_links, text="Links", style="Ghost.TButton", bg=CARD,
+        mkbtn(_links, text="Links  ↗", style="Ghost.TButton", bg=CARD,
                command=lambda: _wb.open(
-                   "https://loopayeh.github.io/")).pack(side="left")
+                   "https://loopayeh.github.io/")).pack(side="left", ipadx=10, ipady=4)
         mkbtn(_ab, text="Close", style="Accent.TButton", bg=CARD,
                command=_ab.destroy).pack(pady=(16, 20))
         # center over main window instead of top-left corner
@@ -2101,7 +2245,8 @@ def run_gui(start_path=None):
         _notes = "\n".join(_body[:12])
         if _notes:
             _tx = tk.Text(dlg, bg=CARD, fg=TEXT, font=FONT_SMALL,
-                          wrap="word", borderwidth=0, padx=10, pady=10,
+                          wrap="word", borderwidth=0, highlightthickness=0,
+                          padx=10, pady=10,
                           height=8, width=60)
             _tx.pack(fill="both", expand=True, padx=16, pady=(10, 0))
             _tx.insert("end", _notes)
