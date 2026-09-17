@@ -26,8 +26,9 @@ fi
 # retry with --break-system-packages so install never silently skips deps.
 # One package per invocation: a single unreachable package must not sink
 # the rest (pillow/cover art matters most, tkinterdnd2 is drag-drop only).
-_pip() { pip3 install --user -q "$@" 2>&1 | tail -1 || \
-        pip3 install --user -q --break-system-packages "$@" 2>&1 | tail -1; }
+# Slow/blocked PyPI mirrors time out on big wheels: generous timeout+retries.
+_pip() { PIP_DEFAULT_TIMEOUT=100 PIP_RETRIES=10 pip3 install --user -q "$@" 2>&1 | tail -1 || \
+        PIP_DEFAULT_TIMEOUT=100 PIP_RETRIES=10 pip3 install --user -q --break-system-packages "$@" 2>&1 | tail -1; }
 # drag-and-drop needs no network: wheel vendored in linux/vendor/ (MIT).
 _dnd_whl="$(ls "${SRC}/vendor"/tkinterdnd2-*.whl 2>/dev/null | head -1 || true)"
 if [ -n "${_dnd_whl:-}" ]; then
