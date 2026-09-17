@@ -1,5 +1,5 @@
 ; PKG Viewer installer — per-user, file icons, no admin needed.
-#define AppVer "1.7.6"
+#define AppVer "1.7.8"
 
 [Setup]
 AppName=PKG Viewer

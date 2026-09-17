@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.7.7"  # bump on every release — the updater compares this
+APP_VERSION = "v1.7.8"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 
 
