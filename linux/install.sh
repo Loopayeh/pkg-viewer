@@ -46,6 +46,34 @@ cp "${SRC}/pkgviewer-mime.xml" "${HOME}/.local/share/mime/packages/pkgviewer.xml
 update-mime-database "${HOME}/.local/share/mime" >/dev/null 2>&1 || true
 
 echo "[4/5] icons + desktop entry"
+# A theme dir without index.theme is invalid and ignored by KDE:
+# create a minimal one for user-local hicolor (never overwrite existing).
+_HT="${HOME}/.local/share/icons/hicolor"
+if [ ! -f "$_HT/index.theme" ]; then
+  mkdir -p "$_HT"
+  {
+    echo "[Icon Theme]"
+    echo "Name=Hicolor"
+    echo "Comment=User-local fallback icons"
+    echo "Inherits=breeze"
+    _dirs=""
+    for _sz in 16 32 48 64 128 256; do
+      for _cx in apps mimetypes; do
+        mkdir -p "$_HT/${_sz}x${_sz}/${_cx}"
+        _dirs="${_dirs}${_dirs:+,}${_sz}x${_sz}/${_cx}"
+      done
+    done
+    echo "Directories=$_dirs"
+    for _sz in 16 32 48 64 128 256; do
+      for _cx in apps mimetypes; do
+        _Ctx=Applications
+        if [ "$_cx" = mimetypes ]; then _Ctx=MimeTypes; fi
+        printf '\n[%sx%s/%s]\nSize=%s\nContext=%s\nType=Fixed\n' \
+          "$_sz" "$_sz" "$_cx" "$_sz" "$_Ctx"
+      done
+    done
+  } > "$_HT/index.theme"
+fi
 for sz in 16 32 48 64 128 256; do
   dst="${HOME}/.local/share/icons/hicolor/${sz}x${sz}"
   mkdir -p "${dst}/mimetypes" "${dst}/apps"
