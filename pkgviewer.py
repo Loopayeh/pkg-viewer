@@ -2053,35 +2053,38 @@ def run_gui(start_path=None):
     mkbtn(imgnav, text="Copy", style="Ghost.TButton", bg=CARD,
            command=lambda: copy_current_image()).pack(side="left")
 
-    # ---- compact summary (small cover + badges + key info) ----
+    # ---- compact summary (cover | key info, copyable) ----
     compact = ttk.Frame(body, style="Card.TFrame", padding=10)
-    cimgframe = tk.Frame(compact, bg=CARD, width=160, height=160)
-    cimgframe.pack(pady=(2, 0))
+    crow = ttk.Frame(compact, style="Card.TFrame")
+    crow.pack()
+    cimgframe = tk.Frame(crow, bg=CARD, width=150, height=150)
+    cimgframe.pack(side="left")
     cimgframe.pack_propagate(False)
     cimglabel = tk.Label(cimgframe, bg=CARD, fg=MUTED,
                          text="(no image)", font=FONT_SMALL)
     cimglabel.place(relx=0.5, rely=0.5, anchor="center")
     state["compact_imglabel"] = cimglabel
-    tk.Label(compact, textvariable=titlevar, bg=CARD, fg=TEXT,
+    cinfo = ttk.Frame(crow, style="Card.TFrame")
+    cinfo.pack(side="left", padx=(12, 0), anchor="n")
+    tk.Label(cinfo, textvariable=titlevar, bg=CARD, fg=TEXT,
              font=(FONT[0], 11, "bold"),
-             wraplength=220, justify="center").pack(pady=(6, 1))
+             wraplength=200, justify="left").pack(anchor="w", pady=(0, 6))
+    state["compact_ver"] = tk.StringVar(value="—")
+    state["compact_tid"] = tk.StringVar(value="—")
+    for _ck, _cv in (("TITLE ID", state["compact_tid"]),
+                     ("VERSION", state["compact_ver"])):
+        ttk.Label(cinfo, text=_ck, style="SpecKey.TLabel").pack(anchor="w")
+        tk.Entry(cinfo, textvariable=_cv, bg=CARD, fg=TEXT, font=FONT_MID,
+                 relief="flat", readonlybackground=CARD, highlightthickness=0,
+                 state="readonly", width=24).pack(anchor="w", pady=(0, 4))
     cbadgerow = ttk.Frame(compact, style="Card.TFrame")
-    cbadgerow.pack(pady=(0, 2))
+    cbadgerow.pack(pady=(8, 0))
     compact_badge_labels = []
     for bv in badgevars:
         lb = mkpill(cbadgerow, textvariable=bv, parent_bg=CARD)
         lb.pack(side="left", padx=(0, 6), pady=2)
         compact_badge_labels.append(lb)
     state["compact_badge_labels"] = compact_badge_labels
-    state["compact_ver"] = tk.StringVar(value="—")
-    state["compact_tid"] = tk.StringVar(value="—")
-    for _ck, _cv in (("TITLE ID", state["compact_tid"]),
-                     ("VERSION", state["compact_ver"])):
-        _cr = ttk.Frame(compact, style="Card.TFrame")
-        _cr.pack(anchor="w", pady=1)
-        ttk.Label(_cr, text=_ck, style="SpecKey.TLabel").pack(side="left")
-        tk.Label(_cr, textvariable=_cv, bg=CARD, fg=TEXT,
-                 font=FONT_MID).pack(side="left", padx=(6, 0))
     mkbtn(compact, text="Show details »", style="Ghost.TButton", bg=CARD,
           command=lambda: set_compact(False)).pack(pady=(8, 0))
 
@@ -2769,9 +2772,17 @@ def run_gui(start_path=None):
                 if _pl is not None:
                     _pl.pack_forget()
                 compact.grid(row=0, column=0, sticky="n", pady=(6, 0))
-                root.geometry("440x470")
-                root.minsize(400, 430)
                 compactbtn.config(text="Expand")
+                try:
+                    # shrink-wrap the window around the compact content
+                    root.update_idletasks()
+                    _cw = min(max(root.winfo_reqwidth(), 360), 620)
+                    _ch = min(max(root.winfo_reqheight(), 280), 800)
+                    root.geometry("%dx%d" % (_cw, _ch))
+                    root.minsize(_cw, _ch)
+                except Exception:
+                    root.geometry("440x470")
+                    root.minsize(400, 430)
             else:
                 compact.grid_remove()
                 left.grid()
