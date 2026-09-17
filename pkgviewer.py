@@ -2054,7 +2054,7 @@ def run_gui(start_path=None):
            command=lambda: copy_current_image()).pack(side="left")
 
     # ---- compact summary (small cover + badges + key info) ----
-    compact = ttk.Frame(body, style="Card.TFrame", padding=14)
+    compact = ttk.Frame(body, style="Card.TFrame", padding=10)
     cimgframe = tk.Frame(compact, bg=CARD, width=160, height=160)
     cimgframe.pack(pady=(2, 0))
     cimgframe.pack_propagate(False)
@@ -2064,7 +2064,7 @@ def run_gui(start_path=None):
     state["compact_imglabel"] = cimglabel
     tk.Label(compact, textvariable=titlevar, bg=CARD, fg=TEXT,
              font=(FONT[0], 11, "bold"),
-             wraplength=220, justify="center").pack(pady=(8, 2))
+             wraplength=220, justify="center").pack(pady=(6, 1))
     cbadgerow = ttk.Frame(compact, style="Card.TFrame")
     cbadgerow.pack(pady=(0, 2))
     compact_badge_labels = []
@@ -2075,15 +2075,15 @@ def run_gui(start_path=None):
     state["compact_badge_labels"] = compact_badge_labels
     state["compact_ver"] = tk.StringVar(value="—")
     state["compact_tid"] = tk.StringVar(value="—")
-    for _ck, _cv in (("VERSION", state["compact_ver"]),
-                     ("TITLE ID", state["compact_tid"])):
+    for _ck, _cv in (("TITLE ID", state["compact_tid"]),
+                     ("VERSION", state["compact_ver"])):
         _cr = ttk.Frame(compact, style="Card.TFrame")
         _cr.pack(anchor="w", pady=1)
         ttk.Label(_cr, text=_ck, style="SpecKey.TLabel").pack(side="left")
         tk.Label(_cr, textvariable=_cv, bg=CARD, fg=TEXT,
                  font=FONT_MID).pack(side="left", padx=(6, 0))
     mkbtn(compact, text="Show details »", style="Ghost.TButton", bg=CARD,
-          command=lambda: set_compact(False)).pack(pady=(10, 0))
+          command=lambda: set_compact(False)).pack(pady=(8, 0))
 
     # right column
     right = ttk.Frame(body)
@@ -2768,9 +2768,9 @@ def run_gui(start_path=None):
                 _pl = state.get("pathlabel")
                 if _pl is not None:
                     _pl.pack_forget()
-                compact.grid(row=0, column=0, sticky="n", pady=(10, 0))
-                root.geometry("440x560")
-                root.minsize(400, 500)
+                compact.grid(row=0, column=0, sticky="n", pady=(6, 0))
+                root.geometry("440x470")
+                root.minsize(400, 430)
                 compactbtn.config(text="Expand")
             else:
                 compact.grid_remove()
