@@ -2232,9 +2232,14 @@ def run_gui(start_path=None):
         tk.Label(_ab, text="View PS3 / PS4 / PS5 package info and cover art.",
                  bg=CARD, fg=TEXT, font=FONT_SMALL).pack(padx=36,
                                                          pady=(12, 0))
-        tk.Label(_ab, text="Support with USDT (BEP-20) — click address to copy:",
-                 bg=CARD, fg=MUTED, font=FONT_SMALL).pack(padx=36,
-                                                          pady=(12, 0))
+        tk.Label(_ab, text="If you enjoy what I build and want to support my work,\n"
+                              "you can donate \U0001F499",
+                 bg=CARD, fg=TEXT, font=FONT_SMALL, justify="center").pack(padx=36,
+                                                                          pady=(12, 0))
+        tk.Label(_ab, text="Every bit of support means a lot. \U0001F64F",
+                 bg=CARD, fg=TEXT, font=FONT_SMALL).pack(pady=(2, 0))
+        tk.Label(_ab, text="USDT (BEP-20) — click address to copy:",
+                 bg=CARD, fg=MUTED, font=FONT_SMALL).pack(pady=(8, 0))
         _addr = tk.Label(_ab, text=SUPPORT_ADDR,
                          bg=CARD, fg=TEXT, font=FONT_SMALL, cursor="hand2")
         _addr.pack(pady=(2, 0))
