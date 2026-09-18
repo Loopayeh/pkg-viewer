@@ -1947,6 +1947,12 @@ def run_gui(start_path=None):
                     lightcolor=CARD2, darkcolor=CARD2)
     style.map("Treeview.Heading", background=[("active", CARD2)])
     style.map("Treeview", background=[("selected", ACCENT)])
+    style.configure("Vertical.TScrollbar", background=CARD2, troughcolor=BG,
+                    bordercolor=BG, lightcolor=CARD2, darkcolor=CARD2,
+                    arrowcolor=MUTED, relief="flat", borderwidth=0,
+                    arrowsize=13)
+    style.map("Vertical.TScrollbar", background=[("active", "#3b70c9")],
+              arrowcolor=[("active", TEXT)])
     style.configure("TCombobox", fieldbackground=CARD2, background=CARD2, foreground=TEXT,
                     arrowcolor=MUTED)
     style.map("TCombobox",
@@ -2144,8 +2150,8 @@ def run_gui(start_path=None):
     tree.column("codec", width=80)
     sb = ttk.Scrollbar(tab_entries, orient="vertical", command=tree.yview)
     tree.configure(yscrollcommand=sb.set)
+    sb.pack(side="right", fill="y")
     tree.pack(side="left", fill="both", expand=True)
-    sb.pack(side="left", fill="y")
 
     metabar = ttk.Frame(tab_meta, style="Card.TFrame")
     metabar.pack(fill="x", pady=(0, 4))
@@ -2961,6 +2967,23 @@ def run_gui(start_path=None):
         # show once, already at final size — no white flash / shrink jump
         root.update_idletasks()
         root.deiconify()
+        root.update()  # full pump: the first map must complete for a valid HWND
+        try:
+            # Dark native title bar (Windows 10 20H1+ / 11): same family
+            # look as the Avalonia apps. winfo_id() is the Tk client child,
+            # so the frame HWND is its parent (verified: FindWindow match).
+            # Must run after deiconify (withdrawn window has no HWND).
+            # Native frame stays: snap + min/max/close work.
+            import ctypes as _ct
+            _hwnd = _ct.windll.user32.GetParent(root.winfo_id())
+            _dark = _ct.c_int(1)
+            # 20 = DWMWA_USE_IMMERSIVE_DARK_MODE (Win11), 19 = older value
+            if _ct.windll.dwmapi.DwmSetWindowAttribute(
+                    _hwnd, 20, _ct.byref(_dark), _ct.sizeof(_dark)) != 0:
+                _ct.windll.dwmapi.DwmSetWindowAttribute(
+                    _hwnd, 19, _ct.byref(_dark), _ct.sizeof(_dark))
+        except Exception:
+            pass
     except Exception:
         pass
     root.mainloop()
