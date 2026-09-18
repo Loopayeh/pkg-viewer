@@ -93,3 +93,6 @@ end;
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\icons"
+
+[Run]
+Filename: "{app}\PKGViewer.exe"; Parameters: "--first-install"; Description: "Launch PKG Viewer"; Flags: nowait postinstall skipifsilent

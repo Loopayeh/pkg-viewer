@@ -2964,6 +2964,18 @@ def run_gui(start_path=None):
     if len(sys.argv) > 1 and os.path.exists(sys.argv[1]):
         _startup = sys.argv[1]
         root.after(100, lambda: load(_startup))
+    # First launch (or installer --first-install): show About (support links).
+    _first_install = any(a == "--first-install" for a in sys.argv[1:])
+    try:
+        _about_done = bool(_load_settings().get("about_shown"))
+    except Exception:
+        _about_done = False
+    if _first_install or not _about_done:
+        try:
+            _save_settings({"about_shown": True})
+        except Exception:
+            pass
+        root.after(600, lambda: show_about())
     try:
         # show once, already at final size — no white flash / shrink jump
         root.update_idletasks()
