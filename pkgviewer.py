@@ -2210,8 +2210,9 @@ def run_gui(start_path=None):
         try:
             from PIL import Image as _Img, ImageTk as _ImgTk
             import os as _os
-            _p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
-                               "assets_about.png")
+            _base = getattr(sys, "_MEIPASS", _os.path.dirname(
+                _os.path.abspath(__file__)))
+            _p = _os.path.join(_base, "assets_about.png")
             if _os.path.exists(_p):
                 _im = _Img.open(_p).convert("L")
                 # crop to the dark mark, drop the white page background
