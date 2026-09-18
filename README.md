@@ -56,7 +56,7 @@ PKGViewer.bat
 
 ```bat
 pip install pyinstaller pillow
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name PKGViewer --collect-submodules PIL pkgviewer.py
+python -m PyInstaller --noconfirm --clean --onefile --windowed --name PKGViewer --icon assets\logo.ico --add-data "assets;assets" --add-data "assets_about.png;." --collect-submodules PIL pkgviewer.py
 ```
 
 ## Support
