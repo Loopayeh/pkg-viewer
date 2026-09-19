@@ -2776,7 +2776,8 @@ def run_gui(start_path=None):
         mkbtn(_btns, text="Download + Install",
                    style="Accent.TButton", command=_dl).pack(side="left")
         mkbtn(_btns, text="Later", style="Ghost.TButton",
-                   command=dlg.destroy).pack(side="left", padx=(8, 0))
+              command=dlg.destroy).pack(side="left", padx=(8, 0))
+        _center_on_root(dlg)
 
     def _set_rename_enabled(on):
         try:
