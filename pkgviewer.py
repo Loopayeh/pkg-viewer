@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.9.0"  # bump on every release — the updater compares this
+APP_VERSION = "v1.10.0"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -1945,6 +1945,58 @@ def default_batch_log():
         f"batch_rename_{_dt.datetime.now():%Y%m%d_%H%M%S}.log")
 
 
+def parse_revert_log(path):
+    """Read a batch_rename_*.log file. Returns [(current, restore)].
+
+    Each log line is "old\\trestore-target". Revert walks it backwards:
+    current = the name after renaming, restore = the original name.
+    Comment (#) and malformed lines are skipped. Never raises.
+    """
+    pairs = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) != 2:
+                    continue
+                old, new = parts[0].strip(), parts[1].strip()
+                if not old or not new:
+                    continue
+                pairs.append((new, old))
+    except Exception:
+        return []
+    return pairs
+
+
+def apply_revert(pairs, only_existing=True):
+    """Rename current names back to originals. Returns (reverted, skipped).
+
+    reverted: [(current, restore)], skipped: [(current, reason)].
+    Never raises.
+    """
+    reverted, skipped = [], []
+    for current, restore in pairs or []:
+        if os.path.normcase(current) == os.path.normcase(restore):
+            continue
+        if only_existing and not os.path.exists(current):
+            skipped.append((current, "current file not found"))
+            continue
+        if os.path.exists(restore):
+            skipped.append((current,
+                            f"target exists: {os.path.basename(restore)}"))
+            continue
+        try:
+            os.rename(current, restore)
+        except Exception as e:
+            skipped.append((current, str(e)))
+            continue
+        reverted.append((current, restore))
+    return reverted, skipped
+
+
 def print_batch(inputs, recursive=False, apply=False):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -2284,6 +2336,13 @@ def run_gui(start_path=None):
     batchbtn = mkbtn(header, text="Batch", style="Ghost.TButton",
                      command=lambda: pick_many())
     batchbtn.pack(side="left", padx=(8, 0))
+    undobtn = mkbtn(header, text="Undo", style="Ghost.TButton",
+                    command=lambda: undo_last_rename())
+    undobtn.pack(side="left", padx=(8, 0))
+    try:
+        undobtn.config(state="disabled")
+    except Exception:
+        pass
     updatebtn = mkbtn(header, text="Check updates", style="Ghost.TButton",
                            command=lambda: check_updates(manual=True))
     updatebtn.pack(side="right")
@@ -2785,6 +2844,45 @@ def run_gui(start_path=None):
         except Exception:
             pass
 
+    def _set_undo_enabled(on):
+        try:
+            undobtn.config(state="normal" if on else "disabled")
+        except Exception:
+            pass
+
+    def _refresh_path_after_move(old, new):
+        r = state.get("result")
+        if r and os.path.normcase(r.get("path") or "") == os.path.normcase(old):
+            r["path"] = new
+            try:
+                pathvar.set(os.path.basename(new))
+            except Exception:
+                pass
+
+    def undo_last_rename():
+        pair = state.get("last_rename")
+        if not pair:
+            statusvar.set("Nothing to undo")
+            return
+        old_path, new_path = pair
+        if not os.path.exists(new_path):
+            statusvar.set("Undo failed: renamed file not found")
+            state["last_rename"] = None
+            _set_undo_enabled(False)
+            return
+        if os.path.exists(old_path):
+            statusvar.set("Undo failed: original name is taken")
+            return
+        try:
+            os.rename(new_path, old_path)
+        except Exception as ex:
+            statusvar.set(f"Undo failed: {ex}")
+            return
+        _refresh_path_after_move(new_path, old_path)
+        state["last_rename"] = None
+        _set_undo_enabled(False)
+        _set_status(f"Undone: back to {os.path.basename(old_path)}")
+
     def _center_on_root(dlg, w=None, h=None):
         """Center a dialog over the main window (else screen center)."""
         try:
@@ -2878,6 +2976,8 @@ def run_gui(start_path=None):
                 return
             r["path"] = new_path
             pathvar.set(os.path.basename(new_path))
+            state["last_rename"] = (old_path, new_path)
+            _set_undo_enabled(True)
             _set_status(f"Renamed to {os.path.basename(new_path)}")
             dlg.destroy()
 
@@ -3036,6 +3136,10 @@ def run_gui(start_path=None):
                 msgvar.set("Nothing selected")
                 return
             renamed, skipped, lp = apply_batch(sel, log_path=default_batch_log())
+            if lp:
+                state["last_batch_log"] = lp
+            state["last_rename"] = None
+            _set_undo_enabled(False)
             for old, new in renamed:
                 r = state.get("result")
                 if r and os.path.normcase(r.get("path") or "") == \
@@ -3064,8 +3168,145 @@ def run_gui(start_path=None):
               command=_select_none).pack(side="left", padx=(8, 0))
         mkbtn(btns, text="Copy list", style="Ghost.TButton",
               command=_do_copy).pack(side="left", padx=(8, 0))
+        mkbtn(btns, text="Revert...", style="Ghost.TButton",
+              command=lambda: show_revert()).pack(side="left", padx=(8, 0))
         mkbtn(btns, text="Close", style="Ghost.TButton",
               command=dlg.destroy).pack(side="right")
+
+    def show_revert(log_path=None):
+        """Pick a batch_rename_*.log, preview it, revert selected rows."""
+        if not log_path:
+            _init = os.path.dirname(state.get("last_batch_log") or "") or "."
+            log_path = filedialog.askopenfilename(
+                title="Select revert log",
+                initialdir=_init,
+                filetypes=[("Revert log", "batch_rename_*.log"),
+                           ("Log files", "*.log"),
+                           ("All files", "*.*")])
+            if not log_path:
+                return
+        pairs = parse_revert_log(log_path)
+        if not pairs:
+            statusvar.set(f"Revert: no valid entries in "
+                          f"{os.path.basename(log_path)}")
+            return
+        try:
+            from tkinter import messagebox as _mb
+        except Exception:
+            _mb = None
+        rdlg = tk.Toplevel(root)
+        rdlg.title(f"Revert ({len(pairs)} entries)")
+        rdlg.configure(bg=BG)
+        rdlg.transient(root)
+        rdlg.grab_set()
+        rdlg.geometry("840x480")
+        _center_on_root(rdlg, 840, 480)
+        rdlg.minsize(680, 380)
+        try:
+            rdlg.resizable(True, True)
+        except Exception:
+            pass
+        rbtns = tk.Frame(rdlg, bg=BG)
+        rbtns.pack(side="bottom", fill="x", padx=14, pady=(6, 14))
+        rmsg = tk.StringVar(value=f"From: {os.path.basename(log_path)} — "
+                                  "double-click a row to exclude it.")
+        tk.Label(rdlg, textvariable=rmsg, bg=BG, fg=MUTED,
+                 font=FONT_SMALL, anchor="w").pack(side="bottom", fill="x",
+                                                   padx=14)
+        rcols = ("use", "current", "restore", "status")
+        rtv = ttk.Treeview(rdlg, columns=rcols, show="headings", height=14)
+        rtv.heading("use", text="✓")
+        rtv.heading("current", text="current name")
+        rtv.heading("restore", text="restore to")
+        rtv.heading("status", text="status")
+        rtv.column("use", width=36, anchor="center")
+        rtv.column("current", width=240)
+        rtv.column("restore", width=240)
+        rtv.column("status", width=180)
+        rsb = ttk.Scrollbar(rdlg, orient="vertical", command=rtv.yview)
+        rtv.configure(yscrollcommand=rsb.set)
+        rsb.pack(side="right", fill="y")
+        rtv.pack(side="top", fill="both", expand=True, padx=12, pady=(12, 6))
+        rchecked = set(range(len(pairs)))
+
+        def _rstatus(i):
+            cur, rst = pairs[i]
+            if not os.path.exists(cur):
+                return "missing"
+            if os.path.exists(rst):
+                return "target exists"
+            return "ready"
+
+        def _rfill():
+            for _iid in list(rtv.get_children()):
+                rtv.delete(_iid)
+            for i, (cur, rst) in enumerate(pairs):
+                rtv.insert("", "end", iid=str(i),
+                           values=("✓" if i in rchecked else "",
+                                   os.path.basename(cur),
+                                   os.path.basename(rst),
+                                   _rstatus(i)))
+
+        _rfill()
+
+        def _rtoggle(_e=None):
+            sel = rtv.selection()
+            if not sel:
+                return
+            try:
+                i = int(str(sel[0]))
+            except Exception:
+                return
+            if i in rchecked:
+                rchecked.discard(i)
+            else:
+                rchecked.add(i)
+            _rfill()
+
+        rtv.bind("<Double-Button-1>", _rtoggle)
+
+        def _rall():
+            rchecked.update(range(len(pairs)))
+            _rfill()
+
+        def _rnone():
+            rchecked.clear()
+            _rfill()
+
+        def _rdo():
+            sel = [(pairs[i][0], pairs[i][1]) for i in sorted(rchecked)
+                   if _rstatus(i) == "ready"]
+            if not sel:
+                rmsg.set("Nothing ready selected")
+                return
+            if _mb is not None:
+                try:
+                    if not _mb.askyesno(
+                            "Confirm revert",
+                            f"Rename {len(sel)} file(s) back to their "
+                            f"original names?"):
+                        return
+                except Exception:
+                    pass
+            rev, skip = apply_revert(sel)
+            for cur, rst in rev:
+                _refresh_path_after_move(cur, rst)
+            try:
+                _set_status(f"Revert: restored {len(rev)}, "
+                            f"skipped {len(skip)}")
+            except Exception:
+                pass
+            rmsg.set(f"Restored {len(rev)}, skipped {len(skip)}.")
+            rdlg.destroy()
+
+        mkbtn(rbtns, text="Revert selected", style="Accent.TButton",
+              command=_rdo).pack(side="left")
+        mkbtn(rbtns, text="All", style="Ghost.TButton",
+              command=_rall).pack(side="left", padx=(8, 0))
+        mkbtn(rbtns, text="None", style="Ghost.TButton",
+              command=_rnone).pack(side="left", padx=(8, 0))
+        mkbtn(rbtns, text="Close", style="Ghost.TButton",
+              command=rdlg.destroy).pack(side="right")
 
     # logic
     def pick():
@@ -3371,6 +3612,10 @@ def run_gui(start_path=None):
                     batchbtn.pack_forget()
                 except Exception:
                     pass
+                try:
+                    undobtn.pack_forget()
+                except Exception:
+                    pass
                 compact.grid(row=0, column=0, sticky="n", pady=(6, 0))
                 compactbtn.config(text="Expand")
                 try:
@@ -3394,6 +3639,10 @@ def run_gui(start_path=None):
                     pass
                 try:
                     batchbtn.pack(side="left", padx=(8, 0))
+                except Exception:
+                    pass
+                try:
+                    undobtn.pack(side="left", padx=(8, 0))
                 except Exception:
                     pass
                 _pl = state.get("pathlabel")
@@ -3639,6 +3888,35 @@ if __name__ == "__main__":
                   "[--recursive] [--apply]")
         else:
             print_batch(_inputs, recursive=_rec, apply=_apply)
+    elif len(sys.argv) >= 3 and sys.argv[1] == "--revert":
+        _args = sys.argv[2:]
+        _apply = "--apply" in _args
+        _logs = [a for a in _args if not a.startswith("--")]
+        import glob as _glob
+        _expanded = []
+        for _l in _logs:
+            _g = _glob.glob(_l) if ("*" in _l or "?" in _l) else [_l]
+            _expanded.extend(_g or [_l])
+        _logs = _expanded
+        if not _logs:
+            print("usage: pkgviewer.py --revert <batch_rename_*.log> [--apply]")
+        else:
+            for _log in _logs:
+                _pairs = parse_revert_log(_log)
+                if not _pairs:
+                    print(f"{_log}: no valid entries (bad log or empty).")
+                    continue
+                if not _apply:
+                    print(f"{_log}: dry run, {len(_pairs)} entries "
+                          f"(re-run with --apply to revert):")
+                    for _cur, _rst in _pairs:
+                        print(f"  [REVERT] {os.path.basename(_cur)}  ->  "
+                              f"{os.path.basename(_rst)}")
+                    continue
+                _rev, _skip = apply_revert(_pairs)
+                print(f"{_log}: reverted {len(_rev)}, skipped {len(_skip)}.")
+                for _cur, _reason in _skip:
+                    print(f"  [SKIP] {os.path.basename(_cur)} ({_reason})")
     elif len(sys.argv) >= 2 and os.path.exists(sys.argv[1]):
         run_gui(sys.argv[1])
     elif len(sys.argv) >= 2 and sys.argv[1] == "--info":
