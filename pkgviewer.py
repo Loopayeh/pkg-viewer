@@ -2281,8 +2281,9 @@ def run_gui(start_path=None):
         renamebtn.config(state="disabled")
     except Exception:
         pass
-    mkbtn(header, text="Batch", style="Ghost.TButton",
-          command=lambda: pick_many()).pack(side="left", padx=(8, 0))
+    batchbtn = mkbtn(header, text="Batch", style="Ghost.TButton",
+                     command=lambda: pick_many())
+    batchbtn.pack(side="left", padx=(8, 0))
     updatebtn = mkbtn(header, text="Check updates", style="Ghost.TButton",
                            command=lambda: check_updates(manual=True))
     updatebtn.pack(side="right")
@@ -3360,6 +3361,15 @@ def run_gui(start_path=None):
                 _pl = state.get("pathlabel")
                 if _pl is not None:
                     _pl.pack_forget()
+                # compact keeps only the old buttons (Open | Compact | About)
+                try:
+                    renamebtn.pack_forget()
+                except Exception:
+                    pass
+                try:
+                    batchbtn.pack_forget()
+                except Exception:
+                    pass
                 compact.grid(row=0, column=0, sticky="n", pady=(6, 0))
                 compactbtn.config(text="Expand")
                 try:
@@ -3376,6 +3386,15 @@ def run_gui(start_path=None):
                 compact.grid_remove()
                 left.grid()
                 right.grid()
+                # restore original header order: Rename/Batch before pathlabel
+                try:
+                    renamebtn.pack(side="left", padx=(8, 0))
+                except Exception:
+                    pass
+                try:
+                    batchbtn.pack(side="left", padx=(8, 0))
+                except Exception:
+                    pass
                 _pl = state.get("pathlabel")
                 if _pl is not None:
                     _pl.pack(side="left", padx=(14, 0))
