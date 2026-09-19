@@ -29,7 +29,7 @@ Grab `PKGViewer-Setup-X.Y.Z.exe` from [Releases](../../releases) — no admin ne
 - Files tab: named entries with id + size
 - Details tab: curated param.sfo / param.json, Show all for the full dump
 - Drag & drop: PKG files, exFAT / ffpfsc / ffpkg images, and game folders onto the window
-- Rename: clean uniform names from PKG info (`Title - TID - vVersion - Region`) — single file via the Rename button, or many at once by dropping them all (batch dialog with preview + log); split multi-part sets stay together
+- Rename: clean uniform names from PKG info (`Title - TID - vVersion - Region`) — single file via the Rename button, or many at once via the Batch button / dropping them all (batch dialog with preview + log); folders are scanned for game files; split multi-part sets stay together
 - AMPR / LZ4 asset containers (LIZARD dumps): listed with size in the spec card + Files tab
 - Copy/paste works in every text field, on any keyboard layout
 - Self-updating: silent check at startup, header button lights up on new release

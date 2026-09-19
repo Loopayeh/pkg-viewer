@@ -2281,6 +2281,8 @@ def run_gui(start_path=None):
         renamebtn.config(state="disabled")
     except Exception:
         pass
+    mkbtn(header, text="Batch", style="Ghost.TButton",
+          command=lambda: pick_many()).pack(side="left", padx=(8, 0))
     updatebtn = mkbtn(header, text="Check updates", style="Ghost.TButton",
                            command=lambda: check_updates(manual=True))
     updatebtn.pack(side="right")
@@ -2781,6 +2783,31 @@ def run_gui(start_path=None):
         except Exception:
             pass
 
+    def _center_on_root(dlg, w=None, h=None):
+        """Center a dialog over the main window (else screen center)."""
+        try:
+            dlg.update_idletasks()
+            try:
+                root.update_idletasks()
+                rx, ry = root.winfo_rootx(), root.winfo_rooty()
+                rw, rh = root.winfo_width(), root.winfo_height()
+            except Exception:
+                rx, ry, rw, rh = 0, 0, 0, 0
+            dw = w or dlg.winfo_reqwidth()
+            dh = h or dlg.winfo_reqheight()
+            if rw > 1 and rh > 1:
+                x = rx + max(0, (rw - dw) // 2)
+                y = ry + max(0, (rh - dh) // 2)
+            else:
+                x = max(0, (dlg.winfo_screenwidth() - dw) // 2)
+                y = max(0, (dlg.winfo_screenheight() - dh) // 2)
+            if w and h:
+                dlg.geometry("%dx%d+%d+%d" % (w, h, x, y))
+            else:
+                dlg.geometry("+%d+%d" % (x, y))
+        except Exception:
+            pass
+
     def show_rename():
         r = state.get("result")
         if not r:
@@ -2860,15 +2887,26 @@ def run_gui(start_path=None):
               command=_do_copy).pack(side="left", padx=(8, 0))
         mkbtn(btns, text="Cancel", style="Ghost.TButton",
               command=dlg.destroy).pack(side="right")
+        _center_on_root(dlg)
         dlg.bind("<Return>", lambda _e: _do_rename())
         dlg.bind("<Escape>", lambda _e: dlg.destroy())
 
-    def show_batch(files):
-        # app folders / non-package files keep the old single-load behavior
-        if len(files) == 1 and (os.path.isdir(files[0]) or
-                                not files[0].lower().endswith(BATCH_EXTS)):
-            load(files[0])
-            return
+    def show_batch(files):        # single app folder / non-package file keeps the old load behavior —
+        # unless the folder actually holds game files (then batch-scan it)
+        if len(files) == 1:
+            _p = files[0]
+            if os.path.isdir(_p):
+                try:
+                    _has = any(fn.lower().endswith(BATCH_EXTS)
+                               for fn in os.listdir(_p))
+                except Exception:
+                    _has = False
+                if not _has:
+                    load(_p)
+                    return
+            elif not _p.lower().endswith(BATCH_EXTS):
+                load(_p)
+                return
         files = collect_batch_files(files)
         if not files:
             statusvar.set("No game files dropped")
@@ -2889,6 +2927,7 @@ def run_gui(start_path=None):
         dlg.transient(root)
         dlg.grab_set()
         dlg.geometry("840x540")
+        _center_on_root(dlg, 840, 540)
         dlg.minsize(680, 420)
         try:
             dlg.resizable(True, True)
@@ -3039,6 +3078,17 @@ def run_gui(start_path=None):
             d = filedialog.askdirectory(title="...or select an app folder")
             if d:
                 load(d)
+
+    def pick_many():
+        ps = filedialog.askopenfilenames(title="Select files for batch rename",
+                                         filetypes=[("Game files", "*.pkg *.exfat *.ffpfsc *.ffpkg"),
+                                                    ("all", "*.*")])
+        if ps:
+            show_batch(list(ps))
+        else:
+            d = filedialog.askdirectory(title="...or select a folder to batch-scan")
+            if d:
+                show_batch([d])
 
     def load(p):
         statusvar.set("Reading...")
