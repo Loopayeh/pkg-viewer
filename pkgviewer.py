@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.7.8"  # bump on every release — the updater compares this
+APP_VERSION = "v1.9.0"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -1693,6 +1693,290 @@ def full_meta_lines(meta):
     return lines
 
 
+def sanitize_filename_part(s, limit=120):
+    """Make a string safe for a Windows file/folder name. Never raises."""
+    try:
+        s = str(s or "")
+    except Exception:
+        return ""
+    s = "".join(ch if ch not in '<>:"/\\|?*' and ord(ch) >= 32 else " " for ch in s)
+    s = " ".join(s.split())
+    s = s.strip(" .")
+    if len(s) > limit:
+        s = s[:limit].rstrip(" .")
+    return s
+
+
+REGION_SHORT = {"Europe": "EU", "Americas": "US", "Japan": "JP", "Asia": "AS"}
+
+
+def normalize_version(ver):
+    """Clean version for filenames: '04.040.100' -> '4.40.100'.
+
+    First segment always unpadded; other segments only unpadded when
+    longer than 2 chars (keeps conventional '1.06' / '1.00'). Never raises.
+    """
+    try:
+        segs = str(ver).strip().split(".")
+        out = []
+        for i, s in enumerate(segs):
+            s = s.strip()
+            if s.isdigit() and (i == 0 or len(s) > 2):
+                s = str(int(s))
+            if s != "":
+                out.append(s)
+        return ".".join(out)
+    except Exception:
+        try:
+            return str(ver).strip()
+        except Exception:
+            return ""
+
+
+def build_clean_name(result):
+    """Clean uniform file/folder base name from parsed PKG info.
+
+    Format: Title - TID - vVersion - Region (empty parts dropped).
+    Returns "" if neither Title ID nor title is available.
+    """
+    try:
+        rd = dict(result.get("rows") or [])
+    except Exception:
+        rd = {}
+    try:
+        title = str(result.get("title") or "").strip()
+    except Exception:
+        title = ""
+    tid = str(rd.get("Title ID", "") or "").strip()
+    ver = str(rd.get("Version", "") or rd.get("Content Ver", "") or "").strip()
+    if ver[:1].lower() == "v":
+        ver = ver[1:]
+    ver = normalize_version(ver)
+    region = str(rd.get("Region", "") or "").strip()
+    region = REGION_SHORT.get(region, region)
+    parts = []
+    if title:
+        parts.append(title)
+    if tid and tid != title:
+        parts.append(tid)
+    if ver and ver != "-":
+        parts.append("v" + ver)
+    if region and region != "-":
+        parts.append(region)
+    if not parts:
+        return ""
+    return sanitize_filename_part(" - ".join(parts))
+
+
+BATCH_EXTS = (".pkg", ".ffpkg", ".ffpfsc", ".exfat")
+
+
+def split_set_siblings(path):
+    """All parts of a split set (game_0.pkg, game_1.pkg, ...) or [path].
+
+    Only .pkg uses the _N convention. Never raises.
+    """
+    import re as _re
+    try:
+        d = os.path.dirname(path)
+        base = os.path.basename(path)
+        if not base.lower().endswith(".pkg"):
+            return [path]
+        m = _re.search(r"^(.*)_(\d+)\.pkg$", base, _re.IGNORECASE)
+        if not m:
+            return [path]
+        import glob as _glob
+        sibs = sorted(_glob.glob(os.path.join(d, m.group(1) + "_*.pkg")))
+        sibs = [p for p in sibs if _re.search(r"_\d+\.pkg$", p, _re.IGNORECASE)]
+        sibs.sort(key=lambda p: int(
+            _re.search(r"_(\d+)\.pkg$", p, _re.IGNORECASE).group(1)))
+        if len(sibs) > 1 and any(
+                os.path.normcase(p) == os.path.normcase(path) for p in sibs):
+            return sibs
+    except Exception:
+        pass
+    return [path]
+
+
+def collect_batch_files(inputs, recursive=False):
+    """Expand files/folders into a deduped file list (batch extensions only)."""
+    seen, out = set(), []
+    for inp in inputs or []:
+        try:
+            if os.path.isdir(inp):
+                if recursive:
+                    for _dp, _dn, fns in os.walk(inp):
+                        for fn in fns:
+                            _fp = os.path.join(_dp, fn)
+                            _k = os.path.normcase(os.path.abspath(_fp))
+                            if _fp.lower().endswith(BATCH_EXTS) and _k not in seen:
+                                seen.add(_k)
+                                out.append(_fp)
+                else:
+                    for fn in sorted(os.listdir(inp)):
+                        _fp = os.path.join(inp, fn)
+                        _k = os.path.normcase(os.path.abspath(_fp))
+                        if os.path.isfile(_fp) and _fp.lower().endswith(BATCH_EXTS) \
+                                and _k not in seen:
+                            seen.add(_k)
+                            out.append(_fp)
+            elif os.path.isfile(inp):
+                _k = os.path.normcase(os.path.abspath(inp))
+                if _k not in seen:
+                    seen.add(_k)
+                    out.append(inp)
+        except Exception:
+            continue
+    return out
+
+
+def preview_batch(files):
+    """Build a rename plan for files. Split sets stay together (one entry).
+
+    Each item: {files, new_files, new_base, status, reason}.
+    status: 'ok' | 'skip'. Never renames anything.
+    """
+    import re as _re
+    plan, seen_sets, seen_targets = [], set(), set()
+    for fp in files or []:
+        try:
+            parts = split_set_siblings(fp)
+        except Exception:
+            parts = [fp]
+        setkey = os.path.normcase(os.path.abspath(parts[0]))
+        if setkey in seen_sets:
+            continue
+        seen_sets.add(setkey)
+        item = {"files": parts, "new_files": [],
+                "new_base": "", "status": "skip", "reason": ""}
+        try:
+            r = parse_pkg(parts[0])
+        except Exception as e:
+            item["reason"] = f"parse error: {e}"
+            plan.append(item)
+            continue
+        if not r.get("ok"):
+            item["reason"] = r.get("error", "unrecognized file")
+            plan.append(item)
+            continue
+        base = build_clean_name(r)
+        if not base:
+            item["reason"] = "not enough info for a name"
+            plan.append(item)
+            continue
+        item["new_base"] = base
+        d = os.path.dirname(parts[0])
+        if len(parts) == 1:
+            _root, ext = os.path.splitext(os.path.basename(parts[0]))
+            item["new_files"] = [os.path.join(d, base + ext)]
+        else:
+            for p in parts:
+                m = _re.search(r"_(\d+)(\.[^.]+)$", os.path.basename(p))
+                num, ext = (m.group(1), m.group(2)) if m else ("0", ".pkg")
+                item["new_files"] = item.get("new_files", []) + \
+                    [os.path.join(d, f"{base}_{num}{ext}")]
+        problems = []
+        for old, new in zip(item["files"], item["new_files"]):
+            if os.path.normcase(old) == os.path.normcase(new):
+                continue
+            _nk = os.path.normcase(os.path.abspath(new))
+            if os.path.exists(new):
+                problems.append(f"target exists: {os.path.basename(new)}")
+            elif _nk in seen_targets:
+                problems.append(f"duplicate target: {os.path.basename(new)}")
+        if problems:
+            item["reason"] = "; ".join(problems)
+            plan.append(item)
+            continue
+        for new in item["new_files"]:
+            seen_targets.add(os.path.normcase(os.path.abspath(new)))
+        if all(os.path.normcase(o) == os.path.normcase(n)
+               for o, n in zip(item["files"], item["new_files"])):
+            item["reason"] = "name unchanged"
+            plan.append(item)
+            continue
+        item["status"] = "ok"
+        plan.append(item)
+    return plan
+
+
+def apply_batch(plan, log_path=None, only_ok=True):
+    """Execute a preview_batch plan. Returns (renamed, skipped, log_path).
+
+    renamed: [(old, new)], skipped: [(old, reason)]. Writes a revert log.
+    """
+    import datetime as _dt
+    renamed, skipped = [], []
+    lines = [f"# PKGViewer batch rename {_dt.datetime.now():%Y-%m-%d %H:%M:%S}"]
+    for item in plan or []:
+        if item.get("status") != "ok" and only_ok:
+            for f in item.get("files", []):
+                skipped.append((f, item.get("reason", "skipped")))
+            continue
+        if item.get("status") != "ok":
+            continue
+        for old, new in zip(item["files"], item["new_files"]):
+            if os.path.normcase(old) == os.path.normcase(new):
+                continue
+            if os.path.exists(new):
+                skipped.append((old, f"target exists: {os.path.basename(new)}"))
+                continue
+            try:
+                os.rename(old, new)
+            except Exception as e:
+                skipped.append((old, str(e)))
+                continue
+            renamed.append((old, new))
+            lines.append(f"{old}\t{new}")
+    lp = None
+    if log_path and renamed:
+        try:
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+            lp = log_path
+        except Exception:
+            lp = None
+    return renamed, skipped, lp
+
+
+def default_batch_log():
+    import datetime as _dt
+    return os.path.abspath(
+        f"batch_rename_{_dt.datetime.now():%Y%m%d_%H%M%S}.log")
+
+
+def print_batch(inputs, recursive=False, apply=False):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    files = collect_batch_files(inputs, recursive=recursive)
+    if not files:
+        print("No game files found.")
+        return
+    plan = preview_batch(files)
+    n_ok = sum(1 for i in plan if i["status"] == "ok")
+    for item in plan:
+        if item["new_files"]:
+            for old, new in zip(item["files"], item["new_files"]):
+                tag = "OK  " if item["status"] == "ok" else "SKIP"
+                extra = "" if item["status"] == "ok" \
+                    else f"  ({item['reason']})"
+                print(f"[{tag}] {os.path.basename(old)}  ->  "
+                      f"{os.path.basename(new)}{extra}")
+        else:
+            print(f"[SKIP] {os.path.basename(item['files'][0])}  "
+                  f"({item['reason']})")
+    print(f"--- {n_ok} of {len(plan)} ready ---")
+    if not apply:
+        print("Dry run. Re-run with --apply to rename.")
+        return
+    log = default_batch_log()
+    renamed, skipped, lp = apply_batch(plan, log_path=log)
+    print(f"Renamed {len(renamed)}, skipped {len(skipped)}."
+          + (f" Log: {lp}" if lp else ""))
+
+
 def copy_image_to_clipboard(pil_img):
     """Copy PIL image to Windows clipboard as DIB (ctypes only). None = ok."""
     try:
@@ -1990,6 +2274,13 @@ def run_gui(start_path=None):
         pass
     mkbtn(header, text="Open", style="Accent.TButton",
                command=lambda: pick()).pack(side="left")
+    renamebtn = mkbtn(header, text="Rename", style="Ghost.TButton",
+                      command=lambda: show_rename())
+    renamebtn.pack(side="left", padx=(8, 0))
+    try:
+        renamebtn.config(state="disabled")
+    except Exception:
+        pass
     updatebtn = mkbtn(header, text="Check updates", style="Ghost.TButton",
                            command=lambda: check_updates(manual=True))
     updatebtn.pack(side="right")
@@ -2484,6 +2775,257 @@ def run_gui(start_path=None):
         mkbtn(_btns, text="Later", style="Ghost.TButton",
                    command=dlg.destroy).pack(side="left", padx=(8, 0))
 
+    def _set_rename_enabled(on):
+        try:
+            renamebtn.config(state="normal" if on else "disabled")
+        except Exception:
+            pass
+
+    def show_rename():
+        r = state.get("result")
+        if not r:
+            statusvar.set("Open a file first")
+            return
+        old_path = r.get("path") or ""
+        if not old_path or not os.path.exists(old_path):
+            statusvar.set("Original file not found")
+            return
+        base = build_clean_name(r)
+        if not base:
+            statusvar.set("Not enough info to build a name")
+            return
+        is_dir = os.path.isdir(old_path)
+        _root, ext = os.path.splitext(os.path.basename(old_path)) if not is_dir else ("", "")
+        suggested = base + ext
+        dlg = tk.Toplevel(root)
+        dlg.title("Rename file")
+        dlg.configure(bg=BG)
+        dlg.transient(root)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+        tk.Label(dlg, text="Old name:", bg=BG, fg=MUTED,
+                 font=FONT_SMALL, anchor="w").pack(fill="x", padx=14, pady=(12, 0))
+        tk.Label(dlg, text=os.path.basename(old_path), bg=BG, fg=TEXT,
+                 font=FONT, anchor="w", wraplength=420,
+                 justify="left").pack(fill="x", padx=14)
+        tk.Label(dlg, text="New name:", bg=BG, fg=MUTED,
+                 font=FONT_SMALL, anchor="w").pack(fill="x", padx=14, pady=(10, 0))
+        namevar = tk.StringVar(value=suggested)
+        entry = tk.Entry(dlg, textvariable=namevar, bg=CARD2, fg=TEXT,
+                         font=FONT_MID, width=52, insertbackground=TEXT)
+        entry.pack(fill="x", padx=14, pady=(2, 4))
+        entry.focus_set()
+        entry.select_range(0, "end")
+        msgvar = tk.StringVar(value="")
+        tk.Label(dlg, textvariable=msgvar, bg=BG, fg="#e17b7b",
+                 font=FONT_SMALL, anchor="w").pack(fill="x", padx=14)
+
+        def _do_copy():
+            try:
+                root.clipboard_clear()
+                root.clipboard_append(namevar.get().strip())
+                msgvar.set("Copied to clipboard")
+            except Exception as ex:
+                msgvar.set(f"Copy failed: {ex}")
+
+        def _do_rename():
+            new_name = sanitize_filename_part(namevar.get(), limit=200)
+            if not new_name:
+                msgvar.set("Name is empty")
+                return
+            if not is_dir and "." not in new_name and ext:
+                new_name += ext
+            new_path = os.path.join(os.path.dirname(old_path), new_name)
+            if os.path.normcase(new_path) == os.path.normcase(old_path):
+                msgvar.set("Name unchanged")
+                return
+            if os.path.exists(new_path):
+                msgvar.set("A file with this name already exists")
+                return
+            try:
+                os.rename(old_path, new_path)
+            except Exception as ex:
+                msgvar.set(f"Error: {ex}")
+                return
+            r["path"] = new_path
+            pathvar.set(os.path.basename(new_path))
+            _set_status(f"Renamed to {os.path.basename(new_path)}")
+            dlg.destroy()
+
+        btns = tk.Frame(dlg, bg=BG)
+        btns.pack(fill="x", padx=14, pady=(6, 14))
+        mkbtn(btns, text="Rename", style="Accent.TButton",
+              command=_do_rename).pack(side="left")
+        mkbtn(btns, text="Copy", style="Ghost.TButton",
+              command=_do_copy).pack(side="left", padx=(8, 0))
+        mkbtn(btns, text="Cancel", style="Ghost.TButton",
+              command=dlg.destroy).pack(side="right")
+        dlg.bind("<Return>", lambda _e: _do_rename())
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+
+    def show_batch(files):
+        # app folders / non-package files keep the old single-load behavior
+        if len(files) == 1 and (os.path.isdir(files[0]) or
+                                not files[0].lower().endswith(BATCH_EXTS)):
+            load(files[0])
+            return
+        files = collect_batch_files(files)
+        if not files:
+            statusvar.set("No game files dropped")
+            return
+        if len(files) == 1 and len(split_set_siblings(files[0])) == 1:
+            load(files[0])
+            return
+        try:
+            statusvar.set(f"Scanning {len(files)} files...")
+            root.update_idletasks()
+            plan = preview_batch(files)
+        except Exception as ex:
+            statusvar.set(f"Error: {ex}")
+            return
+        dlg = tk.Toplevel(root)
+        dlg.title(f"Batch rename ({len(plan)} items)")
+        dlg.configure(bg=BG)
+        dlg.transient(root)
+        dlg.grab_set()
+        dlg.geometry("840x540")
+        dlg.minsize(680, 420)
+        try:
+            dlg.resizable(True, True)
+        except Exception:
+            pass
+        # bottom bar packed first so buttons never get pushed out of view
+        btns = tk.Frame(dlg, bg=BG)
+        btns.pack(side="bottom", fill="x", padx=14, pady=(6, 14))
+        msgvar = tk.StringVar(value="All ready rows are selected. "
+                                    "Double-click a row to exclude it.")
+        _msg = tk.Label(dlg, textvariable=msgvar, bg=BG, fg=MUTED,
+                        font=FONT_SMALL, anchor="w")
+        _msg.pack(side="bottom", fill="x", padx=14)
+        cols = ("use", "old", "new", "status")
+        tv = ttk.Treeview(dlg, columns=cols, show="headings", height=14)
+        tv.heading("use", text="✓")
+        tv.heading("old", text="current name")
+        tv.heading("new", text="new name")
+        tv.heading("status", text="status")
+        tv.column("use", width=36, anchor="center")
+        tv.column("old", width=240)
+        tv.column("new", width=240)
+        tv.column("status", width=180)
+        sb = ttk.Scrollbar(dlg, orient="vertical", command=tv.yview)
+        tv.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        tv.pack(side="top", fill="both", expand=True, padx=12, pady=(12, 6))
+        checked = set()
+        rows = []  # (plan_idx, old, new_or_None)
+        for idx, item in enumerate(plan):
+            if item["new_files"]:
+                for old, new in zip(item["files"], item["new_files"]):
+                    rows.append((idx, old, new))
+            else:
+                rows.append((idx, item["files"][0], None))
+            if item["status"] == "ok":
+                checked.add(idx)
+
+        def _status_text(idx):
+            item = plan[idx]
+            if item["status"] == "ok":
+                return "renamed" if idx not in checked and \
+                    item.get("_done") else "ready"
+            return item["reason"] or "skip"
+
+        def _fill_rows():
+            for _iid in list(tv.get_children()):
+                tv.delete(_iid)
+            for idx, old, new in rows:
+                tv.insert("", "end", iid=f"{idx}.{len(tv.get_children())}",
+                          values=("✓" if idx in checked else "",
+                                  os.path.basename(old),
+                                  os.path.basename(new) if new else "—",
+                                  _status_text(idx)))
+
+        _fill_rows()
+
+        def _toggle(_e=None):
+            sel = tv.selection()
+            if not sel:
+                return
+            try:
+                idx = int(str(sel[0]).split(".")[0])
+            except Exception:
+                return
+            if plan[idx]["status"] != "ok":
+                return
+            if idx in checked:
+                checked.discard(idx)
+            else:
+                checked.add(idx)
+            _fill_rows()
+
+        tv.bind("<Double-Button-1>", _toggle)
+
+        def _select_all():
+            for idx, item in enumerate(plan):
+                if item["status"] == "ok":
+                    checked.add(idx)
+            _fill_rows()
+
+        def _select_none():
+            checked.clear()
+            _fill_rows()
+
+        def _do_copy():
+            try:
+                lines = []
+                for idx, item in enumerate(plan):
+                    if item["new_files"]:
+                        for old, new in zip(item["files"], item["new_files"]):
+                            lines.append(f"{os.path.basename(old)}  ->  "
+                                         f"{os.path.basename(new)}")
+                root.clipboard_clear()
+                root.clipboard_append("\n".join(lines))
+                msgvar.set("Copied to clipboard")
+            except Exception as ex:
+                msgvar.set(f"Copy failed: {ex}")
+
+        def _do_rename():
+            sel = [plan[i] for i in sorted(checked)
+                   if plan[i]["status"] == "ok"]
+            if not sel:
+                msgvar.set("Nothing selected")
+                return
+            renamed, skipped, lp = apply_batch(sel, log_path=default_batch_log())
+            for old, new in renamed:
+                r = state.get("result")
+                if r and os.path.normcase(r.get("path") or "") == \
+                        os.path.normcase(old):
+                    r["path"] = new
+                    pathvar.set(os.path.basename(new))
+            try:
+                _set_status(f"Batch: renamed {len(renamed)}, "
+                            f"skipped {len(skipped)}"
+                            + (f" — log: {os.path.basename(lp)}" if lp else ""))
+            except Exception:
+                pass
+            msgvar.set(f"Renamed {len(renamed)}, skipped {len(skipped)}."
+                       + (f" Log: {lp}" if lp else ""))
+            for item in sel:
+                item["_done"] = True
+            checked.clear()
+            _fill_rows()
+
+        # btns frame was packed at the bottom up-front; just add buttons
+        mkbtn(btns, text="Rename selected", style="Accent.TButton",
+              command=_do_rename).pack(side="left")
+        mkbtn(btns, text="All", style="Ghost.TButton",
+              command=_select_all).pack(side="left", padx=(8, 0))
+        mkbtn(btns, text="None", style="Ghost.TButton",
+              command=_select_none).pack(side="left", padx=(8, 0))
+        mkbtn(btns, text="Copy list", style="Ghost.TButton",
+              command=_do_copy).pack(side="left", padx=(8, 0))
+        mkbtn(btns, text="Close", style="Ghost.TButton",
+              command=dlg.destroy).pack(side="right")
+
     # logic
     def pick():
         p = filedialog.askopenfilename(title="Select PKG / image file",
@@ -2505,9 +3047,11 @@ def run_gui(start_path=None):
             r = parse_pkg(p)
         except Exception as e:
             statusvar.set(f"Error: {e}")
+            _set_rename_enabled(False)
             return
         if not r.get("ok"):
             statusvar.set("Error: " + r.get("error", "?"))
+            _set_rename_enabled(False)
             return
         state["result"] = r
         state["show_all"] = False
@@ -2635,6 +3179,7 @@ def run_gui(start_path=None):
             _sync_compact_cover("(no image)")
         if r.get("patch_tid"):
             fetch_patch_async(r["patch_tid"], r.get("own_ver", ""))
+        _set_rename_enabled(True)
         _set_status(f"OK - {len(r['entries'])} entries")
 
     def refresh_details():
@@ -2947,9 +3492,18 @@ def run_gui(start_path=None):
         root.after(200, lambda: load(start_path))
     if has_dnd:
         def _on_drop(ev):
-            p = (ev.data or "").strip().strip("{}").split("} {")[0]
-            if p and os.path.exists(p):
-                load(p)
+            import re as _re
+            data = (ev.data or "").strip()
+            if not data:
+                return
+            if data.startswith("{"):
+                paths = [p.strip().strip("{}") for p in
+                         _re.split(r"}\s+{", data)]
+            else:
+                paths = [data]
+            paths = [p for p in paths if p and os.path.exists(p)]
+            if paths:
+                show_batch(paths)  # single file falls through to load()
         try:
             root.drop_target_register(DND_FILES)
             root.dnd_bind("<<Drop>>", _on_drop)
@@ -3005,6 +3559,16 @@ def run_gui(start_path=None):
 if __name__ == "__main__":
     if len(sys.argv) >= 3 and sys.argv[1] == "--info":
         print_info(sys.argv[2])
+    elif len(sys.argv) >= 3 and sys.argv[1] == "--batch-rename":
+        _args = sys.argv[2:]
+        _apply = "--apply" in _args
+        _rec = "--recursive" in _args
+        _inputs = [a for a in _args if not a.startswith("--")]
+        if not _inputs:
+            print("usage: pkgviewer.py --batch-rename <file|folder> [...] "
+                  "[--recursive] [--apply]")
+        else:
+            print_batch(_inputs, recursive=_rec, apply=_apply)
     elif len(sys.argv) >= 2 and os.path.exists(sys.argv[1]):
         run_gui(sys.argv[1])
     elif len(sys.argv) >= 2 and sys.argv[1] == "--info":

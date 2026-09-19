@@ -1,5 +1,5 @@
 ; PKG Viewer installer — per-user, file icons, no admin needed.
-#define AppVer "1.7.8"
+#define AppVer "1.9.0"
 
 [Setup]
 AppName=PKG Viewer
@@ -7,7 +7,7 @@ AppVersion={#AppVer}
 AppPublisher=Loopayeh
 DefaultDirName={autopf}\PKG Viewer
 DefaultGroupName=PKG Viewer
-OutputDir=D:\Hermes\projects\pkg-viewer
+OutputDir=.
 OutputBaseFilename=PKGViewer-Setup-{#AppVer}
 PrivilegesRequired=lowest
 Compression=lzma2/max
@@ -16,11 +16,11 @@ UninstallDisplayName=PKG Viewer
 WizardStyle=modern
 
 [Files]
-Source: "D:\Hermes\projects\pkg-viewer\PKGViewer.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "D:\Hermes\projects\pkg-viewer\assets\icons\pkg.ico"; DestDir: "{app}\icons"; Flags: ignoreversion
-Source: "D:\Hermes\projects\pkg-viewer\assets\icons\exfat.ico"; DestDir: "{app}\icons"; Flags: ignoreversion
-Source: "D:\Hermes\projects\pkg-viewer\assets\icons\ffpfsc.ico"; DestDir: "{app}\icons"; Flags: ignoreversion
-Source: "D:\Hermes\projects\pkg-viewer\assets\icons\ffpkg.ico"; DestDir: "{app}\icons"; Flags: ignoreversion
+Source: "dist\PKGViewer.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "assets\icons\pkg.ico"; DestDir: "{app}\icons"; Flags: ignoreversion
+Source: "assets\icons\exfat.ico"; DestDir: "{app}\icons"; Flags: ignoreversion
+Source: "assets\icons\ffpfsc.ico"; DestDir: "{app}\icons"; Flags: ignoreversion
+Source: "assets\icons\ffpkg.ico"; DestDir: "{app}\icons"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\PKG Viewer"; Filename: "{app}\PKGViewer.exe"

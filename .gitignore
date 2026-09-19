@@ -8,6 +8,7 @@ PKGViewer-Setup-*.exe
 builds/
 *.deb
 PKGViewer-linux-*.tar.gz
+batch_rename_*.log
 assets/*
 !assets/icons/
 !assets/icons/*.ico
