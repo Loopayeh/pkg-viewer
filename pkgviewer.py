@@ -2592,24 +2592,6 @@ def run_gui(start_path=None):
     batchbtn = mkbtn(header, text="Batch", style="Ghost.TButton",
                      command=lambda: pick_many())
     batchbtn.pack(side="left", padx=(8, 0))
-    # LMAN-style Tools menu (see screenshots: Export Unencrypted).
-    def _mkmenu(label):
-        mb = tk.Menubutton(header, text=label, bg="#404040", fg="#f1f3f8",
-                           font=("Segoe UI", 10), relief="flat",
-                           activebackground="#2c3342", activeforeground="#f1f3f8",
-                           cursor="hand2", padx=12, pady=7)
-        mb.pack(side="left", padx=(8, 0))
-        menu = tk.Menu(mb, tearoff=0, bg=CARD, fg=TEXT,
-                       activebackground=ACCENT, activeforeground="#171717")
-        mb.config(menu=menu)
-        return menu, mb
-    toolsmenu, toolsmenubtn = _mkmenu("Tools ▾")
-    showcopylink = tk.BooleanVar(
-        value=bool(_load_settings().get("show_copylink", True)))
-    toolsmenu.add_checkbutton(label="Copy Link Button",
-                              variable=showcopylink,
-                              selectcolor="#f1f3f8",
-                              command=lambda: _toggle_copylink())
     undobtn = mkbtn(header, text="Undo", style="Ghost.TButton",
                     command=lambda: undo_last_rename())
     undobtn.pack(side="left", padx=(8, 0))
@@ -2722,9 +2704,13 @@ def run_gui(start_path=None):
                  state="readonly", width=24).pack(anchor="w", pady=(0, 4))
     cbadgerow = ttk.Frame(compact, style="Card.TFrame")
     cbadgerow.pack(pady=(8, 0))
+    cbadgerow2 = ttk.Frame(compact, style="Card.TFrame")
+    cbadgerow2.pack(pady=(2, 0))
     compact_badge_labels = []
-    for bv in badgevars:
-        lb = mkpill(cbadgerow, textvariable=bv, parent_bg=CARD)
+    for _bi, bv in enumerate(badgevars):
+        # 5 badges don't fit one compact row: wrap 3 + 2
+        _bparent = cbadgerow if _bi < 3 else cbadgerow2
+        lb = mkpill(_bparent, textvariable=bv, parent_bg=CARD)
         lb.pack(side="left", padx=(0, 6), pady=2)
         compact_badge_labels.append(lb)
     state["compact_badge_labels"] = compact_badge_labels
@@ -2794,13 +2780,34 @@ def run_gui(start_path=None):
     _troprev = ttk.Frame(_tbody, style="Card.TFrame", width=220)
     _troprev.pack(side="right", fill="y", padx=(8, 0))
     _troprev.pack_propagate(False)
-    trobanlbl = tk.Label(_troprev, bg=CARD, borderwidth=0,
+    # scrollable preview: banner + icon never get clipped on short windows
+    _trocanvas = tk.Canvas(_troprev, bg=CARD, borderwidth=0,
+                           highlightthickness=0, width=196)
+    _troscroll = ttk.Scrollbar(_troprev, orient="vertical",
+                               command=_trocanvas.yview)
+    _trocanvas.configure(yscrollcommand=_troscroll.set)
+    _troscroll.pack(side="right", fill="y")
+    _trocanvas.pack(side="left", fill="both", expand=True)
+    _troinner = tk.Frame(_trocanvas, bg=CARD)
+    _trocanvas.create_window((0, 0), window=_troinner, anchor="nw")
+
+    def _tro_scrollregion(_ev=None):
+        try:
+            _trocanvas.configure(scrollregion=_trocanvas.bbox("all"))
+        except Exception:
+            pass
+
+    _troinner.bind("<Configure>", _tro_scrollregion)
+    _trocanvas.bind("<MouseWheel>",
+                    lambda _ev: _trocanvas.yview_scroll(
+                        -1 * (_ev.delta // 120), "units"))
+    trobanlbl = tk.Label(_troinner, bg=CARD, borderwidth=0,
                          highlightthickness=0)
-    trobanlbl.pack(pady=(0, 8))
+    trobanlbl.pack(pady=(0, 4))
     # no fixed width/height: the label sizes to the image (no cropping)
-    troimglbl = tk.Label(_troprev, bg=CARD, fg=MUTED, font=FONT_SMALL,
+    troimglbl = tk.Label(_troinner, bg=CARD, fg=MUTED, font=FONT_SMALL,
                          text="(no icon)")
-    troimglbl.pack(pady=(0, 8))
+    troimglbl.pack(pady=(0, 4))
     state["trotv"] = trotv
     state["troimglbl"] = troimglbl
     state["trobanlbl"] = trobanlbl
@@ -3145,7 +3152,7 @@ def run_gui(start_path=None):
                 _b = _ban[0]
                 _bim = _Img.open(_io.BytesIO(
                     td[_b["off"]:_b["off"] + _b["size"]])).convert("RGB")
-                _bim.thumbnail((184, 104))
+                _bim.thumbnail((150, 84))
                 _bph = _ImgTk.PhotoImage(_bim)
                 state["trobanlbl"].config(image=_bph)
                 state["trobanlbl"].image = _bph
@@ -3181,7 +3188,7 @@ def run_gui(start_path=None):
             _ic = _sq[_idx]
             _im = _Img.open(_io.BytesIO(
                 _td[_ic["off"]:_ic["off"] + _ic["size"]])).convert("RGBA")
-            _im.thumbnail((184, 184))
+            _im.thumbnail((150, 150))
             _ph = _ImgTk.PhotoImage(_im)
             _imglbl.config(image=_ph, text="")
             _imglbl.image = _ph
@@ -4169,13 +4176,6 @@ def run_gui(start_path=None):
                 fail += 1
         statusvar.set(f"Extracted {ok} files" + (f" ({fail} skipped)" if fail else ""))
 
-    def _toggle_copylink():
-        try:
-            _save_settings({"show_copylink": bool(showcopylink.get())})
-        except Exception:
-            pass
-        refresh_details()
-
     def copy_update_link():
         # LMAN-style "CopyLinks": copy the patch-tracker page for this
         # title (direct Sony links are blocked; orbispatches needs a
@@ -4422,16 +4422,15 @@ def run_gui(start_path=None):
                 if ln.strip() == "-- Updates --":
                     metatext.tag_add("updates", f"{i}.0", "end-1c")
                     try:
-                        if showcopylink.get():
-                            _cb = tk.Button(metatext, text="Copy link",
-                                            bg=CARD2, fg=TEXT, relief="flat",
-                                            font=FONT_SMALL, cursor="hand2",
-                                            padx=8, pady=0,
-                                            activebackground=ACCENT,
-                                            activeforeground="#171717",
-                                            command=lambda: copy_update_link())
-                            metatext.window_create(f"{i}.end", window=_cb)
-                            state["copylink_embed"] = _cb  # keep a ref
+                        _cb = tk.Button(metatext, text="Copy link",
+                                        bg=CARD2, fg=TEXT, relief="flat",
+                                        font=FONT_SMALL, cursor="hand2",
+                                        padx=8, pady=0,
+                                        activebackground=ACCENT,
+                                        activeforeground="#171717",
+                                        command=lambda: copy_update_link())
+                        metatext.window_create(f"{i}.end", window=_cb)
+                        state["copylink_embed"] = _cb  # keep a ref
                     except Exception:
                         pass
                     break
@@ -4560,10 +4559,6 @@ def run_gui(start_path=None):
                     undobtn.pack_forget()
                 except Exception:
                     pass
-                try:
-                    toolsmenubtn.pack_forget()
-                except Exception:
-                    pass
                 compact.grid(row=0, column=0, sticky="n", pady=(6, 0))
                 compactbtn.config(text="Expand")
                 try:
@@ -4593,14 +4588,6 @@ def run_gui(start_path=None):
                     undobtn.pack(side="left", padx=(8, 0))
                 except Exception:
                     pass
-                try:
-                    toolsmenubtn.pack(side="left", padx=(8, 0),
-                                      before=undobtn)
-                except Exception:
-                    try:
-                        toolsmenubtn.pack(side="left", padx=(8, 0))
-                    except Exception:
-                        pass
                 _pl = state.get("pathlabel")
                 if _pl is not None:
                     _pl.pack(side="left", padx=(14, 0))
