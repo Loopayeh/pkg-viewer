@@ -1658,6 +1658,165 @@ def _exfat_result(fs, path, size, platform, inner_name=None):
             "icon_entry": "icon0.png", "exfat": True}
 
 
+def parse_trp(data):
+    """Inner files of a trophy00.trp (PS4/PS5): [{name, off, size}] or [].
+
+    Layout (verified on retail TRP): u32 magic DCA24D00, u32be count @4,
+    u64be total @8, u32be header 0x4d @0x10, u32be entry-size 0x40 @0x14,
+    32-byte digest @0x18, entries @0x38: {u64 unk, u64be off, u64be size,
+    u64 flags, u64 unk, char name[24]}. Strict validation — [] on doubt.
+    """
+    try:
+        if not data or len(data) < 0x38 or data[:4] != b"\xdc\xa2M\x00":
+            return []
+        import struct as _st
+        count = _st.unpack_from(">I", data, 4)[0]
+        total = _st.unpack_from(">Q", data, 8)[0]
+        esize = _st.unpack_from(">I", data, 0x14)[0]
+        if not (1 <= count <= 10000) or total != len(data):
+            return []
+        if esize != 0x40:
+            return []
+        hsize = 0x38  # entries start after the 32-byte digest
+        out = []
+        for i in range(count):
+            eo = hsize + i * esize
+            if eo + esize > len(data):
+                return []
+            off = _st.unpack_from(">Q", data, eo + 8)[0]
+            size = _st.unpack_from(">Q", data, eo + 16)[0]
+            nm = data[eo + 40:eo + 64].split(b"\x00")[0].decode(
+                "ascii", errors="replace")
+            if not nm or off + size > len(data):
+                return []
+            out.append({"name": nm, "off": off, "size": size})
+        return out
+    except Exception:
+        return []
+
+
+# PS4/PS5 trophy ESFM decryption (psdevwiki: public Trophy_Key; per-title
+# NPcommID like NPWR13863_00). Verified on L.A. Noire DUPLEX dump.
+TRP_TROPHY_KEY = bytes([0x21, 0xF4, 0x1A, 0x6B, 0xAD, 0x8A, 0x1D, 0x3E,
+                        0xCA, 0x7A, 0xD5, 0x86, 0xC1, 0x01, 0xB7, 0xA9])
+
+
+def decrypt_esfm(blob, npcommid):
+    """Decrypt one ESFM file -> XML bytes, or None. Never raises."""
+    try:
+        from cryptography.hazmat.primitives.ciphers import (
+            Cipher as _Cipher, algorithms as _Algos, modes as _Modes)
+    except Exception:
+        return None
+    try:
+        if not blob or len(blob) < 32 or len(blob) % 16:
+            return None
+        npid = (npcommid.encode()[:16]
+                if isinstance(npcommid, str) else bytes(npcommid[:16]))
+        npid = npid.ljust(16, b"\x00")
+        enc = _Cipher(_Algos.AES(TRP_TROPHY_KEY),
+                      _Modes.CBC(bytes(16))).encryptor()
+        ckey = enc.update(npid) + enc.finalize()
+        dec = _Cipher(_Algos.AES(ckey), _Modes.CBC(blob[:16])).decryptor()
+        pt = dec.update(blob[16:]) + dec.finalize()
+        pad = pt[-1]
+        if not (1 <= pad <= 16) or pt[-pad:] != bytes([pad]) * pad:
+            return None
+        pt = pt[:-pad]
+        head = pt[:200].lower()
+        if b"trophy" not in head:
+            return None
+        if sum(1 for b in pt if 32 <= b < 127 or b in (9, 10, 13)) < len(pt) * 0.7:
+            return None
+        return pt
+    except Exception:
+        return None
+
+
+def bruteforce_npid(blob, start=0, end=100000):
+    """Find NPWRxxxxx_00 for an ESFM blob -> (npid, xml) or (None, None)."""
+    try:
+        from cryptography.hazmat.primitives.ciphers import (
+            Cipher as _Cipher, algorithms as _Algos, modes as _Modes)
+    except Exception:
+        return None, None
+    try:
+        if not blob or len(blob) < 32:
+            return None, None
+        ct = blob[16:32]
+        for i in range(start, end):
+            npid = ("NPWR%05d_00" % i).encode().ljust(16, b"\x00")
+            enc = _Cipher(_Algos.AES(TRP_TROPHY_KEY),
+                          _Modes.CBC(bytes(16))).encryptor()
+            ckey = enc.update(npid) + enc.finalize()
+            dec = _Cipher(_Algos.AES(ckey),
+                          _Modes.CBC(blob[:16])).decryptor()
+            if (dec.update(ct) + dec.finalize())[:1] != b"<":
+                continue
+            xml = decrypt_esfm(blob, npid.rstrip(b"\x00").decode())
+            if xml:
+                return npid.rstrip(b"\x00").decode(), xml
+        return None, None
+    except Exception:
+        return None, None
+
+
+def parse_trophy_xml(xml):
+    """TROP.SFM XML -> [{id, name, detail, type, hidden}]. Never raises."""
+    try:
+        import xml.etree.ElementTree as _ET
+        root = _ET.fromstring(xml)
+        out = []
+        for t in root.iter("trophy"):
+            try:
+                out.append({"id": t.get("id", "?"),
+                            "name": (t.findtext("name") or "").strip(),
+                            "detail": (t.findtext("detail") or "").strip(),
+                            "type": (t.get("ttype") or "?").upper(),
+                            "hidden": (t.get("hidden") or "").lower() == "yes"})
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return []
+
+
+def carve_trp_icons(data):
+    """Raw PNGs hidden in a TRP (trophy icons + title banners).
+
+    Not in the entry table — carved by magic. Returns [{off, size, w, h}]
+    with dims from IHDR (no image decode). Strict: drops anything odd.
+    Trophy icons are 240x240 in trophy-id order; 320x176 ones are banners.
+    """
+    try:
+        import struct as _st
+        if not data or len(data) < 100:
+            return []
+        out = []
+        _at = 0
+        while True:
+            _s = data.find(b"\x89PNG\r\n\x1a\n", _at)
+            if _s < 0:
+                break
+            _at = _s + 1
+            if _s + 33 > len(data):
+                continue
+            if data[_s + 12:_s + 16] != b"IHDR":
+                continue
+            _w, _h = _st.unpack_from(">2I", data, _s + 16)
+            if _w <= 0 or _h <= 0 or _w > 2048 or _h > 2048:
+                continue
+            _en = data.find(b"IEND", _s) + 8
+            if _en <= 8 or _en - _s > 10_000_000 or _en > len(data):
+                continue
+            out.append({"off": _s, "size": _en - _s, "w": _w, "h": _h})
+            if len(out) > 2000:
+                break
+        return out
+    except Exception:
+        return []
+
+
 def read_entry_bytes(path, abs_off, size, limit=32_000_000):
     if isinstance(abs_off, tuple) and abs_off and abs_off[0] == "ps3":
         _, retail, keymat, doff, fo = abs_off
@@ -1865,7 +2024,6 @@ def build_clean_name(result, parts=None):
 
 
 BATCH_EXTS = (".pkg", ".ffpkg", ".ffpfsc", ".exfat")
-SPLIT_SIZE = 4294967296  # 4 GiB parts for FAT32 (LMAN-compatible _N naming)
 
 
 def split_set_siblings(path):
@@ -2452,13 +2610,6 @@ def run_gui(start_path=None):
                               variable=showcopylink,
                               selectcolor="#f1f3f8",
                               command=lambda: _toggle_copylink())
-    splitmenu = tk.Menu(toolsmenu, tearoff=0, bg=CARD, fg=TEXT,
-                        activebackground=ACCENT, activeforeground="#171717")
-    splitmenu.add_command(label="Split Package (4GB parts)",
-                          command=lambda: split_package())
-    splitmenu.add_command(label="Merge Split Package",
-                          command=lambda: merge_package())
-    toolsmenu.add_cascade(label="Split / Merge", menu=splitmenu)
     undobtn = mkbtn(header, text="Undo", style="Ghost.TButton",
                     command=lambda: undo_last_rename())
     undobtn.pack(side="left", padx=(8, 0))
@@ -2615,6 +2766,51 @@ def run_gui(start_path=None):
     tab_meta = ttk.Frame(nb)
     nb.add(tab_meta, text="  Details  ")
     nb.add(tab_entries, text="  Files  ")
+    tab_troph = ttk.Frame(nb)
+    nb.add(tab_troph, text="  Trophies  ")
+    state["troph_tab"] = tab_troph
+    trophsumvar = tk.StringVar(value="No trophies loaded")
+    state["trophsumvar"] = trophsumvar
+    _trophbar = ttk.Frame(tab_troph, style="Card.TFrame")
+    _trophbar.pack(fill="x", pady=(0, 4))
+    tk.Label(_trophbar, textvariable=trophsumvar, bg=CARD, fg=MUTED,
+             font=FONT_SMALL, anchor="w", padx=10, pady=6).pack(side="left",
+                                                                fill="x",
+                                                                expand=True)
+    mkbtn(_trophbar, text="Save icons...", style="Ghost.TButton", bg=CARD,
+          command=lambda: save_trophy_icons()).pack(side="right",
+                                                    padx=(0, 8))
+    _tbody = ttk.Frame(tab_troph, style="Card.TFrame")
+    _tbody.pack(fill="both", expand=True)
+    trotv = ttk.Treeview(_tbody, columns=("id", "grade", "name"),
+                         show="headings", height=14)
+    trotv.heading("id", text="ID")
+    trotv.heading("grade", text="Grade")
+    trotv.heading("name", text="Name")
+    trotv.column("id", width=40, anchor="center")
+    trotv.column("grade", width=55, anchor="center")
+    trotv.column("name", width=260)
+    trotv.pack(side="left", fill="both", expand=True)
+    _troprev = ttk.Frame(_tbody, style="Card.TFrame", width=220)
+    _troprev.pack(side="right", fill="y", padx=(8, 0))
+    _troprev.pack_propagate(False)
+    trobanlbl = tk.Label(_troprev, bg=CARD, borderwidth=0,
+                         highlightthickness=0)
+    trobanlbl.pack(pady=(0, 8))
+    # no fixed width/height: the label sizes to the image (no cropping)
+    troimglbl = tk.Label(_troprev, bg=CARD, fg=MUTED, font=FONT_SMALL,
+                         text="(no icon)")
+    troimglbl.pack(pady=(0, 8))
+    state["trotv"] = trotv
+    state["troimglbl"] = troimglbl
+    state["trobanlbl"] = trobanlbl
+    trodetvar = tk.StringVar(value="Select a trophy for details")
+    state["trodetvar"] = trodetvar
+    tk.Label(tab_troph, textvariable=trodetvar, bg=CARD, fg=TEXT,
+             font=FONT_SMALL, anchor="w", justify="left",
+             wraplength=640, padx=10, pady=6).pack(fill="x", pady=(4, 0))
+    state["trophy_path"] = None
+    state["trophy_data"] = None
 
     tree = ttk.Treeview(tab_entries, columns=("id", "size", "codec"), show="tree headings")
     tree.heading("#0", text="name", anchor="w")
@@ -2630,11 +2826,375 @@ def run_gui(start_path=None):
     sb.pack(side="right", fill="y")
     tree.pack(side="left", fill="both", expand=True)
 
+    def extract_single():
+        # Extract one Files-tab entry with rename (save-as dialog), streamed.
+        import threading as _th
+        from tkinter import filedialog as _fd
+        r = state.get("result")
+        if not r:
+            statusvar.set("Open a file first")
+            return
+        sel = tree.selection()
+        if not sel:
+            statusvar.set("Select a file in the Files tab")
+            return
+        _iid = sel[0]
+        # trophy-inner file: slice it out of the parent TRP entry
+        if _iid in (state.get("trp_children") or {}):
+            try:
+                _pi, _in = state["trp_children"][_iid]
+                _pe = r["entries"][_pi]
+                _td = None
+                if _pe.get("cached") is not None:
+                    _td = bytes(_pe["cached"])
+                elif isinstance(_pe.get("abs_off"), int) and _pe["abs_off"] >= 0:
+                    _td = read_entry_bytes(r["path"], _pe["abs_off"],
+                                           _pe["size"], limit=300_000_000)
+                if not _td:
+                    raise OSError("unreadable TRP")
+                out = _fd.asksaveasfilename(title="Extract file as",
+                                            initialfile=_in["name"],
+                                            filetypes=[("All files", "*.*")])
+                if not out:
+                    return
+                with open(out, "wb") as fw:
+                    fw.write(_td[_in["off"]:_in["off"] + _in["size"]])
+                statusvar.set(f"Extracted {_in['name']} "
+                              f"({fmt_size(_in['size'])})")
+            except Exception as ex:
+                statusvar.set(f"Extract failed: {ex}")
+            return
+        try:
+            e = r["entries"][int(_iid[1:])]
+        except Exception:
+            statusvar.set("Bad selection")
+            return
+        nm = (e.get("name") or "").strip() or f"entry_{e.get('id', 0)}"
+        if e.get("size", 0) <= 0:
+            statusvar.set("Empty entry — nothing to extract")
+            return
+        safe = nm.replace("/", "_").replace("\\", "_")
+        out = _fd.asksaveasfilename(title="Extract file as",
+                                    initialfile=safe,
+                                    filetypes=[("All files", "*.*")])
+        if not out:
+            return
+
+        def _work():
+            try:
+                total = e.get("size", 0)
+                if e.get("local_path") and os.path.isfile(e["local_path"]):
+                    with open(e["local_path"], "rb") as fh:
+                        data = fh.read()
+                    with open(out, "wb") as fw:
+                        fw.write(data)
+                    done = len(data)
+                elif e.get("cached") is not None:
+                    with open(out, "wb") as fw:
+                        fw.write(e["cached"])
+                    done = len(e["cached"])
+                elif isinstance(e.get("abs_off"), int) and e["abs_off"] >= 0:
+                    done = 0
+                    with open(r["path"], "rb") as fh, open(out, "wb") as fw:
+                        fh.seek(e["abs_off"])
+                        left = total
+                        while left > 0:
+                            buf = fh.read(min(64 * 1024 * 1024, left))
+                            if not buf:
+                                break
+                            fw.write(buf)
+                            done += len(buf)
+                            left -= len(buf)
+                else:  # PS3-crypto / exfat chains: whole-read fallback
+                    data = read_entry_bytes(r["path"], e["abs_off"], total,
+                                            limit=2_000_000_000)
+                    if not data:
+                        raise OSError("unreadable entry")
+                    with open(out, "wb") as fw:
+                        fw.write(data)
+                    done = len(data)
+                root.after(0, statusvar.set,
+                           f"Extracted {safe} ({fmt_size(done)})")
+            except Exception as ex:
+                root.after(0, statusvar.set, f"Extract failed: {ex}")
+
+        statusvar.set(f"Extracting {safe}...")
+        _th.Thread(target=_work, daemon=True).start()
+
+    filectx = tk.Menu(root, tearoff=0, bg=CARD, fg=TEXT,
+                      activebackground=ACCENT, activeforeground="#171717")
+    filectx.add_command(label="Extract...",
+                        command=lambda: extract_single())
+    filectx.add_command(label="View trophies",
+                        command=lambda: show_trophies())
+    tree.bind("<Button-3>",
+              lambda ev: (tree.selection_set(tree.identify_row(ev.y)),
+                          filectx.tk_popup(ev.x_root, ev.y_root))
+              if tree.identify_row(ev.y) else None)
+    tree.bind("<Double-Button-1>", lambda ev: _tree_activate())
+
+    def _tree_activate():
+        # double-click a .trp pack -> trophy list; anything else -> extract
+        try:
+            sel = tree.selection()
+            if sel:
+                _iid = sel[0]
+                if _iid.startswith("e") and "c" not in _iid:
+                    _e = state.get("result", {}).get("entries", [])[int(_iid[1:])]
+                    if (_e.get("name") or "").lower().endswith(".trp"):
+                        show_trophies()
+                        return
+        except Exception:
+            pass
+        extract_single()
+
+    def _trophy_reset(msg="No trophies loaded"):
+        try:
+            state["trotv"].delete(*state["trotv"].get_children())
+        except Exception:
+            pass
+        for _k, _v in (("trophsumvar", msg),
+                       ("trodetvar", "Select a trophy for details")):
+            try:
+                state[_k].set(_v)
+            except Exception:
+                pass
+        try:
+            state["troimglbl"].config(image="", text="(no icon)")
+            state["trobanlbl"].config(image="")
+        except Exception:
+            pass
+        state["trophy_data"] = None
+
+    def _trophy_start(entry, result):
+        # decrypt worker for one TRP entry; fills the Trophies tab on done
+        import threading as _th
+
+        def _work():
+            try:
+                if entry.get("cached") is not None:
+                    _td = bytes(entry["cached"])
+                elif isinstance(entry.get("abs_off"), int) and entry["abs_off"] >= 0:
+                    _td = read_entry_bytes(result["path"], entry["abs_off"],
+                                           entry["size"], limit=300_000_000)
+                else:
+                    raise OSError("unreadable TRP")
+                _inner = parse_trp(_td)
+                _cands = [t for t in _inner
+                          if t["name"].upper().startswith("TROP")
+                          and t["name"].upper().endswith(".ESFM")
+                          and t["size"] > 0]
+                # language files (TROP_00.ESFM) carry names/details;
+                # bare TROP.ESFM only has id/type/hidden skeleton
+                def _tkey(t):
+                    _un = t["name"].upper()
+                    if _un == "TROP.ESFM":
+                        return (1, _un)
+                    if _un == "TROPCONF.ESFM":
+                        return (2, _un)
+                    return (0, _un)
+                _cands.sort(key=_tkey)
+                _npid, _xml, _fallback = None, None, None
+                for _t in _cands:
+                    _blob = _td[_t["off"]:_t["off"] + _t["size"]]
+                    _n, _x = bruteforce_npid(_blob)
+                    if _x and _fallback is None:
+                        _fallback = (_n, _x)
+                    if _x:
+                        _ts = parse_trophy_xml(_x)
+                        if any(_t2.get("name") for _t2 in _ts):
+                            _npid, _xml = _n, _x
+                            break
+                if _xml is None and _fallback is not None:
+                    _npid, _xml = _fallback
+                _icons = carve_trp_icons(_td)
+                root.after(0, lambda: _trophy_fill(
+                    entry.get("name", ""), _npid, _xml, _icons, _td))
+            except Exception as ex:
+                root.after(0, statusvar.set, f"Trophy failed: {ex}")
+
+        state["trophy_path"] = result["path"]
+        _trophy_reset("Decrypting trophies (finding NP ID)...")
+        statusvar.set("Decrypting trophies (finding NP ID)...")
+        _th.Thread(target=_work, daemon=True).start()
+
+    def show_trophies():
+        # jump to the Trophies tab (auto-filled on load); start the
+        # worker here too if the tab isn't filled for this file yet.
+        r = state.get("result")
+        if not r:
+            statusvar.set("Open a file first")
+            return
+        sel = tree.selection()
+        _e = None
+        if sel:
+            _iid = sel[0]
+            if _iid.startswith("e") and "c" not in _iid:
+                try:
+                    _e = r["entries"][int(_iid[1:])]
+                except Exception:
+                    _e = None
+        if _e is None or not (_e.get("name") or "").lower().endswith(".trp"):
+            _es = [x for x in r["entries"]
+                   if (x.get("name") or "").lower().endswith(".trp")
+                   and x.get("size", 0) > 0]
+            _e = _es[0] if _es else None
+        try:
+            nb.select(state["troph_tab"])
+        except Exception:
+            pass
+        if _e is None:
+            _trophy_reset("No trophy pack in this file")
+            return
+        if state.get("trophy_path") == r["path"] and state.get("trophy_data"):
+            return
+        _trophy_start(_e, r)
+
+    def save_trophy_icons():
+        # Export every trophy icon (raw PNG bytes from the TRP) to a folder.
+        # Files are named "000_Platinum_Trophy.png" etc.
+        import threading as _th
+        from tkinter import filedialog as _fd
+        _dd = state.get("trophy_data") or {}
+        _trs, _sq, _td = _dd.get("trs", []), _dd.get("sq", []), _dd.get("td")
+        if not _trs or not _sq or _td is None:
+            statusvar.set("No trophy icons loaded")
+            return
+        dest = _fd.askdirectory(title="Save trophy icons to folder")
+        if not dest:
+            return
+
+        def _work():
+            try:
+                ok, skip = 0, 0
+                for _idx, _t in enumerate(_trs):
+                    if _idx >= len(_sq):
+                        skip += 1
+                        continue
+                    _ic = _sq[_idx]
+                    _blob = _td[_ic["off"]:_ic["off"] + _ic["size"]]
+                    if _blob[:8] != b"\x89PNG\r\n\x1a\n":
+                        skip += 1
+                        continue
+                    _nm = sanitize_filename_part(
+                        f"{_t['id']}_{_t['name'] or 'trophy'}") or f"trophy_{_idx}"
+                    with open(os.path.join(dest, _nm + ".png"), "wb") as _fw:
+                        _fw.write(_blob)
+                    ok += 1
+                root.after(0, statusvar.set,
+                           f"Saved {ok} trophy icons to {dest}" +
+                           (f" ({skip} skipped)" if skip else ""))
+            except Exception as ex:
+                root.after(0, statusvar.set, f"Save icons failed: {ex}")
+
+        statusvar.set("Saving trophy icons...")
+        _th.Thread(target=_work, daemon=True).start()
+
+    def _trophy_fill(trp_name, npid, xml, icons=None, td=None):
+        # fill the Trophies tab (main thread). Icon label has no fixed
+        # size: it wraps the image instead of cropping it.
+        if not xml:
+            try:
+                import cryptography  # noqa
+                _trophy_reset("NP ID not found (tried NPWR00000-99999_00)")
+                statusvar.set("NP ID not found (tried NPWR00000-99999_00)")
+            except Exception:
+                _trophy_reset("cryptography lib missing — can't decrypt")
+                statusvar.set("cryptography lib missing — can't decrypt")
+            return
+        _trs = parse_trophy_xml(xml)
+        if not _trs:
+            _trophy_reset("No trophies parsed")
+            return
+        _grades = {}
+        for _t in _trs:
+            _grades[_t["type"]] = _grades.get(_t["type"], 0) + 1
+        _hid = sum(1 for _t in _trs if _t["hidden"])
+        _gtext = " ".join(f"{_grades.get(g, 0)}{g}"
+                          for g in ("P", "G", "S", "B") if _grades.get(g))
+        # square icons map to trophies in order; wide ones are title banners
+        _sq = [ic for ic in (icons or []) if ic["w"] == ic["h"]]
+        _ban = [ic for ic in (icons or []) if ic["w"] != ic["h"]]
+        _imap_note = ""
+        if _sq and len(_sq) != len(_trs):
+            _imap_note = f" — icons {len(_sq)}/{len(_trs)} (order-mapped)"
+        state["trophy_data"] = {"trs": _trs, "sq": _sq, "td": td,
+                                "npid": npid}
+        _trophy_reset(f"{len(_trs)} trophies ({_gtext}) — "
+                      f"{_hid} hidden — {npid or '?'}"
+                      f"{_imap_note}")
+        state["trophy_data"] = {"trs": _trs, "sq": _sq, "td": td,
+                                "npid": npid}
+        _tv = state["trotv"]
+        try:
+            _tv.bind("<<TreeviewSelect>>", _tro_on_sel)
+        except Exception:
+            pass
+        _GRADE = {"P": "Platinum", "G": "Gold",
+                  "S": "Silver", "B": "Bronze"}
+        for _t in _trs:
+            _nm = _t["name"] + (" (hidden)" if _t["hidden"] else "")
+            _tv.insert("", "end",
+                       values=(_t["id"],
+                               _GRADE.get(_t["type"], _t["type"]), _nm))
+        # title banner on top of the preview pane, if the TRP has one
+        if _ban and td:
+            try:
+                import io as _io
+                from PIL import Image as _Img, ImageTk as _ImgTk
+                _b = _ban[0]
+                _bim = _Img.open(_io.BytesIO(
+                    td[_b["off"]:_b["off"] + _b["size"]])).convert("RGB")
+                _bim.thumbnail((184, 104))
+                _bph = _ImgTk.PhotoImage(_bim)
+                state["trobanlbl"].config(image=_bph)
+                state["trobanlbl"].image = _bph
+            except Exception:
+                pass
+        try:
+            _first = _tv.get_children()[0]
+            _tv.selection_set(_first)
+            _tro_on_sel()
+        except Exception:
+            pass
+
+    def _tro_on_sel(_ev=None):
+        try:
+            _tv = state["trotv"]
+            _s = _tv.selection()
+            if not _s:
+                return
+            _dd = state.get("trophy_data") or {}
+            _trs = _dd.get("trs", [])
+            _idx = _tv.index(_s[0])
+            _t = _trs[_idx]
+            state["trodetvar"].set(
+                f"[{_t['id']}] {_t['name']}: {_t['detail'] or '—'}")
+            _imglbl = state["troimglbl"]
+            _sq = _dd.get("sq", [])
+            _td = _dd.get("td")
+            if not _sq or _td is None or _idx >= len(_sq):
+                _imglbl.config(image="", text="(no icon)")
+                return
+            import io as _io
+            from PIL import Image as _Img, ImageTk as _ImgTk
+            _ic = _sq[_idx]
+            _im = _Img.open(_io.BytesIO(
+                _td[_ic["off"]:_ic["off"] + _ic["size"]])).convert("RGBA")
+            _im.thumbnail((184, 184))
+            _ph = _ImgTk.PhotoImage(_im)
+            _imglbl.config(image=_ph, text="")
+            _imglbl.image = _ph
+        except Exception:
+            pass
+
     metabar = ttk.Frame(tab_meta, style="Card.TFrame")
     metabar.pack(fill="x", pady=(0, 4))
     detailvar = tk.StringVar(value="Show all")
     mkbtn(metabar, text="Extract all", style="Ghost.TButton", bg=CARD,
           command=lambda: extract_all()).pack(side="left")
+    mkbtn(metabar, text="Copy info", style="Ghost.TButton", bg=CARD,
+          command=lambda: copy_all_info()).pack(side="left", padx=(8, 0))
     detailbtn = ttk.Button(metabar, textvariable=detailvar, style="Accent.TButton",
                            command=lambda: toggle_details())
     detailbtn.pack(side="right")
@@ -3634,109 +4194,27 @@ def run_gui(start_path=None):
         except Exception as ex:
             statusvar.set(f"Copy failed: {ex}")
 
-    def _io_progress(done, total, what):
-        try:
-            pct = (done * 100 // total) if total else 0
-            root.after(0, statusvar.set,
-                       f"{what}: {pct}% ({fmt_size(done)} / {fmt_size(total)})")
-        except Exception:
-            pass
-
-    def split_package():
-        # LMAN-style Split: 4GB parts (base_0.pkg, base_1.pkg...) for FAT32.
-        import re as _re
-        import threading as _th
-        from tkinter import filedialog as _fd
+    def copy_all_info():
+        # Copy everything about the open file: header rows + Details text.
         r = state.get("result")
-        src = r.get("path") if r and os.path.isfile(r.get("path", "")) else ""
-        if not src:
-            src = _fd.askopenfilename(title="Select PKG to split")
-            if not src:
-                return
-        dest = _fd.askdirectory(title="Save parts to folder")
-        if not dest:
-            return
-        stem = os.path.splitext(os.path.basename(src))[0]
-        stem = _re.sub(r"_\d+$", "", stem)
-        try:
-            total = os.path.getsize(src)
-        except OSError as ex:
-            statusvar.set(f"Split failed: {ex}")
-            return
-        if total <= SPLIT_SIZE:
-            statusvar.set("File is already under 4GB — no split needed")
-            return
-
-        def _work():
-            try:
-                done, idx = 0, 0
-                with open(src, "rb") as fh:
-                    while True:
-                        chunk = fh.read(SPLIT_SIZE)
-                        if not chunk:
-                            break
-                        out = os.path.join(dest, f"{stem}_{idx}.pkg")
-                        with open(out, "wb") as fw:
-                            fw.write(chunk)
-                        done += len(chunk)
-                        idx += 1
-                        _io_progress(done, total, "Splitting")
-                root.after(0, statusvar.set,
-                           f"Split done: {idx} parts in {dest}")
-            except Exception as ex:
-                root.after(0, statusvar.set, f"Split failed: {ex}")
-
-        statusvar.set("Splitting...")
-        _th.Thread(target=_work, daemon=True).start()
-
-    def merge_package():
-        # LMAN-style Merge: join base_0.pkg, base_1.pkg... back into one file.
-        import threading as _th
-        from tkinter import filedialog as _fd
-        first = _fd.askopenfilename(title="Select first part (_0.pkg)",
-                                    filetypes=[("PKG parts", "*_0.pkg"),
-                                               ("All files", "*.*")])
-        if not first:
-            return
-        parts = split_set_siblings(first)
-        if len(parts) < 2:
-            statusvar.set("Not a split set (no _N siblings found)")
-            return
-        import re as _re
-        stem = _re.sub(r"_\d+\.pkg$", "", os.path.basename(parts[0]),
-                       flags=_re.IGNORECASE)
-        out = _fd.asksaveasfilename(title="Save merged PKG",
-                                    initialfile=stem + ".pkg",
-                                    defaultextension=".pkg",
-                                    filetypes=[("PKG", "*.pkg")])
-        if not out:
+        if not r:
+            statusvar.set("Open a file first")
             return
         try:
-            total = sum(os.path.getsize(p) for p in parts)
-        except OSError as ex:
-            statusvar.set(f"Merge failed: {ex}")
-            return
-
-        def _work():
+            parts = [f"File = {r.get('path', '')}", ""]
+            for k, v in r.get("rows", []):
+                parts.append(f"{k} = {v}")
             try:
-                done = 0
-                with open(out, "wb") as fw:
-                    for p in parts:
-                        with open(p, "rb") as fr:
-                            while True:
-                                buf = fr.read(64 * 1024 * 1024)
-                                if not buf:
-                                    break
-                                fw.write(buf)
-                                done += len(buf)
-                                _io_progress(done, total, "Merging")
-                root.after(0, statusvar.set,
-                           f"Merge done: {fmt_size(total)} -> {out}")
-            except Exception as ex:
-                root.after(0, statusvar.set, f"Merge failed: {ex}")
-
-        statusvar.set("Merging...")
-        _th.Thread(target=_work, daemon=True).start()
+                det = metatext.get("1.0", "end-1c").strip()
+            except Exception:
+                det = ""
+            if det:
+                parts += ["", "-- Details --", det]
+            root.clipboard_clear()
+            root.clipboard_append("\n".join(parts))
+            statusvar.set("Info copied to clipboard")
+        except Exception as ex:
+            statusvar.set(f"Copy failed: {ex}")
 
     def load(p):
         statusvar.set("Reading...")
@@ -3852,11 +4330,39 @@ def run_gui(start_path=None):
             vl.delete(0, "end")
             vl.config(state="readonly")
         tree.delete(*tree.get_children())
-        for e in r["entries"]:
+        state["trp_children"] = {}
+        for idx, e in enumerate(r["entries"]):
             if not e["name"]:
                 continue
-            tree.insert("", "end", text=e["name"],
+            tree.insert("", "end", iid=f"e{idx}", text=e["name"],
                         values=(e["id"], fmt_size(e["size"]), e.get("codec", "")))
+            # trophy pack: expand inner TRP files as tree children
+            if e["name"].lower().endswith(".trp") and 0 < e["size"] < 300_000_000:
+                try:
+                    _td = None
+                    if e.get("cached") is not None:
+                        _td = bytes(e["cached"])
+                    elif isinstance(e.get("abs_off"), int) and e["abs_off"] >= 0:
+                        _td = read_entry_bytes(r["path"], e["abs_off"],
+                                               e["size"], limit=300_000_000)
+                    _inner = parse_trp(_td) if _td else []
+                except Exception:
+                    _inner = []
+                for j, _in in enumerate(_inner):
+                    _iid = f"e{idx}c{j}"
+                    state["trp_children"][_iid] = (idx, _in)
+                    tree.insert(f"e{idx}", "end", iid=_iid,
+                                text="↳ " + _in["name"],
+                                values=("", fmt_size(_in["size"]), "trp"))
+        # Trophies tab: auto-decrypt the first TRP pack (threaded)
+        state["trophy_path"] = None
+        _tes = [x for x in r["entries"]
+                if (x.get("name") or "").lower().endswith(".trp")
+                and x.get("size", 0) > 0]
+        if _tes:
+            _trophy_start(_tes[0], r)
+        else:
+            _trophy_reset("No trophy pack in this file")
         metatext.delete("1.0", "end")
         refresh_details()
         # image choices: png entries
