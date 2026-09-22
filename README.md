@@ -26,7 +26,9 @@ Grab `PKGViewer-Setup-X.Y.Z.exe` from [Releases](../../releases) — no admin ne
 - Cover art preview (icon0.png, pic0.png, …) with Save / Copy to clipboard — online Store cover for encrypted retail PKGs
 - Spec card: Title ID, Content ID, version, region, Min. System, SDK, DRM
 - Latest patch version per game (PS5/PS4) with PKG-vs-latest compare
-- Files tab: named entries with id + size
+- Files tab: named entries with id + size — single-file Extract with rename, trophy00.trp contents
+- Trophies tab: decrypted trophy list (name, grade, hidden) with icons, banner art, Save icons export
+- OFC (Official) / FPKG (Fake) detection + badges for PS4 and PS5 (incl. split parts)
 - Details tab: curated param.sfo / param.json, Show all for the full dump
 - Drag & drop: PKG files, exFAT / ffpfsc / ffpkg images, and game folders onto the window
 - Rename: clean uniform names from PKG info (`Title - TID - vVersion - Region`, e.g. `Elden Ring - PPSA04863 - v1.06 - EU`) — single file via the Rename button (preview + header Undo), or many at once via the Batch button / dropping them all (batch dialog with preview + All/None + revert log); folders are scanned for game files; split multi-part sets stay together; Revert restores original names from any revert log
