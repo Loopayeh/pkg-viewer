@@ -473,7 +473,7 @@ def parse_sfo(data):
 
 
 REGION_NAMES = {"EP": "Europe", "UP": "Americas", "JP": "Japan", "HP": "Asia"}
-PS4_CAT_TYPES = {"gd": "Game", "ac": "DLC", "gp": "Update Patch"}
+PS4_CAT_TYPES = {"gd": "Base Game", "ac": "DLC", "gp": "Update"}
 
 
 def content_region(cid):
@@ -503,7 +503,57 @@ def ps4_pkg_type(cat):
     if not cat:
         return "-"
     lab = PS4_CAT_TYPES.get(str(cat).lower())
-    return f"{lab} ({cat})" if lab else str(cat)
+    return lab if lab else str(cat)
+
+
+def cnt_package_type(hdr):
+    """FPKG vs retail for PS4 CNT: bit 31 of pkg_type @0x04 (big-endian).
+
+    Per psdevwiki/UnPKG: FILE_TYPE_FLAGS_RETAIL = 1 << 31. Retail PKGs
+    have pkg_type like 0x83000001/0x81000001; fpkg builds (even DUPLEX,
+    which carry non-zero digest bytes at 0x100..0x200) have it clear
+    (e.g. 0x00000001/0x40000001). The 0x100..0x200 area holds SHA256
+    digests, NOT an RSA signature, so zero-testing it is wrong.
+    """
+    try:
+        if len(hdr) >= 8:
+            ptype = struct.unpack_from(">I", hdr, 0x04)[0]
+            if ptype & 0x80000000:
+                return "OFC (Official)"
+            return "FPKG (Fake)"
+    except Exception:
+        pass
+    return "-"
+
+
+def lman_summary(meta_kind, rd):
+    """Bottom-bar summary à la LMAN: Type (Fake) (REGION) - vVER - System SYS."""
+    try:
+        typ = str(rd.get("Type", "") or "")
+        pkg = str(rd.get("Package", "") or rd.get("Signature", ""))
+        if not typ:
+            # encrypted stubs / table-less kinds have no Type row: use
+            # the Package label base (e.g. "OFC (Official)" -> "OFC").
+            typ = pkg
+        base = typ.split("(")[0].strip() or typ or "-"
+        fake = ""
+        if "fake" in pkg.lower() or "fpkg" in pkg.lower():
+            fake = " (Fake)"
+        elif "official" in pkg.lower() or pkg.lower().startswith("ofc"):
+            fake = " (Official)"
+        region = str(rd.get("Region", "") or "")
+        short = REGION_SHORT.get(region, region[:2].upper() if region else "-")
+        ver = (rd.get("Version", "") or rd.get("Content Ver", "") or "-")
+        ver = str(ver).strip() or "-"
+        if ver != "-" and not ver.lower().startswith("v"):
+            ver = "v" + ver
+        sysv = str(rd.get("Min. System", "") or "").strip()
+        out = f"{base}{fake} ({short}) - {ver}"
+        if sysv and sysv != "-":
+            out += f" - System {sysv}"
+        return out
+    except Exception:
+        return ""
 
 
 def _param_json_meta(meta):
@@ -575,6 +625,7 @@ def parse_pkg(path):
                 except Exception as e:
                     meta = {"_error": str(e)}
             rows = [("Platform", "PS5 (finalized FIH)"),
+                    ("Package", "OFC (Official)" if signed == 0x80 else "FPKG (Fake)"),
                     ("Signature", "official" if signed == 0x80 else "debug / fake"),
                     ("Size", fmt_size(size)),
                     ("PFS image", f"{fmt_size(pfs_size)} @ {pfs_off:#x}"),
@@ -625,6 +676,7 @@ def parse_pkg(path):
                     meta = {"_error": str(e)}
             kind = "PS4" if sfo and not sfo.get("_error") else "CNT"
             rows = [("Platform", f"{kind} (CNT metadata)"),
+                    ("Package", cnt_package_type(hdr)),
                     ("Content ID", sfo.get("CONTENT_ID", cid) if sfo else cid),
                     ("Size", fmt_size(size)),
                     ("Entries", f"{n} ({sc} sys)"),
@@ -782,7 +834,7 @@ def _split_part_stub(path, size):
             hdr = f.read(252)
     except OSError:
         return None
-    return parse_ps5_retail_stub(path, size, hdr)
+    return parse_ps5_retail_stub(path, size, mg + hdr)
 
 
 def _split_part_ps4(path, size, p0):
@@ -954,6 +1006,8 @@ def parse_ps5_retail_stub(path, size, hdr):
     idx = next((i for i, p in enumerate(parts)
                 if os.path.basename(p) == base), 0)
     rows = [("Platform", "PS5 retail (encrypted)"),
+            ("Package", "OFC (Official)" if len(hdr) > 5 and hdr[5] == 0x80
+             else "FPKG (Fake)"),
             ("Content ID", cid or "-"),
             ("Title ID", tid or "-"),
             ("Region", content_region(cid)),
@@ -1494,53 +1548,61 @@ def parse_ffpkg_image(path):
     img = pytsk3.Img_Info(path)
     try:
         fs = pytsk3.FS_Info(img)
-        try:
-            _pjf = fs.open("/sce_sys/param.json")
-            _pjsz = _pjf.info.meta.size if _pjf.info.meta else 0
-            if _pjsz <= 0 or _pjsz > 100_000:
-                return {"error": "sce_sys/param.json bad size"}
-            raw = _pjf.read_random(0, _pjsz)
-        except Exception as e:
-            return {"error": f"sce_sys/param.json not found: {e}"}
-        try:
-            meta = json.loads(raw.decode("utf-8"))
-        except Exception as e:
-            return {"error": f"bad param.json: {e}"}
-        title, extra = _param_json_meta(meta)
-        ents = []
-        try:
-            d = fs.open_dir(path="/sce_sys")
-            names = []
-            for e in d:
-                try:
-                    nm = e.info.name.name.decode()
-                except Exception:
-                    continue
-                if nm in (".", ".."):
-                    continue
-                if not nm.lower().endswith(".png"):
-                    continue
-                sz = e.info.meta.size if e.info.meta else 0
-                if sz <= 0 or sz > 32_000_000:
-                    continue
-                names.append((nm, sz))
-        except Exception:
-            names = []
-        names.sort(key=lambda t: (t[0] != "icon0.png", t[0]))
-        for i, (nm, sz) in enumerate(names):
-            try:
-                data = fs.open("/sce_sys/" + nm).read_random(0, sz)
-            except Exception:
-                continue
-            if data[:8] != b"\x89PNG\r\n\x1a\n":
-                continue
-            ents.append({"id": i, "name": nm, "size": len(data),
-                         "abs_off": -2, "cached": bytes(data)})
+    except Exception as e:
+        return {"error": f"not a filesystem image: {e}"}
+    try:
+        return _ffpkg_read(fs, path, size)
     finally:
         try:
             img.close()
         except Exception:
             pass
+
+
+def _ffpkg_read(fs, path, size):
+    """Read param.json + PNGs from an open pytsk3 FS. Caller closes img."""
+    try:
+        _pjf = fs.open("/sce_sys/param.json")
+        _pjsz = _pjf.info.meta.size if _pjf.info.meta else 0
+        if _pjsz <= 0 or _pjsz > 100_000:
+            return {"error": "sce_sys/param.json bad size"}
+        raw = _pjf.read_random(0, _pjsz)
+    except Exception as e:
+        return {"error": f"sce_sys/param.json not found: {e}"}
+    try:
+        meta = json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        return {"error": f"bad param.json: {e}"}
+    title, extra = _param_json_meta(meta)
+    ents = []
+    try:
+        d = fs.open_dir(path="/sce_sys")
+        names = []
+        for e in d:
+            try:
+                nm = e.info.name.name.decode()
+            except Exception:
+                continue
+            if nm in (".", ".."):
+                continue
+            if not nm.lower().endswith(".png"):
+                continue
+            sz = e.info.meta.size if e.info.meta else 0
+            if sz <= 0 or sz > 32_000_000:
+                continue
+            names.append((nm, sz))
+    except Exception:
+        names = []
+    names.sort(key=lambda t: (t[0] != "icon0.png", t[0]))
+    for i, (nm, sz) in enumerate(names):
+        try:
+            data = fs.open("/sce_sys/" + nm).read_random(0, sz)
+        except Exception:
+            continue
+        if data[:8] != b"\x89PNG\r\n\x1a\n":
+            continue
+        ents.append({"id": i, "name": nm, "size": len(data),
+                     "abs_off": -2, "cached": bytes(data)})
     rows = [("Platform", "PS5 ffpkg image"),
             ("Size", fmt_size(size))] + extra
     return {"ok": True, "kind": "ps5", "path": path, "size": size,
@@ -1669,14 +1731,36 @@ def curated_meta_lines(kind, meta):
             if k in meta:
                 lines.append(f"{label} = {friendly_json_value(k, meta[k])}")
     else:
-        for k in CURATED_SFO:
-            if k in meta:
-                lines.append(f"{k} = {meta[k]}")
-        titles = sorted(k for k in meta if k.startswith("TITLE_"))
-        if titles:
-            extra = len(titles) - 6
-            lines.append(f"(+{len(titles)} localized titles: "
-                         f"{', '.join(titles[:6])}{'...' if extra > 0 else ''})")
+        # Show less: short useful subset in fixed order (Show all = full table).
+        order = ["TITLE", "TITLE_ID", "CATEGORY", "CONTENT_ID",
+                 "VERSION", "APP_VER", "SYSTEM_VER", "FORMAT",
+                 "PARENTAL_LEVEL"]
+        titles = sorted(k for k in meta
+                        if k.startswith("TITLE_") and k[6:].isdigit())
+        collapsed = False
+        if len(titles) > 1:
+            groups = {}
+            for k in titles:
+                groups.setdefault(str(meta[k]), []).append(k)
+            if len(groups) < len(titles):
+                collapsed = True
+                for val, ks in sorted(groups.items(),
+                                      key=lambda kv: kv[1][0]):
+                    ks = sorted(ks)
+                    if len(ks) == 1:
+                        lines.append(f"{ks[0]} = {val}")
+                    else:
+                        lines.append(f"{ks[0]}..{ks[-1]} "
+                                     f"({len(ks)} langs) = {val}")
+        for k in order:
+            if k not in meta:
+                continue
+            if k == "TITLE" and collapsed:
+                continue  # localized titles already shown above
+            v = meta[k]
+            if isinstance(v, str) and not v.strip():
+                continue
+            lines.append(f"{k} = {v}")
     return lines
 
 
@@ -1733,12 +1817,24 @@ def normalize_version(ver):
             return ""
 
 
-def build_clean_name(result):
+NAME_PARTS = (("title", "Title"), ("tid", "Title ID"),
+               ("ver", "Version"), ("region", "Region"))
+
+
+def build_clean_name(result, parts=None):
     """Clean uniform file/folder base name from parsed PKG info.
 
     Format: Title - TID - vVersion - Region (empty parts dropped).
+    parts: optional {title, tid, ver, region} bools to pick components
+    (rename dialog ticks). All on by default.
     Returns "" if neither Title ID nor title is available.
     """
+    _pon = {"title": True, "tid": True, "ver": True, "region": True}
+    if parts:
+        try:
+            _pon.update(parts)
+        except Exception:
+            pass
     try:
         rd = dict(result.get("rows") or [])
     except Exception:
@@ -1754,21 +1850,22 @@ def build_clean_name(result):
     ver = normalize_version(ver)
     region = str(rd.get("Region", "") or "").strip()
     region = REGION_SHORT.get(region, region)
-    parts = []
-    if title:
-        parts.append(title)
-    if tid and tid != title:
-        parts.append(tid)
-    if ver and ver != "-":
-        parts.append("v" + ver)
-    if region and region != "-":
-        parts.append(region)
-    if not parts:
+    out = []
+    if title and _pon.get("title"):
+        out.append(title)
+    if tid and tid != title and _pon.get("tid"):
+        out.append(tid)
+    if ver and ver != "-" and _pon.get("ver"):
+        out.append("v" + ver)
+    if region and region != "-" and _pon.get("region"):
+        out.append(region)
+    if not out:
         return ""
-    return sanitize_filename_part(" - ".join(parts))
+    return sanitize_filename_part(" - ".join(out))
 
 
 BATCH_EXTS = (".pkg", ".ffpkg", ".ffpfsc", ".exfat")
+SPLIT_SIZE = 4294967296  # 4 GiB parts for FAT32 (LMAN-compatible _N naming)
 
 
 def split_set_siblings(path):
@@ -1830,11 +1927,12 @@ def collect_batch_files(inputs, recursive=False):
     return out
 
 
-def preview_batch(files):
+def preview_batch(files, include=None):
     """Build a rename plan for files. Split sets stay together (one entry).
 
     Each item: {files, new_files, new_base, status, reason}.
     status: 'ok' | 'skip'. Never renames anything.
+    include: optional name-component ticks, passed to build_clean_name.
     """
     import re as _re
     plan, seen_sets, seen_targets = [], set(), set()
@@ -1859,7 +1957,7 @@ def preview_batch(files):
             item["reason"] = r.get("error", "unrecognized file")
             plan.append(item)
             continue
-        base = build_clean_name(r)
+        base = build_clean_name(r, parts=include)
         if not base:
             item["reason"] = "not enough info for a name"
             plan.append(item)
@@ -2336,6 +2434,31 @@ def run_gui(start_path=None):
     batchbtn = mkbtn(header, text="Batch", style="Ghost.TButton",
                      command=lambda: pick_many())
     batchbtn.pack(side="left", padx=(8, 0))
+    # LMAN-style Tools menu (see screenshots: Export Unencrypted).
+    def _mkmenu(label):
+        mb = tk.Menubutton(header, text=label, bg="#404040", fg="#f1f3f8",
+                           font=("Segoe UI", 10), relief="flat",
+                           activebackground="#2c3342", activeforeground="#f1f3f8",
+                           cursor="hand2", padx=12, pady=7)
+        mb.pack(side="left", padx=(8, 0))
+        menu = tk.Menu(mb, tearoff=0, bg=CARD, fg=TEXT,
+                       activebackground=ACCENT, activeforeground="#171717")
+        mb.config(menu=menu)
+        return menu, mb
+    toolsmenu, toolsmenubtn = _mkmenu("Tools ▾")
+    showcopylink = tk.BooleanVar(
+        value=bool(_load_settings().get("show_copylink", True)))
+    toolsmenu.add_checkbutton(label="Copy Link Button",
+                              variable=showcopylink,
+                              selectcolor="#f1f3f8",
+                              command=lambda: _toggle_copylink())
+    splitmenu = tk.Menu(toolsmenu, tearoff=0, bg=CARD, fg=TEXT,
+                        activebackground=ACCENT, activeforeground="#171717")
+    splitmenu.add_command(label="Split Package (4GB parts)",
+                          command=lambda: split_package())
+    splitmenu.add_command(label="Merge Split Package",
+                          command=lambda: merge_package())
+    toolsmenu.add_cascade(label="Split / Merge", menu=splitmenu)
     undobtn = mkbtn(header, text="Undo", style="Ghost.TButton",
                     command=lambda: undo_last_rename())
     undobtn.pack(side="left", padx=(8, 0))
@@ -2382,7 +2505,7 @@ def run_gui(start_path=None):
              wraplength=340, justify="left").pack(side="left", anchor="w")
     badgerow = ttk.Frame(left, style="Card.TFrame")
     badgerow.pack(anchor="w", pady=(0, 2))
-    badgevars = [tk.StringVar(value="") for _ in range(4)]
+    badgevars = [tk.StringVar(value="") for _ in range(5)]
     badge_labels = []
     for bv in badgevars:
         lb = mkpill(badgerow, textvariable=bv, parent_bg=CARD)
@@ -2487,6 +2610,7 @@ def run_gui(start_path=None):
 
     nb = ttk.Notebook(right)
     nb.pack(fill="both", expand=True)
+    state["notebook"] = nb
     tab_entries = ttk.Frame(nb)
     tab_meta = ttk.Frame(nb)
     nb.add(tab_meta, text="  Details  ")
@@ -2509,14 +2633,17 @@ def run_gui(start_path=None):
     metabar = ttk.Frame(tab_meta, style="Card.TFrame")
     metabar.pack(fill="x", pady=(0, 4))
     detailvar = tk.StringVar(value="Show all")
+    mkbtn(metabar, text="Extract all", style="Ghost.TButton", bg=CARD,
+          command=lambda: extract_all()).pack(side="left")
     detailbtn = ttk.Button(metabar, textvariable=detailvar, style="Accent.TButton",
                            command=lambda: toggle_details())
     detailbtn.pack(side="right")
     metatext = tk.Text(tab_meta, bg=CARD, fg=TEXT, font=("Consolas", 9),
                        wrap="none", borderwidth=0, highlightthickness=0, padx=10, pady=10,
-                       height=12, selectbackground=ACCENT,
-                       selectforeground="#171717", insertbackground=TEXT)
+                        height=12, selectbackground=ACCENT,
+                        selectforeground="#171717", insertbackground=TEXT)
     metatext.pack(fill="both", expand=True)
+    metatext.tag_config("updates", foreground="#f0b429")
     root.bind_all("<KeyPress>", lambda e: _global_ctrl_keys(e, root, statusvar))
     ctxmenu = tk.Menu(root, tearoff=0, bg=CARD, fg=TEXT,
                       activebackground=ACCENT, activeforeground="#171717")
@@ -2941,6 +3068,30 @@ def run_gui(start_path=None):
         entry = tk.Entry(dlg, textvariable=namevar, bg=CARD2, fg=TEXT,
                          font=FONT_MID, width=52, insertbackground=TEXT)
         entry.pack(fill="x", padx=14, pady=(2, 4))
+        # name-part ticks: pick which components build the name
+        partframe = tk.Frame(dlg, bg=BG)
+        partframe.pack(fill="x", padx=14, pady=(2, 0))
+        tk.Label(partframe, text="Include:", bg=BG, fg=MUTED,
+                 font=FONT_SMALL).pack(side="left")
+        _pvars = {}
+
+        def _parts_now():
+            return {k: _pvars[k].get() for k, _ in NAME_PARTS}
+
+        def _refresh_name(*_a):
+            _b = build_clean_name(r, parts=_parts_now())
+            if _b:
+                namevar.set(_b + ext)
+            else:
+                msgvar.set("Tick at least one part")
+        for _k, _lbl in NAME_PARTS:
+            _v = tk.BooleanVar(value=True)
+            _pvars[_k] = _v
+            tk.Checkbutton(partframe, text=_lbl, variable=_v, bg=BG,
+                           fg=TEXT, selectcolor=CARD2, activebackground=BG,
+                           activeforeground=TEXT, font=FONT_SMALL,
+                           command=_refresh_name).pack(side="left",
+                                                       padx=(8, 0))
         entry.focus_set()
         entry.select_range(0, "end")
         msgvar = tk.StringVar(value="")
@@ -3006,7 +3157,10 @@ def run_gui(start_path=None):
                 if not _has:
                     load(_p)
                     return
-            elif not _p.lower().endswith(BATCH_EXTS):
+            else:
+                # single dropped/picked file always opens directly —
+                # split-set siblings (_0.._N) are a batch-rename concern,
+                # not a reason to hijack a single-file drop into batch.
                 load(_p)
                 return
         files = collect_batch_files(files)
@@ -3043,6 +3197,20 @@ def run_gui(start_path=None):
         _msg = tk.Label(dlg, textvariable=msgvar, bg=BG, fg=MUTED,
                         font=FONT_SMALL, anchor="w")
         _msg.pack(side="bottom", fill="x", padx=14)
+        # name-part ticks: rebuild the plan with picked components
+        partframe = tk.Frame(dlg, bg=BG)
+        partframe.pack(side="top", fill="x", padx=12, pady=(12, 0))
+        tk.Label(partframe, text="Include:", bg=BG, fg=MUTED,
+                 font=FONT_SMALL).pack(side="left")
+        _pvars = {}
+        for _k, _lbl in NAME_PARTS:
+            _v = tk.BooleanVar(value=True)
+            _pvars[_k] = _v
+            tk.Checkbutton(partframe, text=_lbl, variable=_v, bg=BG,
+                           fg=TEXT, selectcolor=CARD2, activebackground=BG,
+                           activeforeground=TEXT, font=FONT_SMALL,
+                           command=lambda: _on_parts()).pack(side="left",
+                                                             padx=(8, 0))
         cols = ("use", "old", "new", "status")
         tv = ttk.Treeview(dlg, columns=cols, show="headings", height=14)
         tv.heading("use", text="✓")
@@ -3059,14 +3227,34 @@ def run_gui(start_path=None):
         tv.pack(side="top", fill="both", expand=True, padx=12, pady=(12, 6))
         checked = set()
         rows = []  # (plan_idx, old, new_or_None)
-        for idx, item in enumerate(plan):
-            if item["new_files"]:
-                for old, new in zip(item["files"], item["new_files"]):
-                    rows.append((idx, old, new))
-            else:
-                rows.append((idx, item["files"][0], None))
-            if item["status"] == "ok":
-                checked.add(idx)
+
+        def _rebuild_rows():
+            del rows[:]
+            checked.clear()
+            for idx, item in enumerate(plan):
+                if item["new_files"]:
+                    for old, new in zip(item["files"], item["new_files"]):
+                        rows.append((idx, old, new))
+                else:
+                    rows.append((idx, item["files"][0], None))
+                if item["status"] == "ok":
+                    checked.add(idx)
+
+        def _on_parts():
+            _inc = {k: _pvars[k].get() for k, _ in NAME_PARTS}
+            try:
+                plan[:] = preview_batch(files, include=_inc)
+            except Exception as ex:
+                msgvar.set(f"Error: {ex}")
+                return
+            try:
+                dlg.title(f"Batch rename ({len(plan)} items)")
+            except Exception:
+                pass
+            _rebuild_rows()
+            _fill_rows()
+
+        _rebuild_rows()
 
         def _status_text(idx):
             item = plan[idx]
@@ -3333,6 +3521,223 @@ def run_gui(start_path=None):
             if d:
                 show_batch([d])
 
+    def show_tab(idx):
+        # Extra > List Contents (Files) / Package Update note (Details).
+        try:
+            nbw = state.get("notebook")
+            if nbw is not None:
+                nbw.select(idx)
+        except Exception:
+            pass
+
+    def check_integrity():
+        # LMAN-style "Check Integrity": entry bounds vs real file size.
+        import os as _os
+        r = state.get("result")
+        if not r:
+            statusvar.set("Open a file first")
+            return
+        try:
+            fsize = _os.path.getsize(r["path"]) if _os.path.isfile(r["path"]) else r.get("size", 0)
+        except OSError:
+            fsize = r.get("size", 0)
+        bad = []
+        for e in r.get("entries", []):
+            off, sz = e.get("abs_off"), e.get("size", 0)
+            if isinstance(off, int) and off >= 0 and sz > 0:
+                if off < 0 or off + sz > fsize:
+                    bad.append(e.get("name") or str(e.get("id")))
+        if bad:
+            statusvar.set(f"Integrity: {len(bad)} bad entries ({', '.join(bad[:3])})")
+        else:
+            n = len([e for e in r.get("entries", []) if e.get("name")])
+            statusvar.set(f"Integrity OK - {n} entries within bounds")
+
+    def show_properties():
+        # LMAN-style "Properties" popup: full Param = Value table.
+        r = state.get("result")
+        if not r:
+            statusvar.set("Open a file first")
+            return
+        win = tk.Toplevel(root)
+        win.title("Properties - %s" % os.path.basename(r.get("path", "")))
+        win.configure(bg=CARD)
+        win.transient(root)
+        rows = list(r.get("rows", []))
+        txt = tk.Text(win, bg=CARD, fg=TEXT, font=("Consolas", 9),
+                      borderwidth=0, highlightthickness=0, padx=12, pady=12,
+                      height=min(max(len(rows) + 2, 10), 30), width=70)
+        txt.pack(fill="both", expand=True)
+        for k, v in rows:
+            txt.insert("end", f"{k} = {v}\n")
+        txt.config(state="disabled")
+        mkbtn(win, text="Close", style="Accent.TButton", bg=CARD,
+              command=win.destroy).pack(pady=(0, 12))
+
+    def extract_all():
+        # LMAN-style "Extract Package": dump every listed entry to a folder.
+        from tkinter import filedialog as _fd
+        r = state.get("result")
+        if not r or not r.get("entries"):
+            statusvar.set("Nothing to extract")
+            return
+        dest = _fd.askdirectory(title="Extract package to folder")
+        if not dest:
+            return
+        ok, fail = 0, 0
+        for e in r["entries"]:
+            nm = (e.get("name") or "").strip()
+            if not nm or e.get("size", 0) <= 0:
+                continue
+            safe = nm.replace("/", "_").replace("\\", "_")
+            try:
+                if e.get("local_path") and os.path.isfile(e["local_path"]):
+                    with open(e["local_path"], "rb") as fh:
+                        data = fh.read()
+                elif e.get("cached") is not None:
+                    data = e["cached"]
+                else:
+                    data = read_entry_bytes(r["path"], e["abs_off"], e["size"],
+                                            limit=2_000_000_000)
+                if not data:
+                    fail += 1
+                    continue
+                with open(os.path.join(dest, safe), "wb") as out:
+                    out.write(data)
+                ok += 1
+            except Exception:
+                fail += 1
+        statusvar.set(f"Extracted {ok} files" + (f" ({fail} skipped)" if fail else ""))
+
+    def _toggle_copylink():
+        try:
+            _save_settings({"show_copylink": bool(showcopylink.get())})
+        except Exception:
+            pass
+        refresh_details()
+
+    def copy_update_link():
+        # LMAN-style "CopyLinks": copy the patch-tracker page for this
+        # title (direct Sony links are blocked; orbispatches needs a
+        # browser session for its Download buttons, so deep-link it).
+        r = state.get("result")
+        tid = (r.get("patch_tid") or "").upper() if r else ""
+        if not tid:
+            statusvar.set("No title ID for update link")
+            return
+        host = _PATCH_HOST.get(tid[:4], "https://orbispatches.com")
+        url = host.rstrip("/") + "/" + tid
+        try:
+            root.clipboard_clear()
+            root.clipboard_append(url)
+            statusvar.set(f"Update page copied: {url}")
+        except Exception as ex:
+            statusvar.set(f"Copy failed: {ex}")
+
+    def _io_progress(done, total, what):
+        try:
+            pct = (done * 100 // total) if total else 0
+            root.after(0, statusvar.set,
+                       f"{what}: {pct}% ({fmt_size(done)} / {fmt_size(total)})")
+        except Exception:
+            pass
+
+    def split_package():
+        # LMAN-style Split: 4GB parts (base_0.pkg, base_1.pkg...) for FAT32.
+        import re as _re
+        import threading as _th
+        from tkinter import filedialog as _fd
+        r = state.get("result")
+        src = r.get("path") if r and os.path.isfile(r.get("path", "")) else ""
+        if not src:
+            src = _fd.askopenfilename(title="Select PKG to split")
+            if not src:
+                return
+        dest = _fd.askdirectory(title="Save parts to folder")
+        if not dest:
+            return
+        stem = os.path.splitext(os.path.basename(src))[0]
+        stem = _re.sub(r"_\d+$", "", stem)
+        try:
+            total = os.path.getsize(src)
+        except OSError as ex:
+            statusvar.set(f"Split failed: {ex}")
+            return
+        if total <= SPLIT_SIZE:
+            statusvar.set("File is already under 4GB — no split needed")
+            return
+
+        def _work():
+            try:
+                done, idx = 0, 0
+                with open(src, "rb") as fh:
+                    while True:
+                        chunk = fh.read(SPLIT_SIZE)
+                        if not chunk:
+                            break
+                        out = os.path.join(dest, f"{stem}_{idx}.pkg")
+                        with open(out, "wb") as fw:
+                            fw.write(chunk)
+                        done += len(chunk)
+                        idx += 1
+                        _io_progress(done, total, "Splitting")
+                root.after(0, statusvar.set,
+                           f"Split done: {idx} parts in {dest}")
+            except Exception as ex:
+                root.after(0, statusvar.set, f"Split failed: {ex}")
+
+        statusvar.set("Splitting...")
+        _th.Thread(target=_work, daemon=True).start()
+
+    def merge_package():
+        # LMAN-style Merge: join base_0.pkg, base_1.pkg... back into one file.
+        import threading as _th
+        from tkinter import filedialog as _fd
+        first = _fd.askopenfilename(title="Select first part (_0.pkg)",
+                                    filetypes=[("PKG parts", "*_0.pkg"),
+                                               ("All files", "*.*")])
+        if not first:
+            return
+        parts = split_set_siblings(first)
+        if len(parts) < 2:
+            statusvar.set("Not a split set (no _N siblings found)")
+            return
+        import re as _re
+        stem = _re.sub(r"_\d+\.pkg$", "", os.path.basename(parts[0]),
+                       flags=_re.IGNORECASE)
+        out = _fd.asksaveasfilename(title="Save merged PKG",
+                                    initialfile=stem + ".pkg",
+                                    defaultextension=".pkg",
+                                    filetypes=[("PKG", "*.pkg")])
+        if not out:
+            return
+        try:
+            total = sum(os.path.getsize(p) for p in parts)
+        except OSError as ex:
+            statusvar.set(f"Merge failed: {ex}")
+            return
+
+        def _work():
+            try:
+                done = 0
+                with open(out, "wb") as fw:
+                    for p in parts:
+                        with open(p, "rb") as fr:
+                            while True:
+                                buf = fr.read(64 * 1024 * 1024)
+                                if not buf:
+                                    break
+                                fw.write(buf)
+                                done += len(buf)
+                                _io_progress(done, total, "Merging")
+                root.after(0, statusvar.set,
+                           f"Merge done: {fmt_size(total)} -> {out}")
+            except Exception as ex:
+                root.after(0, statusvar.set, f"Merge failed: {ex}")
+
+        statusvar.set("Merging...")
+        _th.Thread(target=_work, daemon=True).start()
+
     def load(p):
         statusvar.set("Reading...")
         root.update_idletasks()
@@ -3378,10 +3783,19 @@ def run_gui(start_path=None):
         _type = _rd.get("Type", "")
         _has_lz4 = "LZ4" in _rd.get("Assets", "")
         _b0 = "LZ4" if _has_lz4 else plat
+        _pkg = _rd.get("Package", "")
+        _pl2 = _pkg.lower()
+        if "fake" in _pl2 or "fpkg" in _pl2:
+            _pkg_short, _pkg_col = "FPKG", "#e17b7b"
+        elif "official" in _pl2 or _pl2.startswith("ofc"):
+            _pkg_short, _pkg_col = "OFC", "#10b981"
+        else:
+            _pkg_short, _pkg_col = "", "#6b7280"
         _bvals = [_b0,
                   _rd.get("Region", ""),
                   f"{fmt_size(r['size'])}",
-                  _type]
+                  _type,
+                  _pkg_short]
         _pl = plat.lower()
         if _has_lz4:
             _plat_col = "#6fd3c9"
@@ -3394,16 +3808,16 @@ def run_gui(start_path=None):
         elif "ps3" in _pl:
             _plat_col = "#e8a34c"
         elif "ps4" in _pl or _pl.startswith("cnt"):
-            _plat_col = "#8fd694"
+            _plat_col = "#5fa8ff"
         elif "ps5" in _pl:
-            _plat_col = "#91c8f6"
+            _plat_col = "#f1f3f8"
         else:
             _plat_col = "#6b7280"
         _tl = _type.lower()
         _type_col = ("#5fa8ff" if "update" in _tl
                      else "#f59e5b" if ("dlc" in _tl or "patch" in _tl)
                      else "#10b981" if _type else "#6b7280")
-        _bcolors = [_plat_col, "#e17b7b", "#6b7280", _type_col]
+        _bcolors = [_plat_col, "#e17b7b", "#6b7280", _type_col, _pkg_col]
         for i, (bv, val, lb, col) in enumerate(zip(badges, _bvals, _blabs, _bcolors)):
             bv.set(val or "")
             try:
@@ -3473,7 +3887,9 @@ def run_gui(start_path=None):
         if r.get("patch_tid"):
             fetch_patch_async(r["patch_tid"], r.get("own_ver", ""))
         _set_rename_enabled(True)
-        _set_status(f"OK - {len(r['entries'])} entries")
+        _summ = lman_summary(r.get("kind"), dict(r["rows"]))
+        _set_status((_summ + f"  •  {len(r['entries'])} entries") if _summ else
+                    f"OK - {len(r['entries'])} entries")
 
     def refresh_details():
         r = state.get("result")
@@ -3493,6 +3909,28 @@ def run_gui(start_path=None):
             lines = list(lines) + ([""] if lines else []) + \
                 ["-- Updates --"] + list(r["patch_lines"])
         metatext.insert("end", "\n".join(lines) + ("\n" if lines else ""))
+        # highlight the "-- Updates --" (patch tracker) section in amber
+        # + embed a Copy link button right on its header line.
+        try:
+            for i, ln in enumerate(lines, start=1):
+                if ln.strip() == "-- Updates --":
+                    metatext.tag_add("updates", f"{i}.0", "end-1c")
+                    try:
+                        if showcopylink.get():
+                            _cb = tk.Button(metatext, text="Copy link",
+                                            bg=CARD2, fg=TEXT, relief="flat",
+                                            font=FONT_SMALL, cursor="hand2",
+                                            padx=8, pady=0,
+                                            activebackground=ACCENT,
+                                            activeforeground="#171717",
+                                            command=lambda: copy_update_link())
+                            metatext.window_create(f"{i}.end", window=_cb)
+                            state["copylink_embed"] = _cb  # keep a ref
+                    except Exception:
+                        pass
+                    break
+        except Exception:
+            pass
 
     def toggle_details():
         state["show_all"] = not state.get("show_all")
@@ -3616,6 +4054,10 @@ def run_gui(start_path=None):
                     undobtn.pack_forget()
                 except Exception:
                     pass
+                try:
+                    toolsmenubtn.pack_forget()
+                except Exception:
+                    pass
                 compact.grid(row=0, column=0, sticky="n", pady=(6, 0))
                 compactbtn.config(text="Expand")
                 try:
@@ -3645,6 +4087,14 @@ def run_gui(start_path=None):
                     undobtn.pack(side="left", padx=(8, 0))
                 except Exception:
                     pass
+                try:
+                    toolsmenubtn.pack(side="left", padx=(8, 0),
+                                      before=undobtn)
+                except Exception:
+                    try:
+                        toolsmenubtn.pack(side="left", padx=(8, 0))
+                    except Exception:
+                        pass
                 _pl = state.get("pathlabel")
                 if _pl is not None:
                     _pl.pack(side="left", padx=(14, 0))
@@ -3698,7 +4148,6 @@ def run_gui(start_path=None):
         if not state["store_bytes"]:
             imglabel.config(image="", text="(cover unavailable)")
             _sync_compact_cover("(cover unavailable)")
-            statusvar.set("OK - store cover not found")
             return
         if not has_pil:
             imglabel.config(text="(Pillow not installed)")
