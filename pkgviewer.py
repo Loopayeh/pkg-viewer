@@ -657,15 +657,21 @@ def parse_pkg(path):
                 sfo = parse_sfo(f.read(sfo_entry["size"]))
             pj = next((e for e in ents if e["name"] == "param.json" or e["id"] == 8192), None)
             meta, title, extra = {}, "", []
+            _ver4 = ""
             if sfo and not sfo.get("_error"):
                 title = sfo.get("TITLE", "")
                 _cid4 = sfo.get("CONTENT_ID", cid)
                 _cat4 = sfo.get("CATEGORY", "")
+                # update PKGs (gp): VERSION = base it applies to,
+                # APP_VER = the actual patch version -> show APP_VER
+                _ver4 = sfo.get("VERSION", "")
+                if str(_cat4).lower() == "gp" and sfo.get("APP_VER"):
+                    _ver4 = sfo.get("APP_VER")
                 extra = [("Title ID", sfo.get("TITLE_ID", "")),
                          ("Content ID", _cid4),
                          ("Region", content_region(_cid4)),
                          ("Type", ps4_pkg_type(_cat4)),
-                         ("Version", sfo.get("VERSION", "")),
+                         ("Version", _ver4),
                          ("Min. System", str(sfo.get("SYSTEM_VER", "-")))]
             elif pj and pj["size"] and pj["size"] < 100_000:
                 f.seek(pj["off"])
@@ -687,7 +693,7 @@ def parse_pkg(path):
                     "rows": rows, "entries": ents, "meta": meta or sfo,
                     "icon_entry": "icon0.png",
                     "patch_tid": sfo.get("TITLE_ID", "") if isinstance(sfo, dict) else "",
-                    "own_ver": sfo.get("VERSION", "") if isinstance(sfo, dict) else ""}
+                    "own_ver": _ver4 if sfo and not sfo.get("_error") else ""}
         else:
             # split retail part without header? resolve via sibling _0.
             stub = _split_part_stub(path, size)
@@ -2018,6 +2024,11 @@ def build_clean_name(result, parts=None):
         out.append("v" + ver)
     if region and region != "-" and _pon.get("region"):
         out.append(region)
+    # non-base packages (Update/DLC) get a suffix so base+update of the
+    # same version don't collide on one name (e.g. Crysis 2 v1.01 twice)
+    _ptype = str(rd.get("Type", "") or "").strip()
+    if _ptype.lower() in ("update", "dlc"):
+        out.append(_ptype)
     if not out:
         return ""
     return sanitize_filename_part(" - ".join(out))
@@ -4764,7 +4775,21 @@ def run_gui(start_path=None):
                 paths = [data]
             paths = [p for p in paths if p and os.path.exists(p)]
             if paths:
-                show_batch(paths)  # single file falls through to load()
+                try:
+                    try:
+                        _grab = root.grab_current()
+                    except Exception:
+                        _grab = None
+                    if _grab:
+                        statusvar.set("Close the open dialog first, "
+                                      "then drop again")
+                    else:
+                        show_batch(paths)  # single file falls through to load()
+                except Exception as ex:
+                    try:
+                        statusvar.set(f"Drop failed: {ex}")
+                    except Exception:
+                        pass
         try:
             root.drop_target_register(DND_FILES)
             root.dnd_bind("<<Drop>>", _on_drop)
