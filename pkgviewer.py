@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.13.0"  # bump on every release — the updater compares this
+APP_VERSION = "v1.14.0"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -2927,10 +2927,121 @@ def run_gui(start_path=None):
         undobtn.config(state="disabled")
     except Exception:
         pass
+    def toggle_pin(force=None):
+        # always-on-top toggle (Pin button, header right)
+        try:
+            cur = bool(root.attributes("-topmost"))
+        except Exception:
+            cur = False
+        on = (not cur) if force is None else bool(force)
+        try:
+            root.attributes("-topmost", on)
+        except Exception:
+            return
+        state["pinned"] = on
+        try:
+            pinbtn.config(text="Pinned" if on else "Pin")
+        except Exception:
+            pass
+        try:
+            _save_settings({"pinned": on})
+        except Exception:
+            pass
+    pinbtn = mkbtn(header, text="Pin", style="Ghost.TButton",
+                   command=lambda: toggle_pin())
+    pinbtn.pack(side="right", padx=(0, 8))
+    state["pinbtn"] = pinbtn
+    def toggle_cover(force=None):
+        # coverless mode: hide the whole left column (cover + title +
+        # format) and shrink the window down to the right column, so no
+        # empty space is left behind. Saved.
+        try:
+            hidden = bool(state.get("cover_hidden"))
+        except Exception:
+            hidden = False
+        hide = (not hidden) if force is None else bool(force)
+        try:
+            if hide:
+                try:
+                    _cw, _ch = root.winfo_width(), root.winfo_height()
+                    if _cw > 100 and _ch > 100:
+                        state["cover_saved_geo"] = (_cw, _ch)
+                except Exception:
+                    pass
+                left.grid_remove()
+                # file path drops to a wrapped row under the buttons
+                try:
+                    _pl = state.get("pathlabel")
+                    _sh = state.get("subheader")
+                    if _pl is not None:
+                        _pl.pack_forget()
+                    if _sh is not None:
+                        _sh.pack(fill="x", padx=12, pady=(0, 4), before=body)
+                except Exception:
+                    pass
+                try:
+                    if root.winfo_viewable():
+                        # shrink-wrap like the old compact mode: the right
+                        # column fills, so req alone never shrinks — cap it
+                        root.update_idletasks()
+                        _w = min(max(root.winfo_reqwidth(), 360), 620)
+                        _h = min(max(root.winfo_reqheight(), 280), 430)
+                        root.geometry("%dx%d" % (_w, _h))
+                        root.minsize(_w, _h)
+                except Exception:
+                    pass
+            else:
+                left.grid()
+                # file path back into the header button row
+                try:
+                    _pl = state.get("pathlabel")
+                    _sh = state.get("subheader")
+                    if _sh is not None:
+                        _sh.pack_forget()
+                    if _pl is not None:
+                        _pl.pack(side="left", padx=(14, 0))
+                except Exception:
+                    pass
+                try:
+                    if root.winfo_viewable():
+                        root.update_idletasks()
+                        _sg = state.get("cover_saved_geo")
+                        if _sg and _sg[0] > 100 and _sg[1] > 100:
+                            root.geometry("%dx%d" % _sg)
+                            root.minsize(_sg[0], _sg[1])
+                        else:
+                            root.geometry("880x450")
+                            root.minsize(880, 450)
+                except Exception:
+                    pass
+        except Exception:
+            return
+        state["cover_hidden"] = hide
+        try:
+            coverbtn.config(text="Show cover" if hide else "Hide cover")
+        except Exception:
+            pass
+        try:
+            _save_settings({"cover_hidden": hide})
+        except Exception:
+            pass
+    coverbtn = mkbtn(header, text="Hide cover", style="Ghost.TButton",
+                     command=lambda: toggle_cover())
+    coverbtn.pack(side="right", padx=(0, 8))
+    state["coverbtn"] = coverbtn
     pathvar = tk.StringVar(value="Drop a .pkg / .exfat / .ffpfsc / .ffpkg file or app folder here")
     pathlabel = ttk.Label(header, textvariable=pathvar, font=FONT_SMALL, foreground=MUTED)
     pathlabel.pack(side="left", padx=(14, 0))
     state["pathlabel"] = pathlabel
+    # second header row for coverless mode: the file path moves down
+    # here (wrapped) instead of being clipped in the narrow window.
+    # (Tk can't reparent a widget, so two labels share one textvar.)
+    subheader = ttk.Frame(root)
+    state["subheader"] = subheader
+    subpathlabel = ttk.Label(subheader, textvariable=pathvar,
+                             font=FONT_SMALL, foreground=MUTED,
+                             wraplength=590, justify="left")
+    subpathlabel.pack(anchor="w", fill="x")
 
     # bottom bar FIRST (packed before body) so it stays pinned at the
     # bottom no matter how small the window gets
@@ -2965,6 +3076,7 @@ def run_gui(start_path=None):
     imgframe = tk.Frame(left, bg=CARD, width=280, height=280)
     imgframe.pack(pady=(6, 0))
     imgframe.pack_propagate(False)
+    state["imgframe"] = imgframe
     imglabel = tk.Label(imgframe, bg=CARD, fg=MUTED,
                         text="Drop a file or folder here\n\nor click Open",
                         font=FONT_MID, justify="center")
@@ -2972,6 +3084,7 @@ def run_gui(start_path=None):
     titlevar = tk.StringVar(value="—")
     titlerow = tk.Frame(left, bg=CARD)
     titlerow.pack(pady=(6, 4), anchor="w", fill="x")
+    state["titlerow"] = titlerow
     fmtlabel = tk.Label(titlerow, bg=CARD, fg=MUTED, text="")
     fmtlabel.pack(side="left", padx=(0, 8))
     state["fmtlabel"] = fmtlabel
@@ -3012,18 +3125,18 @@ def run_gui(start_path=None):
     nb.add(tab_entries, text="  Files  ")
     # Specs tab: the classic 2-column grid (PACKAGE/SIGNATURE/...)
     # for whoever wants the fine details at a glance
-    specbox = ttk.Frame(tab_specs, style="Card.TFrame", padding=10)
+    specbox = ttk.Frame(tab_specs, style="Card.TFrame", padding=8)
     specbox.pack(fill="x", pady=(0, 8))
     spec_rows = []
     for _ in range(5):
         row = ttk.Frame(specbox, style="Card.TFrame")
-        row.pack(fill="x", pady=3)
+        row.pack(fill="x", pady=1)
         row.columnconfigure(0, weight=1)
         row.columnconfigure(1, weight=1)
         cells = []
         for col in (0, 1):
             cell = ttk.Frame(row, style="Card.TFrame")
-            cell.grid(row=0, column=col, sticky="w", padx=(0, 24))
+            cell.grid(row=0, column=col, sticky="w", padx=(0, 12))
             k = ttk.Label(cell, text="", style="SpecKey.TLabel")
             k.pack(anchor="w")
             v = tk.Entry(cell, bg=CARD, fg=TEXT, font=FONT_MID, relief="flat",
@@ -3087,14 +3200,22 @@ def run_gui(start_path=None):
                 _w0, _h0 = pil.size
             except Exception:
                 _w0 = _h0 = 0
-            # square covers (icon0 etc.) get a small box so the empty
-            # space below collapses; wide banners keep/grow a big box
+            # square covers (icon0 etc.) stretch to all the space the
+            # tab offers; wide/tall banners keep their fixed boxes
             try:
                 _ratio = (_w0 / _h0) if _h0 else 1.0
             except Exception:
                 _ratio = 1.0
             if 0.9 <= _ratio <= 1.1:
-                _box = (200, 200)
+                try:
+                    lbl.update_idletasks()
+                    _aw, _ah = lbl.winfo_width(), lbl.winfo_height()
+                except Exception:
+                    _aw = _ah = 0
+                if _aw < 50 or _ah < 50:
+                    _box = (300, 300)
+                else:
+                    _box = (max(_aw - 8, 200), max(_ah - 8, 200))
             elif _ratio > 1.1:
                 _box = (480, 270)
             else:
@@ -3499,6 +3620,14 @@ def run_gui(start_path=None):
             return
         try:
             _sync_leftcover()
+        except Exception:
+            pass
+        try:
+            # Images tab just opened (or window resized): refit the
+            # square preview to the space available
+            if _sel == str(state.get("images_tab") or "") and \
+                    state.get("pil") is not None:
+                _sync_imgtab()
         except Exception:
             pass
         try:
@@ -5288,6 +5417,19 @@ def run_gui(start_path=None):
         except Exception as ex:
             statusvar.set(f"Drop disabled: {ex}")
     root.after(2500, lambda: check_updates())
+    try:
+        if _load_settings().get("pinned"):
+            toggle_pin(True)
+    except Exception:
+        pass
+    def _restore_cover_state():
+        # runs after deiconify (withdrawn window has no real size yet)
+        try:
+            if _load_settings().get("cover_hidden"):
+                toggle_cover(True)
+        except Exception:
+            pass
+    root.after(150, _restore_cover_state)
     if len(sys.argv) > 1 and os.path.exists(sys.argv[1]):
         _startup = sys.argv[1]
         root.after(100, lambda: load(_startup))
