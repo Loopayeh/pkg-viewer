@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.11.0"  # bump on every release — the updater compares this
+APP_VERSION = "v1.12.0"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -1992,11 +1992,18 @@ def ucp_trophies(data):
         pick = next((n for n in ("tropmeta_en-US.json", "tropmeta_en-GB.json")
                      if n in blobs), None) or (metas[0] if metas else None)
         npid, trs = None, []
+        title = ""
         if pick:
             try:
                 o = _json.loads(blobs[pick].decode("utf-8"))
                 npid = o.get("trophyNpCommId")
-                for t in (o.get("metadata") or {}).get("trophyMetadata", []):
+                md = o.get("metadata") or {}
+                try:
+                    title = str((md.get("titleMetadata") or {}).get("name", "")
+                                or "")
+                except Exception:
+                    title = ""
+                for t in md.get("trophyMetadata", []):
                     trs.append({"id": str(t.get("id", "?")),
                                 "name": str(t.get("name", "") or ""),
                                 "detail": str(t.get("detail", "") or "")})
@@ -2004,9 +2011,133 @@ def ucp_trophies(data):
                 pass
         icons = {n: b for n, b in blobs.items()
                  if n.lower().endswith(".png") and b[:4] == b"\x89PNG"}
-        return npid, trs, icons
+        return npid, title, trs, icons
     except Exception:
-        return None, [], {}
+        return None, "", [], {}
+
+
+_EXO_GRADES = {}
+
+
+def _norm_name(s):
+    """Lowercase ASCII-folded name for cross-source trophy matching."""
+    try:
+        import unicodedata as _ud
+        s = _ud.normalize("NFKD", str(s or ""))
+        s = "".join(c for c in s if not _ud.combining(c))
+        return "".join(c for c in s.lower() if c.isalnum())
+    except Exception:
+        return str(s or "").lower()
+
+
+def fetch_exophase_grades(title):
+    """{normname: P/G/S/B} from Exophase trophy list. {} on any failure.
+
+    Slug is derived from the game title (ghost-of-yotei-psn); names are
+    matched ASCII-folded. Cached per session. Never raises.
+    """
+    import re as _re
+    import urllib.request as _ureq
+    if not title or not str(title).strip():
+        return {}
+    key = _norm_name(title)
+    if key in _EXO_GRADES:
+        return _EXO_GRADES[key]
+    out = {}
+    try:
+        slug = _re.sub(r"[^a-z0-9]+", "-", key).strip("-")
+        if not slug:
+            return out
+        for cand in (slug + "-psn", slug + "-ps5", slug):
+            url = "https://www.exophase.com/game/%s/trophies/" % cand
+            try:
+                req = _ureq.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                with _ureq.urlopen(req, timeout=15) as r:
+                    html = r.read().decode("utf-8", "replace")
+            except Exception:
+                continue
+            titles = _re.findall(
+                r'fw-bolder">\s*<a[^>]*>([^<]+)</a>', html)
+            grades = _re.findall(
+                r'exo-icon-trophy-(platinum|gold|silver|bronze)', html)
+            if not titles or len(titles) != len(grades):
+                continue
+            _gm = {"platinum": "P", "gold": "G",
+                   "silver": "S", "bronze": "B"}
+            for n, g in zip(titles, grades):
+                out[_norm_name(n)] = _gm[g]
+            if out:
+                break
+            out = {}
+    except Exception:
+        out = {}
+    _EXO_GRADES[key] = out
+    return out
+
+
+def _ucp_ring(png):
+    """Classify a UCP trophy icon ring: gold/gray/copper/''.
+
+    Ring art differs per game (Ghost bronze=copper, Astro bronze=gray),
+    so this returns the raw color class; the caller maps the majority
+    class to Bronze. Never raises.
+    """
+    try:
+        import colorsys as _cs
+        import math as _math
+        import statistics as _st
+        from PIL import Image as _Img
+        import io as _io
+        im = _Img.open(_io.BytesIO(png)).convert("RGB")
+        w, h = im.size
+        if w < 64 or h < 64:
+            return ""
+        cx, cy = w / 2, h / 2
+        px = im.load()
+        best_sat = (0, 0, 0)   # (sat, hue, val)
+        best_gray = 0          # brightest low-sat ring radius value
+        rr = 0.30
+        while rr <= 0.485:
+            ss, hs, vs = [], [], []
+            a = 0
+            while a < 360:
+                x = int(cx + rr * w * _math.cos(_math.radians(a)))
+                y = int(cy + rr * w * _math.sin(_math.radians(a)))
+                try:
+                    R, G, B = px[x, y]
+                except IndexError:
+                    a += 15
+                    continue
+                H, S, V = _cs.rgb_to_hsv(R / 255, G / 255, B / 255)
+                hs.append(H * 360)
+                ss.append(S)
+                vs.append(V)
+                a += 15
+            if ss:
+                ms, mh, mv = _st.median(ss), _st.median(hs), _st.median(vs)
+                if ms > best_sat[0]:
+                    best_sat = (ms, mh, mv)
+                if ms < 0.25 and mv > best_gray:
+                    best_gray = mv
+            rr += 0.02
+        ms, mh, mv = best_sat
+        if ms > 0.30 and 32 <= mh <= 55:
+            return "gold"
+        if best_gray > 0.45:
+            return "gray"
+        if ms > 0.30 and (mh <= 25 or mh >= 340):
+            return "copper"
+        return ""
+    except Exception:
+        return ""
+
+
+def _ucp_grade(png, tid, detail):
+    """Legacy single-icon guess (kept for compatibility)."""
+    ring = _ucp_ring(png) if png else ""
+    if str(tid or "").strip() in ("0000", "0"):
+        return "P"
+    return {"gold": "G", "gray": "S", "copper": "B"}.get(ring, "")
 
 
 def read_entry_bytes(path, abs_off, size, limit=32_000_000):
@@ -3183,9 +3314,22 @@ def run_gui(start_path=None):
                 if not _td:
                     raise OSError("unreadable trophy pack")
                 if (entry.get("name") or "").lower().endswith(".ucp"):
-                    _npid, _trs, _icons = ucp_trophies(_td)
+                    _npid, _title, _trs, _icons = ucp_trophies(_td)
+                    # online grades (background thread, never blocks UI);
+                    # ring-color heuristic is the offline fallback.
+                    # Guard: use online grades only if most UCP names match.
+                    _grades = fetch_exophase_grades(_title)
+                    if _grades:
+                        try:
+                            _hit = sum(1 for _t in _trs
+                                       if _norm_name(_t.get("name", ""))
+                                       in _grades)
+                            if _hit * 2 < len(_trs):
+                                _grades = {}
+                        except Exception:
+                            _grades = {}
                     root.after(0, lambda: _trophy_fill_ucp(
-                        entry.get("name", ""), _npid, _trs, _icons))
+                        entry.get("name", ""), _npid, _trs, _icons, _grades))
                     return
                 _inner = parse_trp(_td)
                 _cands = [t for t in _inner
@@ -3318,7 +3462,7 @@ def run_gui(start_path=None):
             try:
                 ok, skip = 0, 0
                 for _idx, _t in enumerate(_trs):
-                    if _idx >= len(_sq):
+                    if _idx >= len(_sq) or not _sq[_idx]:
                         skip += 1
                         continue
                     _ic = _sq[_idx]
@@ -3340,8 +3484,9 @@ def run_gui(start_path=None):
         statusvar.set("Saving trophy icons...")
         _th.Thread(target=_work, daemon=True).start()
 
-    def _trophy_fill_ucp(ucp_name, npid, trs, icons):
+    def _trophy_fill_ucp(ucp_name, npid, trs, icons, grades=None):
         # fill the Trophies tab from a PS5 .ucp pack (no grades in UCP json).
+        # Grade: online lookup first, ring-color heuristic as offline fallback.
         # Packs icon bytes into one blob so the shared preview/export code
         # (td + sq offsets) works unchanged.
         state["trophy_loading"] = None
@@ -3351,25 +3496,80 @@ def run_gui(start_path=None):
         _blob = bytearray()
         _sq = []
         for _t in trs:
-            _png = (icons or {}).get(f"trop{_t['id']}.png")
-            if _png is None:
-                continue
+            # UCP convention (verified vs official PSN art): trop0000 is the
+            # trophy SET (title) art; trophy id N -> trop(N+1).png
+            # 1:1 with trs (None = no icon) so names never shift out of sync
+            _png = None
+            try:
+                _png = (icons or {}).get(f"trop{int(_t['id']) + 1:04d}.png")
+            except Exception:
+                _png = (icons or {}).get(f"trop{_t['id']}.png")
+            _ok = False
+            if _png is not None:
+                try:
+                    import struct as _st
+                    _w, _h = _st.unpack_from(">2I", _png, 16)
+                    _sq.append({"off": len(_blob), "size": len(_png),
+                                "w": _w, "h": _h})
+                    _blob += _png
+                    _ok = True
+                except Exception:
+                    pass
+            if not _ok:
+                _sq.append(None)
+        _td = bytes(_blob)
+        _ban = [ic for ic in _sq if ic and ic["w"] != ic["h"]]
+        # trop0000 (set/title art) as the preview banner when present
+        _setart = (icons or {}).get("trop0000.png")
+        if _setart and _setart[:4] == b"\x89PNG":
             try:
                 import struct as _st
-                _w, _h = _st.unpack_from(">2I", _png, 16)
+                _sw, _sh = _st.unpack_from(">2I", _setart, 16)
+                _ban = ([{"off": len(_td), "size": len(_setart),
+                          "w": _sw, "h": _sh}] + _ban)
+                _td = _td + _setart
             except Exception:
-                continue
-            _sq.append({"off": len(_blob), "size": len(_png),
-                        "w": _w, "h": _h})
-            _blob += _png
-        _td = bytes(_blob)
-        _ban = [ic for ic in _sq if ic["w"] != ic["h"]]
-        for _t in trs:
-            _t["type"] = "?"
+                pass
+        for _i, _t in enumerate(trs):
             _t["hidden"] = False
+            _png = None
+            try:
+                _png = (icons or {}).get(f"trop{int(_t['id']) + 1:04d}.png")
+            except Exception:
+                pass
+            # online grade first; else ring color with per-pack majority
+            # calibration (bronze is always the biggest group)
+            _g = (grades or {}).get(_norm_name(_t.get("name", ""))) or ""
+            if _g not in ("P", "G", "S", "B"):
+                _g = "RING:" + (_ucp_ring(_png) if _png else "")
+            _t["type"] = _g
+        try:
+            from collections import Counter as _Counter
+            _votes = _Counter(_t["type"] for _t in trs
+                              if str(_t["type"]).startswith("RING:")
+                              and _t["type"] != "RING:")
+            _big = _votes.most_common(1)
+            _big = _big[0][0] if _big else ""
+            _rmap = {"RING:gold": "G", "RING:": ""}
+            for _rc, _gg in (("RING:gray", "S"), ("RING:copper", "B")):
+                if _big and _rc != _big:
+                    _rmap[_rc] = _gg
+            if _big in ("RING:gray", "RING:copper"):
+                _rmap[_big] = "B"
+            for _t in trs:
+                if str(_t["type"]).startswith("RING:"):
+                    _t["type"] = _rmap.get(_t["type"], "")
+        except Exception:
+            for _t in trs:
+                if str(_t["type"]).startswith("RING:"):
+                    _t["type"] = ""
+        for _t in trs:
+            if str(_t["id"]).strip() in ("0000", "0"):
+                _t["type"] = "P"
+        _have = sum(1 for ic in _sq if ic)
         _imap_note = ""
-        if _sq and len(_sq) != len(trs):
-            _imap_note = f" — icons {len(_sq)}/{len(trs)} (order-mapped)"
+        if _have != len(trs):
+            _imap_note = f" — icons {_have}/{len(trs)}"
         _trophy_reset(f"{len(trs)} trophies (UCP) — {npid or '?'}"
                       f"{_imap_note}")
         # NOTE: set AFTER _trophy_reset (it clears trophy_data)
@@ -3388,7 +3588,7 @@ def run_gui(start_path=None):
             _has_pil = False
         for _idx, _t in enumerate(trs):
             _kw = {"values": (_t["id"], "—", _t["name"])}
-            if _has_pil and _idx < len(_sq):
+            if _has_pil and _idx < len(_sq) and _sq[_idx]:
                 try:
                     _ic = _sq[_idx]
                     _tim = _Img.open(_io.BytesIO(
@@ -3505,7 +3705,7 @@ def run_gui(start_path=None):
             _imglbl = state["troimglbl"]
             _sq = _dd.get("sq", [])
             _td = _dd.get("td")
-            if not _sq or _td is None or _idx >= len(_sq):
+            if not _sq or _td is None or _idx >= len(_sq) or not _sq[_idx]:
                 _imglbl.config(image="", text="(no icon)")
                 return
             import io as _io
