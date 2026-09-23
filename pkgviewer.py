@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.14.0"  # bump on every release — the updater compares this
+APP_VERSION = "v1.14.1"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -899,6 +899,40 @@ _STORE_CACHE = {}
 _STORE_LOCALE = {"UP": "en-us", "EP": "en-gb", "JP": "ja-jp", "HP": "en-hk"}
 
 
+_BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/126.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+_NET_DOWN_UNTIL = {}
+
+
+def _host_up(host, port=443, timeout=3, cache=60):
+    """Fast offline check: True if TCP connects. Failures cached `cache` s
+    so offline mode never hangs on full HTTP timeouts. Never raises."""
+    import socket as _so
+    import time as _tm
+    now = _tm.time()
+    k = (host, port)
+    try:
+        if _NET_DOWN_UNTIL.get(k, 0) > now:
+            return False
+    except Exception:
+        pass
+    try:
+        _so.create_connection((host, port), timeout=timeout).close()
+        return True
+    except Exception:
+        try:
+            _NET_DOWN_UNTIL[k] = now + cache
+        except Exception:
+            pass
+        return False
+
+
 def fetch_store_cover(cid):
     """(name, cover_url, release, tagline) from PlayStation Store. Square MASTER art preferred."""
     import re as _re
@@ -907,11 +941,13 @@ def fetch_store_cover(cid):
         return None, None, None, None
     if cid in _STORE_CACHE:
         return _STORE_CACHE[cid]
+    if not _host_up("store.playstation.com"):
+        return None, None, None, None
     loc = _STORE_LOCALE.get(cid.split("-")[0][:2].upper(), "en-us")
     url = "https://store.playstation.com/%s/product/%s" % (loc, cid)
     try:
         req = _ureq.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with _ureq.urlopen(req, timeout=20) as r:
+        with _ureq.urlopen(req, timeout=10) as r:
             html = r.read().decode("utf-8", "replace")
     except Exception:
         _STORE_CACHE[cid] = (None, None, None, None)
@@ -984,9 +1020,15 @@ def fetch_latest_patch(tid):
     if not host:
         _PATCH_CACHE[tid] = (None, 0, "")
         return None, 0, ""
+    import urllib.parse as _up
+    try:
+        if not _host_up(_up.urlparse(host).hostname or ""):
+            return None, 0, ""
+    except Exception:
+        return None, 0, ""
     try:
         req = _ureq.Request(host + "/" + tid, headers={"User-Agent": "Mozilla/5.0"})
-        with _ureq.urlopen(req, timeout=20) as r:
+        with _ureq.urlopen(req, timeout=10) as r:
             html = r.read().decode("utf-8", "replace")
         m = _re.search(r'dynpatch"\s+data-titleid="%s"\s+data-key="([0-9a-f]{64})"' % tid, html)
         if not m:
@@ -1000,7 +1042,7 @@ def fetch_latest_patch(tid):
         req2 = _ureq.Request(host + "/api/internal/loadpatches", data=body,
                              headers={"User-Agent": "Mozilla/5.0",
                                       "Content-Type": "application/json"})
-        with _ureq.urlopen(req2, timeout=20) as r2:
+        with _ureq.urlopen(req2, timeout=10) as r2:
             j = _json.loads(r2.read())
         patches = j.get("patches", []) if j.get("success") else []
         pick = next((p for p in patches if p.get("is_latest")), None)
@@ -2035,6 +2077,7 @@ def fetch_exophase_grades(title):
 
     Slug is derived from the game title (ghost-of-yotei-psn); names are
     matched ASCII-folded. Cached per session. Never raises.
+    Exophase blocks plain-URL clients (403), so browser headers are sent.
     """
     import re as _re
     import urllib.request as _ureq
@@ -2043,16 +2086,23 @@ def fetch_exophase_grades(title):
     key = _norm_name(title)
     if key in _EXO_GRADES:
         return _EXO_GRADES[key]
+    if not _host_up("www.exophase.com"):
+        return {}
     out = {}
     try:
-        slug = _re.sub(r"[^a-z0-9]+", "-", key).strip("-")
+        # fold diacritics but KEEP word separators for the slug
+        import unicodedata as _ud
+        _fold = "".join(
+            c for c in _ud.normalize("NFKD", str(title))
+            if not _ud.combining(c)).lower()
+        slug = _re.sub(r"[^a-z0-9]+", "-", _fold).strip("-")
         if not slug:
             return out
         for cand in (slug + "-psn", slug + "-ps5", slug):
             url = "https://www.exophase.com/game/%s/trophies/" % cand
             try:
-                req = _ureq.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                with _ureq.urlopen(req, timeout=15) as r:
+                req = _ureq.Request(url, headers=_BROWSER_HEADERS)
+                with _ureq.urlopen(req, timeout=8) as r:
                     html = r.read().decode("utf-8", "replace")
             except Exception:
                 continue
@@ -3794,7 +3844,10 @@ def run_gui(start_path=None):
         except Exception:
             _has_pil = False
         for _idx, _t in enumerate(trs):
-            _kw = {"values": (_t["id"], "—", _t["name"])}
+            _gtext = {"P": "Platinum", "G": "Gold",
+                      "S": "Silver", "B": "Bronze"}.get(
+                          _t["type"], _t["type"]) or "—"
+            _kw = {"values": (_t["id"], _gtext, _t["name"])}
             if _has_pil and _idx < len(_sq) and _sq[_idx]:
                 try:
                     _ic = _sq[_idx]
