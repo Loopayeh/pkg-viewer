@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.10.0"  # bump on every release — the updater compares this
+APP_VERSION = "v1.11.0"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -816,6 +816,32 @@ def parse_ps3_folder(path):
             _eid += 1
     except OSError:
         pass
+    # PS3 trophy packs (TROPDIR/NPWRxxxxx_00/TROPHY.TRP) for the Trophies tab
+    try:
+        _tropdir = os.path.join(base, "TROPDIR")
+        if os.path.isdir(_tropdir):
+            for _np in sorted(os.listdir(_tropdir)):
+                _npd = os.path.join(_tropdir, _np)
+                if not os.path.isdir(_npd):
+                    continue
+                for _fn in sorted(os.listdir(_npd)):
+                    if not _fn.lower().endswith(".trp"):
+                        continue
+                    _fp = os.path.join(_npd, _fn)
+                    if not os.path.isfile(_fp):
+                        continue
+                    try:
+                        _sz = os.path.getsize(_fp)
+                    except OSError:
+                        continue
+                    if _sz <= 0 or _sz >= 300_000_000:
+                        continue
+                    ents.append({"id": _eid, "name": f"TROPDIR/{_np}/{_fn}",
+                                 "size": _sz, "abs_off": -1,
+                                 "local_path": _fp})
+                    _eid += 1
+    except OSError:
+        pass
     icon = next((e["name"] for e in ents if e["name"].upper() == "ICON0.PNG"), "")
     return {"ok": True, "kind": "ps3", "path": path, "size": total,
             "title": title or tid,
@@ -1281,6 +1307,28 @@ def parse_app_folder(path):
             _eid += 1
     except OSError:
         pass
+    # trophy packs anywhere in the dump (sce_sys/trophy, Image0, ...)
+    # so the Trophies tab auto-fills for folders too
+    try:
+        _eid = max([e["id"] for e in ents], default=0) + 1
+        for _dp, _dn, _fns in os.walk(path):
+            for _fn in sorted(_fns):
+                _ln = _fn.lower()
+                if not (_ln.endswith(".trp") or _ln.endswith(".ucp")):
+                    continue
+                _fp = os.path.join(_dp, _fn)
+                try:
+                    _sz = os.path.getsize(_fp)
+                except OSError:
+                    continue
+                if _sz <= 0 or _sz >= 300_000_000:
+                    continue
+                _rel = os.path.relpath(_fp, path).replace("\\", "/")
+                ents.append({"id": _eid, "name": _rel, "size": _sz,
+                             "abs_off": -1, "local_path": _fp})
+                _eid += 1
+    except OSError:
+        pass
     # AMPR/LZ4 asset containers in the Files tab (name + size + codec)
     try:
         _eid = max([e["id"] for e in ents], default=0) + 1
@@ -1373,14 +1421,19 @@ class _Exfat:
         return raw
 
     def list_dir(self, first, size, nofat, want=None):
-        """List dir entries; if want is set, stop early once found (faster)."""
+        """List dir entries; if want is set, stop early once found (faster).
+
+        Reads are capped (16MB): a miss must not stream the whole image
+        (root scan on a 200GB USB image would take minutes).
+        """
+        cap = min(size, 1 << 24)
         if nofat:
             self.f.seek(self._clus_off(first))
             raw = self.f.read(min(size, 1 << 20))
             return self._parse_dir(raw, want)
         out = bytearray()
         clus = first
-        while clus is not None and len(out) < size:
+        while clus is not None and len(out) < cap:
             self.f.seek(self._clus_off(clus))
             out += self.f.read(min(self.clus_bytes, size - len(out)))
             if want:
@@ -1617,6 +1670,56 @@ def _ffpkg_read(fs, path, size):
             "icon_entry": "icon0.png", "ffpkg": True}
 
 
+def _exfat_scan_packs(fs, max_dirs=500):
+    """Find trophy packs (.trp/.ucp) anywhere in an exFAT image.
+
+    Fast path first: the known trophy dirs (direct lookup, no walk).
+    Full directory walk only as fallback (slow on big USB images).
+    Directory walk only (no file data read): [(relpath, first, size,
+    nofat)]. Never raises.
+    """
+    out = []
+    try:
+        for _cand in (["sce_sys", "trophy"], ["sce_sys", "trophy2"],
+                      ["trophy"], ["trophy2"]):
+            try:
+                for _it in fs.list_path(_cand):
+                    if _it["is_dir"]:
+                        continue
+                    _ln = _it["name"].lower()
+                    if ( _ln.endswith(".trp") or _ln.endswith(".ucp")) \
+                            and 0 < _it["size"] < 300_000_000:
+                        out.append(("/".join(_cand + [_it["name"]]),
+                                    _it["first"], _it["size"], _it["nofat"]))
+            except Exception:
+                continue
+        if out:
+            return out
+        stack = [([], fs.root_clus, 1 << 30, False)]
+        seen = 0
+        while stack and seen < max_dirs:
+            parts, clus, size, nofat = stack.pop()
+            seen += 1
+            try:
+                items = fs.list_dir(clus, size, nofat)
+            except Exception:
+                continue
+            for name, attrs, first, sz, nf in items:
+                if not name or name in (".", ".."):
+                    continue
+                if attrs & 0x10:
+                    if len(parts) < 5:
+                        stack.append((parts + [name], first, sz, nf))
+                else:
+                    ln = name.lower()
+                    if (ln.endswith(".trp") or ln.endswith(".ucp")) \
+                            and 0 < sz < 300_000_000:
+                        out.append(("/".join(parts + [name]), first, sz, nf))
+    except Exception:
+        pass
+    return out
+
+
 def _exfat_result(fs, path, size, platform, inner_name=None):
     pj = fs.find(["sce_sys", "param.json"])
     meta, title, extra = {}, "", []
@@ -1650,6 +1753,15 @@ def _exfat_result(fs, path, size, platform, inner_name=None):
             ents.append({"id": _eid, "name": _nm, "size": _it["size"],
                          "abs_off": ("exfat", _it["first"], _it["size"],
                                      _it["nofat"])})
+            _eid += 1
+    except Exception:
+        pass
+    # trophy packs anywhere in the image (sce_sys/trophy, ...) for the
+    # Trophies tab — read on demand via the exfat tuple reader
+    try:
+        for _rel, _first, _sz, _nf in _exfat_scan_packs(fs):
+            ents.append({"id": _eid, "name": _rel, "size": _sz,
+                         "abs_off": ("exfat", _first, _sz, _nf)})
             _eid += 1
     except Exception:
         pass
@@ -1821,6 +1933,80 @@ def carve_trp_icons(data):
         return out
     except Exception:
         return []
+
+
+def parse_ucp(data):
+    """PS5 trophy00.ucp archive (newer dumps use this instead of .trp).
+
+    64-byte big-endian records @0x40: u32 ?, u32 offset, u32 ?,
+    u32 size, 16 reserved bytes, 32-byte null-padded name.
+    Payload is raw (PNG icons + tropmeta_*.json), 16-byte aligned.
+    Returns [{name, off, size}] or []. Never raises.
+    """
+    try:
+        import struct as _st
+        if not data or len(data) < 0x80 or data[:4] != b"\xb2(\xc6\n":
+            return []
+        out = []
+        base = 0x40
+        while base + 64 <= len(data):
+            f0, off, f2, size = _st.unpack_from(">4I", data, base)
+            nm = data[base + 32:base + 64].split(b"\x00")[0]
+            if not nm:
+                break  # padding / end of table
+            try:
+                name = nm.decode("ascii")
+            except Exception:
+                break  # binary = ran into payload
+            if not name or off + size > len(data) or size <= 0:
+                # tombstone/empty slot (e.g. zero-size icon0): keep name only
+                if name and size == 0 and off == 0:
+                    base += 64
+                    continue
+                break
+            out.append({"name": name, "off": off, "size": size})
+            base += 64
+            if len(out) > 10000:
+                break
+        return out
+    except Exception:
+        return []
+
+
+def ucp_trophies(data):
+    """UCP bytes -> (npid, [{id, name, detail}], {icon_name: bytes}).
+
+    Language pick: en-US -> en-GB -> first tropmeta_*.json.
+    Never raises; ([], {}, None) on failure.
+    """
+    try:
+        import json as _json
+        files = parse_ucp(data)
+        if not files:
+            return None, [], {}
+        blobs = {}
+        for f in files:
+            blobs[f["name"]] = data[f["off"]:f["off"] + f["size"]]
+        metas = sorted(n for n in blobs if n.startswith("tropmeta_")
+                       and n.endswith(".json"))
+        pick = next((n for n in ("tropmeta_en-US.json", "tropmeta_en-GB.json")
+                     if n in blobs), None) or (metas[0] if metas else None)
+        npid, trs = None, []
+        if pick:
+            try:
+                o = _json.loads(blobs[pick].decode("utf-8"))
+                npid = o.get("trophyNpCommId")
+                for t in (o.get("metadata") or {}).get("trophyMetadata", []):
+                    trs.append({"id": str(t.get("id", "?")),
+                                "name": str(t.get("name", "") or ""),
+                                "detail": str(t.get("detail", "") or "")})
+            except Exception:
+                pass
+        icons = {n: b for n, b in blobs.items()
+                 if n.lower().endswith(".png") and b[:4] == b"\x89PNG"}
+        return npid, trs, icons
+    except Exception:
+        return None, [], {}
 
 
 def read_entry_bytes(path, abs_off, size, limit=32_000_000):
@@ -2734,29 +2920,24 @@ def run_gui(start_path=None):
     right.rowconfigure(1, weight=1)
     right.columnconfigure(0, weight=1)
 
-    specbox = ttk.Frame(right, style="Card.TFrame", padding=16)
+    # top info box: the curated Details text lives here now
+    # (replaces the old duplicate spec grid). Bottom tab stays empty.
+    specbox = ttk.Frame(right, style="Card.TFrame", padding=10)
     specbox.pack(fill="x", pady=(0, 12))
-    spec_rows = []
-    for _ in range(5):
-        row = ttk.Frame(specbox, style="Card.TFrame")
-        row.pack(fill="x", pady=3)
-        row.columnconfigure(0, weight=1)
-        row.columnconfigure(1, weight=1)
-        cells = []
-        for col in (0, 1):
-            cell = ttk.Frame(row, style="Card.TFrame")
-            cell.grid(row=0, column=col, sticky="w", padx=(0, 24))
-            k = ttk.Label(cell, text="", style="SpecKey.TLabel")
-            k.pack(anchor="w")
-            v = tk.Entry(cell, bg=CARD, fg=TEXT, font=FONT_MID, relief="flat",
-                         readonlybackground=CARD, highlightthickness=0,
-                         state="readonly", width=34)
-            v.pack(anchor="w")
-            cells.append((k, v))
-        spec_rows.append(cells)
-    state["spec_cells"] = spec_rows
+    spectext = tk.Text(specbox, bg=CARD, fg=TEXT, font=("Consolas", 9),
+                       wrap="none", borderwidth=0, highlightthickness=0,
+                       padx=6, pady=6, height=10, selectbackground=ACCENT,
+                       selectforeground="#171717", insertbackground=TEXT)
+    spectext.pack(fill="x")
+    spectext.tag_config("updates", foreground="#f0b429")
+    state["spec_cells"] = []
 
     nb = ttk.Notebook(right)
+    nb.pack(fill="both", expand=True)
+    # text stays on top, all three tabs sit right below it — no gaps
+    specbox.pack_forget()
+    specbox.pack(fill="x", pady=(0, 6))
+    nb.pack_forget()
     nb.pack(fill="both", expand=True)
     state["notebook"] = nb
     tab_entries = ttk.Frame(nb)
@@ -2959,7 +3140,7 @@ def run_gui(start_path=None):
                 _iid = sel[0]
                 if _iid.startswith("e") and "c" not in _iid:
                     _e = state.get("result", {}).get("entries", [])[int(_iid[1:])]
-                    if (_e.get("name") or "").lower().endswith(".trp"):
+                    if (_e.get("name") or "").lower().endswith((".trp", ".ucp")):
                         show_trophies()
                         return
         except Exception:
@@ -2985,18 +3166,27 @@ def run_gui(start_path=None):
         state["trophy_data"] = None
 
     def _trophy_start(entry, result):
-        # decrypt worker for one TRP entry; fills the Trophies tab on done
+        # decrypt worker for one TRP/UCP entry; fills Trophies tab on done
         import threading as _th
 
         def _work():
             try:
                 if entry.get("cached") is not None:
                     _td = bytes(entry["cached"])
-                elif isinstance(entry.get("abs_off"), int) and entry["abs_off"] >= 0:
+                elif entry.get("local_path") and os.path.isfile(
+                        entry["local_path"]):
+                    with open(entry["local_path"], "rb") as _fh:
+                        _td = _fh.read(300_000_000)
+                else:
                     _td = read_entry_bytes(result["path"], entry["abs_off"],
                                            entry["size"], limit=300_000_000)
-                else:
-                    raise OSError("unreadable TRP")
+                if not _td:
+                    raise OSError("unreadable trophy pack")
+                if (entry.get("name") or "").lower().endswith(".ucp"):
+                    _npid, _trs, _icons = ucp_trophies(_td)
+                    root.after(0, lambda: _trophy_fill_ucp(
+                        entry.get("name", ""), _npid, _trs, _icons))
+                    return
                 _inner = parse_trp(_td)
                 _cands = [t for t in _inner
                           if t["name"].upper().startswith("TROP")
@@ -3030,11 +3220,27 @@ def run_gui(start_path=None):
                     entry.get("name", ""), _npid, _xml, _icons, _td))
             except Exception as ex:
                 root.after(0, statusvar.set, f"Trophy failed: {ex}")
+                try:
+                    root.after(0, state.update, {"trophy_loading": None})
+                except Exception:
+                    pass
 
         state["trophy_path"] = result["path"]
         _trophy_reset("Decrypting trophies (finding NP ID)...")
+        state["trophy_loading"] = result["path"]
         statusvar.set("Decrypting trophies (finding NP ID)...")
         _th.Thread(target=_work, daemon=True).start()
+
+    def _trophy_pick(entries):
+        # prefer real trophy packs (trophy*.trp/ucp) over misc packs (uds*.ucp)
+        cands = [x for x in (entries or [])
+                 if (x.get("name") or "").lower().endswith((".trp", ".ucp"))
+                 and x.get("size", 0) > 0]
+        if not cands:
+            return None
+        cands.sort(key=lambda x: ("trophy" not in (x.get("name") or "").lower(),
+                                  (x.get("name") or "")))
+        return cands[0]
 
     def show_trophies():
         # jump to the Trophies tab (auto-filled on load); start the
@@ -3042,6 +3248,12 @@ def run_gui(start_path=None):
         r = state.get("result")
         if not r:
             statusvar.set("Open a file first")
+            return
+        if state.get("trophy_loading") == r["path"]:
+            try:
+                nb.select(state["troph_tab"])
+            except Exception:
+                pass
             return
         sel = tree.selection()
         _e = None
@@ -3052,11 +3264,8 @@ def run_gui(start_path=None):
                     _e = r["entries"][int(_iid[1:])]
                 except Exception:
                     _e = None
-        if _e is None or not (_e.get("name") or "").lower().endswith(".trp"):
-            _es = [x for x in r["entries"]
-                   if (x.get("name") or "").lower().endswith(".trp")
-                   and x.get("size", 0) > 0]
-            _e = _es[0] if _es else None
+        if _e is None or not (_e.get("name") or "").lower().endswith((".trp", ".ucp")):
+            _e = _trophy_pick(r["entries"])
         try:
             nb.select(state["troph_tab"])
         except Exception:
@@ -3067,6 +3276,29 @@ def run_gui(start_path=None):
         if state.get("trophy_path") == r["path"] and state.get("trophy_data"):
             return
         _trophy_start(_e, r)
+
+    def _on_troph_tab(_ev=None):
+        # lazy load: worker starts only when the Trophies tab is opened
+        try:
+            if nb.select() != str(state["troph_tab"]):
+                return
+        except Exception:
+            return
+        r = state.get("result")
+        if not r or state.get("trophy_data"):
+            return
+        if state.get("trophy_loading") == r["path"]:
+            return
+        _e = _trophy_pick(r["entries"])
+        if _e is None:
+            _trophy_reset("No trophy pack in this file")
+            return
+        _trophy_start(_e, r)
+
+    try:
+        nb.bind("<<NotebookTabChanged>>", _on_troph_tab)
+    except Exception:
+        pass
 
     def save_trophy_icons():
         # Export every trophy icon (raw PNG bytes from the TRP) to a folder.
@@ -3108,9 +3340,91 @@ def run_gui(start_path=None):
         statusvar.set("Saving trophy icons...")
         _th.Thread(target=_work, daemon=True).start()
 
+    def _trophy_fill_ucp(ucp_name, npid, trs, icons):
+        # fill the Trophies tab from a PS5 .ucp pack (no grades in UCP json).
+        # Packs icon bytes into one blob so the shared preview/export code
+        # (td + sq offsets) works unchanged.
+        state["trophy_loading"] = None
+        if not trs:
+            _trophy_reset("No trophies parsed (UCP)")
+            return
+        _blob = bytearray()
+        _sq = []
+        for _t in trs:
+            _png = (icons or {}).get(f"trop{_t['id']}.png")
+            if _png is None:
+                continue
+            try:
+                import struct as _st
+                _w, _h = _st.unpack_from(">2I", _png, 16)
+            except Exception:
+                continue
+            _sq.append({"off": len(_blob), "size": len(_png),
+                        "w": _w, "h": _h})
+            _blob += _png
+        _td = bytes(_blob)
+        _ban = [ic for ic in _sq if ic["w"] != ic["h"]]
+        for _t in trs:
+            _t["type"] = "?"
+            _t["hidden"] = False
+        _imap_note = ""
+        if _sq and len(_sq) != len(trs):
+            _imap_note = f" — icons {len(_sq)}/{len(trs)} (order-mapped)"
+        _trophy_reset(f"{len(trs)} trophies (UCP) — {npid or '?'}"
+                      f"{_imap_note}")
+        # NOTE: set AFTER _trophy_reset (it clears trophy_data)
+        state["trophy_data"] = {"trs": trs, "sq": _sq, "td": _td,
+                                "npid": npid, "thumbs": []}
+        _tv = state["trotv"]
+        try:
+            _tv.bind("<<TreeviewSelect>>", _tro_on_sel)
+        except Exception:
+            pass
+        try:
+            import io as _io
+            from PIL import Image as _Img, ImageTk as _ImgTk
+            _has_pil = True
+        except Exception:
+            _has_pil = False
+        for _idx, _t in enumerate(trs):
+            _kw = {"values": (_t["id"], "—", _t["name"])}
+            if _has_pil and _idx < len(_sq):
+                try:
+                    _ic = _sq[_idx]
+                    _tim = _Img.open(_io.BytesIO(
+                        _td[_ic["off"]:_ic["off"] + _ic["size"]])).convert(
+                        "RGBA")
+                    _tim.thumbnail((28, 28))
+                    _tph = _ImgTk.PhotoImage(_tim)
+                    state["trophy_data"]["thumbs"].append(_tph)
+                    _kw["image"] = _tph
+                except Exception:
+                    pass
+            _tv.insert("", "end", **_kw)
+        if _ban and _td:
+            try:
+                import io as _io
+                from PIL import Image as _Img, ImageTk as _ImgTk
+                _b = _ban[0]
+                _bim = _Img.open(_io.BytesIO(
+                    _td[_b["off"]:_b["off"] + _b["size"]])).convert("RGB")
+                _bim.thumbnail((150, 84))
+                _bph = _ImgTk.PhotoImage(_bim)
+                state["trobanlbl"].config(image=_bph)
+                state["trobanlbl"].image = _bph
+            except Exception:
+                pass
+        try:
+            _first = _tv.get_children()[0]
+            _tv.selection_set(_first)
+            _tro_on_sel()
+        except Exception:
+            pass
+
     def _trophy_fill(trp_name, npid, xml, icons=None, td=None):
         # fill the Trophies tab (main thread). Icon label has no fixed
         # size: it wraps the image instead of cropping it.
+        state["trophy_loading"] = None
         if not xml:
             try:
                 import cryptography  # noqa
@@ -4216,7 +4530,7 @@ def run_gui(start_path=None):
             for k, v in r.get("rows", []):
                 parts.append(f"{k} = {v}")
             try:
-                det = metatext.get("1.0", "end-1c").strip()
+                det = spectext.get("1.0", "end-1c").strip()
             except Exception:
                 det = ""
             if det:
@@ -4347,16 +4661,22 @@ def run_gui(start_path=None):
                 continue
             tree.insert("", "end", iid=f"e{idx}", text=e["name"],
                         values=(e["id"], fmt_size(e["size"]), e.get("codec", "")))
-            # trophy pack: expand inner TRP files as tree children
-            if e["name"].lower().endswith(".trp") and 0 < e["size"] < 300_000_000:
+            # trophy pack: expand inner TRP/UCP files as tree children
+            if e["name"].lower().endswith((".trp", ".ucp")) and 0 < e["size"] < 300_000_000:
                 try:
                     _td = None
                     if e.get("cached") is not None:
                         _td = bytes(e["cached"])
-                    elif isinstance(e.get("abs_off"), int) and e["abs_off"] >= 0:
+                    elif e.get("local_path") and os.path.isfile(
+                            e["local_path"]):
+                        with open(e["local_path"], "rb") as _fh:
+                            _td = _fh.read(300_000_000)
+                    elif e.get("abs_off") is not None:
                         _td = read_entry_bytes(r["path"], e["abs_off"],
                                                e["size"], limit=300_000_000)
-                    _inner = parse_trp(_td) if _td else []
+                    _is_ucp = e["name"].lower().endswith(".ucp")
+                    _inner = ((parse_ucp(_td) if _is_ucp else parse_trp(_td))
+                              if _td else [])
                 except Exception:
                     _inner = []
                 for j, _in in enumerate(_inner):
@@ -4365,15 +4685,11 @@ def run_gui(start_path=None):
                     tree.insert(f"e{idx}", "end", iid=_iid,
                                 text="↳ " + _in["name"],
                                 values=("", fmt_size(_in["size"]), "trp"))
-        # Trophies tab: auto-decrypt the first TRP pack (threaded)
+        # Trophies tab: lazy — loads only when the tab is opened
+        # (no trophy work during file load)
         state["trophy_path"] = None
-        _tes = [x for x in r["entries"]
-                if (x.get("name") or "").lower().endswith(".trp")
-                and x.get("size", 0) > 0]
-        if _tes:
-            _trophy_start(_tes[0], r)
-        else:
-            _trophy_reset("No trophy pack in this file")
+        state["trophy_loading"] = None
+        _trophy_reset("Open the Trophies tab to load")
         metatext.delete("1.0", "end")
         refresh_details()
         # image choices: png entries
@@ -4410,7 +4726,15 @@ def run_gui(start_path=None):
 
     def refresh_details():
         r = state.get("result")
-        metatext.delete("1.0", "end")
+        # bottom Details tab stays empty for now (user request)
+        try:
+            metatext.delete("1.0", "end")
+        except Exception:
+            pass
+        try:
+            spectext.delete("1.0", "end")
+        except Exception:
+            return
         if not r:
             return
         if state.get("show_all"):
@@ -4425,22 +4749,22 @@ def run_gui(start_path=None):
         if r.get("patch_lines"):
             lines = list(lines) + ([""] if lines else []) + \
                 ["-- Updates --"] + list(r["patch_lines"])
-        metatext.insert("end", "\n".join(lines) + ("\n" if lines else ""))
+        spectext.insert("end", "\n".join(lines) + ("\n" if lines else ""))
         # highlight the "-- Updates --" (patch tracker) section in amber
         # + embed a Copy link button right on its header line.
         try:
             for i, ln in enumerate(lines, start=1):
                 if ln.strip() == "-- Updates --":
-                    metatext.tag_add("updates", f"{i}.0", "end-1c")
+                    spectext.tag_add("updates", f"{i}.0", "end-1c")
                     try:
-                        _cb = tk.Button(metatext, text="Copy link",
+                        _cb = tk.Button(spectext, text="Copy link",
                                         bg=CARD2, fg=TEXT, relief="flat",
                                         font=FONT_SMALL, cursor="hand2",
                                         padx=8, pady=0,
                                         activebackground=ACCENT,
                                         activeforeground="#171717",
                                         command=lambda: copy_update_link())
-                        metatext.window_create(f"{i}.end", window=_cb)
+                        spectext.window_create(f"{i}.end", window=_cb)
                         state["copylink_embed"] = _cb  # keep a ref
                     except Exception:
                         pass
