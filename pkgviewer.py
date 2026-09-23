@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.12.0"  # bump on every release — the updater compares this
+APP_VERSION = "v1.13.0"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -15,7 +15,7 @@ SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
 
 
 def _settings_path():
-    """User settings file (compact mode etc.). Never raises."""
+    """User settings file. Never raises."""
     try:
         if sys.platform.startswith("win"):
             base = os.environ.get("APPDATA") or os.path.expanduser("~")
@@ -2816,15 +2816,15 @@ def run_gui(start_path=None):
     except ImportError:
         root = tk.Tk()
     try:
-        # hide until layout + saved mode (compact) is applied:
+        # hide until layout is applied:
         # avoids white flash + resize jump on startup
         root.withdraw()
     except Exception:
         pass
     root.title("PKG Viewer %s  •  PS3 / PS4 / PS5  •  by Loopayeh" % APP_VERSION)
-    root.geometry("1060x700")
+    root.geometry("880x450")
     root.configure(bg=BG)
-    root.minsize(900, 600)
+    root.minsize(880, 450)
     try:
         _ic = os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)
                             if getattr(sys, "frozen", False) else "."), "assets", "logo.ico")
@@ -2896,8 +2896,8 @@ def run_gui(start_path=None):
                     borderwidth=0, padding=(12, 7))
     style.map("Ghost.TButton", background=[("active", "#2c3342")])
 
-    # header: slim toolbar
-    header = ttk.Frame(root, padding=(16, 12))
+    # header: slim toolbar (About/updates live at bottom-right now)
+    header = ttk.Frame(root, padding=(10, 4))
     header.pack(fill="x")
     try:
         _lg = _local_logo((36, 36))
@@ -2927,29 +2927,42 @@ def run_gui(start_path=None):
         undobtn.config(state="disabled")
     except Exception:
         pass
-    updatebtn = mkbtn(header, text="Check updates", style="Ghost.TButton",
-                           command=lambda: check_updates(manual=True))
-    updatebtn.pack(side="right")
-    mkbtn(header, text="About", style="Ghost.TButton",
-               command=lambda: show_about()).pack(side="right", padx=(0, 8))
-    compactbtn = mkbtn(header, text="Compact", style="Ghost.TButton",
-                       command=lambda: set_compact(not state.get("compact")))
-    compactbtn.pack(side="right", padx=(0, 8))
     pathvar = tk.StringVar(value="Drop a .pkg / .exfat / .ffpfsc / .ffpkg file or app folder here")
     pathlabel = ttk.Label(header, textvariable=pathvar, font=FONT_SMALL, foreground=MUTED)
     pathlabel.pack(side="left", padx=(14, 0))
     state["pathlabel"] = pathlabel
 
+    # bottom bar FIRST (packed before body) so it stays pinned at the
+    # bottom no matter how small the window gets
+    bottombar = ttk.Frame(root)
+    bottombar.pack(fill="x", side="bottom")
+    statusvar = tk.StringVar(value="Ready")
+    _status_lbl = tk.Label(bottombar, textvariable=statusvar, bg=BG, fg=MUTED,
+                           font=FONT_SMALL, anchor="w", justify="left",
+                           padx=12, pady=6)
+    _status_lbl.pack(side="left", fill="x", expand=True)
+    # small About / updates buttons, bottom-right (PKG Sender style)
+    updatebtn = mkbtn(bottombar, text="Check updates", style="Ghost.TButton",
+                      bg=BG, font=(FONT[0], 8),
+                      command=lambda: check_updates(manual=True))
+    updatebtn.pack(side="right", padx=(0, 8), pady=2)
+    mkbtn(bottombar, text="About", style="Ghost.TButton", bg=BG,
+          font=(FONT[0], 8),
+          command=lambda: show_about()).pack(side="right", padx=(0, 4), pady=2)
+    # wrap status text on narrow windows instead of clipping it
+    bottombar.bind("<Configure>",
+                   lambda e: _status_lbl.config(wraplength=max(200, e.width - 24)))
+
     # body
-    body = ttk.Frame(root, padding=(16, 4))
+    body = ttk.Frame(root, padding=(10, 2))
     body.pack(fill="both", expand=True)
     body.columnconfigure(1, weight=1)
     body.rowconfigure(0, weight=1)
 
     # ---- hero: cover + title/badges (left) ----
-    left = ttk.Frame(body, style="Card.TFrame", padding=18)
-    left.grid(row=0, column=0, sticky="ns", padx=(0, 14))
-    imgframe = tk.Frame(left, bg=CARD, width=400, height=400)
+    left = ttk.Frame(body, style="Card.TFrame", padding=8)
+    left.grid(row=0, column=0, sticky="ns", padx=(0, 10))
+    imgframe = tk.Frame(left, bg=CARD, width=280, height=280)
     imgframe.pack(pady=(6, 0))
     imgframe.pack_propagate(False)
     imglabel = tk.Label(imgframe, bg=CARD, fg=MUTED,
@@ -2962,88 +2975,23 @@ def run_gui(start_path=None):
     fmtlabel = tk.Label(titlerow, bg=CARD, fg=MUTED, text="")
     fmtlabel.pack(side="left", padx=(0, 8))
     state["fmtlabel"] = fmtlabel
-    tk.Label(titlerow, textvariable=titlevar, bg=CARD, fg=TEXT, font=(FONT[0], 13, "bold"),
-             wraplength=340, justify="left").pack(side="left", anchor="w")
-    badgerow = ttk.Frame(left, style="Card.TFrame")
-    badgerow.pack(anchor="w", pady=(0, 2))
+    tk.Label(titlerow, textvariable=titlevar, bg=CARD, fg=TEXT, font=(FONT[0], 11, "bold"),
+             wraplength=220, justify="left").pack(side="left", anchor="w")
     badgevars = [tk.StringVar(value="") for _ in range(5)]
-    badge_labels = []
-    for bv in badgevars:
-        lb = mkpill(badgerow, textvariable=bv, parent_bg=CARD)
-        lb.pack(side="left", padx=(0, 6), pady=2)
-        badge_labels.append(lb)
     state["badges"] = badgevars
-    state["badge_labels"] = badge_labels
-    imgrow = ttk.Frame(left, style="Card.TFrame")
-    imgrow.pack(anchor="w", pady=(6, 0))
-    ttk.Label(imgrow, text="Image:", style="Muted.Card.TLabel").pack(side="left")
-    state["imgcount"] = tk.StringVar(value="")
-    tk.Label(imgrow, textvariable=state["imgcount"], bg=CARD, fg=MUTED,
-             font=FONT_SMALL).pack(side="left", padx=(6, 0))
-    imgchoice = ttk.Combobox(left, state="readonly", width=24)
-    imgchoice.pack(anchor="w", pady=(2, 0))
-    imgchoice.bind("<<ComboboxSelected>>", lambda _e: show_image(imgchoice.get()))
+    state["badge_labels"] = []
+    # image stepping helper (Images tab buttons use this)
+    state["imgnames"] = []
     def _step_image(d):
-        vals = list(imgchoice["values"])
+        vals = list(state.get("imgnames") or [])
         if not vals:
             return
         try:
-            i = vals.index(imgchoice.get())
+            i = vals.index(state.get("img_name"))
         except ValueError:
             i = 0
         i = (i + d) % len(vals)
-        imgchoice.set(vals[i])
         show_image(vals[i])
-    imgnav = ttk.Frame(left, style="Card.TFrame")
-    imgnav.pack(anchor="w", pady=(6, 0))
-    mkbtn(imgnav, text="< Prev", style="Ghost.TButton", bg=CARD,
-           command=lambda: _step_image(-1)).pack(side="left", padx=(0, 6))
-    mkbtn(imgnav, text="Next >", style="Ghost.TButton", bg=CARD,
-           command=lambda: _step_image(1)).pack(side="left", padx=(0, 6))
-    mkbtn(imgnav, text="Save", style="Ghost.TButton", bg=CARD,
-           command=lambda: save_current_image()).pack(side="left", padx=(0, 6))
-    mkbtn(imgnav, text="Copy", style="Ghost.TButton", bg=CARD,
-           command=lambda: copy_current_image()).pack(side="left")
-
-    # ---- compact summary (cover | key info, copyable) ----
-    compact = ttk.Frame(body, style="Card.TFrame", padding=10)
-    crow = ttk.Frame(compact, style="Card.TFrame")
-    crow.pack()
-    cimgframe = tk.Frame(crow, bg=CARD, width=150, height=150)
-    cimgframe.pack(side="left")
-    cimgframe.pack_propagate(False)
-    cimglabel = tk.Label(cimgframe, bg=CARD, fg=MUTED,
-                         text="(no image)", font=FONT_SMALL)
-    cimglabel.place(relx=0.5, rely=0.5, anchor="center")
-    state["compact_imglabel"] = cimglabel
-    cinfo = ttk.Frame(crow, style="Card.TFrame")
-    cinfo.pack(side="left", padx=(12, 0), anchor="n")
-    tk.Entry(cinfo, textvariable=titlevar, bg=CARD, fg=TEXT,
-             font=(FONT[0], 11, "bold"), relief="flat",
-             readonlybackground=CARD, highlightthickness=0,
-             state="readonly", width=24).pack(anchor="w", pady=(0, 6))
-    state["compact_ver"] = tk.StringVar(value="—")
-    state["compact_tid"] = tk.StringVar(value="—")
-    for _ck, _cv in (("TITLE ID", state["compact_tid"]),
-                     ("VERSION", state["compact_ver"])):
-        ttk.Label(cinfo, text=_ck, style="SpecKey.TLabel").pack(anchor="w")
-        tk.Entry(cinfo, textvariable=_cv, bg=CARD, fg=TEXT, font=FONT_MID,
-                 relief="flat", readonlybackground=CARD, highlightthickness=0,
-                 state="readonly", width=24).pack(anchor="w", pady=(0, 4))
-    cbadgerow = ttk.Frame(compact, style="Card.TFrame")
-    cbadgerow.pack(pady=(8, 0))
-    cbadgerow2 = ttk.Frame(compact, style="Card.TFrame")
-    cbadgerow2.pack(pady=(2, 0))
-    compact_badge_labels = []
-    for _bi, bv in enumerate(badgevars):
-        # 5 badges don't fit one compact row: wrap 3 + 2
-        _bparent = cbadgerow if _bi < 3 else cbadgerow2
-        lb = mkpill(_bparent, textvariable=bv, parent_bg=CARD)
-        lb.pack(side="left", padx=(0, 6), pady=2)
-        compact_badge_labels.append(lb)
-    state["compact_badge_labels"] = compact_badge_labels
-    mkbtn(compact, text="Show details »", style="Ghost.TButton", bg=CARD,
-          command=lambda: set_compact(False)).pack(pady=(8, 0))
 
     # right column
     right = ttk.Frame(body)
@@ -3051,33 +2999,127 @@ def run_gui(start_path=None):
     right.rowconfigure(1, weight=1)
     right.columnconfigure(0, weight=1)
 
-    # top info box: the curated Details text lives here now
-    # (replaces the old duplicate spec grid). Bottom tab stays empty.
-    specbox = ttk.Frame(right, style="Card.TFrame", padding=10)
-    specbox.pack(fill="x", pady=(0, 12))
-    spectext = tk.Text(specbox, bg=CARD, fg=TEXT, font=("Consolas", 9),
-                       wrap="none", borderwidth=0, highlightthickness=0,
-                       padx=6, pady=6, height=10, selectbackground=ACCENT,
-                       selectforeground="#171717", insertbackground=TEXT)
-    spectext.pack(fill="x")
-    spectext.tag_config("updates", foreground="#f0b429")
     state["spec_cells"] = []
 
     nb = ttk.Notebook(right)
     nb.pack(fill="both", expand=True)
-    # text stays on top, all three tabs sit right below it — no gaps
-    specbox.pack_forget()
-    specbox.pack(fill="x", pady=(0, 6))
-    nb.pack_forget()
-    nb.pack(fill="both", expand=True)
     state["notebook"] = nb
     tab_entries = ttk.Frame(nb)
     tab_meta = ttk.Frame(nb)
+    tab_specs = ttk.Frame(nb)
+    nb.add(tab_specs, text="  Specs  ")
     nb.add(tab_meta, text="  Details  ")
     nb.add(tab_entries, text="  Files  ")
+    # Specs tab: the classic 2-column grid (PACKAGE/SIGNATURE/...)
+    # for whoever wants the fine details at a glance
+    specbox = ttk.Frame(tab_specs, style="Card.TFrame", padding=10)
+    specbox.pack(fill="x", pady=(0, 8))
+    spec_rows = []
+    for _ in range(5):
+        row = ttk.Frame(specbox, style="Card.TFrame")
+        row.pack(fill="x", pady=3)
+        row.columnconfigure(0, weight=1)
+        row.columnconfigure(1, weight=1)
+        cells = []
+        for col in (0, 1):
+            cell = ttk.Frame(row, style="Card.TFrame")
+            cell.grid(row=0, column=col, sticky="w", padx=(0, 24))
+            k = ttk.Label(cell, text="", style="SpecKey.TLabel")
+            k.pack(anchor="w")
+            v = tk.Entry(cell, bg=CARD, fg=TEXT, font=FONT_MID, relief="flat",
+                         readonlybackground=CARD, highlightthickness=0,
+                         state="readonly", width=34)
+            v.pack(anchor="w")
+            cells.append((k, v))
+        spec_rows.append(cells)
+    state["spec_cells"] = spec_rows
     tab_troph = ttk.Frame(nb)
+    tab_images = ttk.Frame(nb)
+    nb.add(tab_images, text="  Images  ")
     nb.add(tab_troph, text="  Trophies  ")
     state["troph_tab"] = tab_troph
+    state["images_tab"] = tab_images
+    # Images tab: big preview on top, one horizontal button row
+    # pinned at the bottom (no side bar eating preview width)
+    _imgbody = ttk.Frame(tab_images, style="Card.TFrame")
+    _imgbody.pack(fill="both", expand=True)
+    imgtablabel = tk.Label(_imgbody, bg=CARD, fg=MUTED, font=FONT_MID,
+                           text="(no image)")
+    imgtablabel.pack(fill="both", expand=True)
+    state["imgtablabel"] = imgtablabel
+    _imgbar = ttk.Frame(_imgbody, style="Card.TFrame")
+    _imgbar.pack(fill="x", pady=(6, 0))
+    mkbtn(_imgbar, text="< Prev", style="Ghost.TButton", bg=CARD,
+          command=lambda: _step_image(-1)).pack(side="left")
+    mkbtn(_imgbar, text="Next >", style="Ghost.TButton", bg=CARD,
+          command=lambda: _step_image(1)).pack(side="left", padx=(6, 0))
+    state["imgcombo"] = tk.StringVar(value="")
+    imgcombo = ttk.Combobox(_imgbar, textvariable=state["imgcombo"],
+                            state="readonly", width=16)
+    imgcombo.pack(side="left", padx=(6, 0))
+    imgcombo.bind("<<ComboboxSelected>>",
+                  lambda _e: show_image(state["imgcombo"].get()))
+    state["imgcombo_w"] = imgcombo
+    mkbtn(_imgbar, text="Save", style="Ghost.TButton", bg=CARD,
+          command=lambda: save_current_image()).pack(side="left", padx=(6, 0))
+    mkbtn(_imgbar, text="Copy", style="Ghost.TButton", bg=CARD,
+          command=lambda: copy_current_image()).pack(side="left", padx=(6, 0))
+    state["imgtabcount"] = tk.StringVar(value="No images")
+    tk.Label(_imgbar, textvariable=state["imgtabcount"], bg=CARD, fg=MUTED,
+             font=FONT_SMALL).pack(side="right")
+    def _sync_imgtab():
+        # mirror the current cover into the Images tab preview
+        try:
+            lbl = state.get("imgtablabel")
+            if lbl is None:
+                return
+            pil = state.get("pil")
+            if pil is None:
+                lbl.config(image="", text="(no image)")
+                return
+            try:
+                from PIL import ImageTk as _ITk
+            except Exception:
+                lbl.config(image="", text="(no preview)")
+                return
+            im = pil.copy()
+            try:
+                _w0, _h0 = pil.size
+            except Exception:
+                _w0 = _h0 = 0
+            # square covers (icon0 etc.) get a small box so the empty
+            # space below collapses; wide banners keep/grow a big box
+            try:
+                _ratio = (_w0 / _h0) if _h0 else 1.0
+            except Exception:
+                _ratio = 1.0
+            if 0.9 <= _ratio <= 1.1:
+                _box = (200, 200)
+            elif _ratio > 1.1:
+                _box = (480, 270)
+            else:
+                _box = (260, 340)
+            im.thumbnail(_box)
+            ph = _ITk.PhotoImage(im)
+            state["imgtabphoto"] = ph
+            lbl.config(image=ph, text="")
+            lbl.image = ph
+        except Exception:
+            pass
+    def _fill_imgtab(names):
+        try:
+            cb = state.get("imgcombo_w")
+            if cb is None:
+                return
+            cb["values"] = list(names or [])
+            if names:
+                state["imgcombo"].set(names[0])
+            else:
+                state["imgcombo"].set("")
+            state["imgtabcount"].set(
+                f"{len(names)} images" if len(names) != 1 else "1 image")
+        except Exception:
+            pass
     trophsumvar = tk.StringVar(value="No trophies loaded")
     state["trophsumvar"] = trophsumvar
     _trophbar = ttk.Frame(tab_troph, style="Card.TFrame")
@@ -3100,12 +3142,12 @@ def run_gui(start_path=None):
     trotv.column("grade", width=55, anchor="center")
     trotv.column("name", width=260)
     trotv.pack(side="left", fill="both", expand=True)
-    _troprev = ttk.Frame(_tbody, style="Card.TFrame", width=220)
+    _troprev = ttk.Frame(_tbody, style="Card.TFrame", width=175)
     _troprev.pack(side="right", fill="y", padx=(8, 0))
     _troprev.pack_propagate(False)
     # scrollable preview: banner + icon never get clipped on short windows
     _trocanvas = tk.Canvas(_troprev, bg=CARD, borderwidth=0,
-                           highlightthickness=0, width=196)
+                           highlightthickness=0, width=150)
     _troscroll = ttk.Scrollbar(_troprev, orient="vertical",
                                command=_trocanvas.yview)
     _trocanvas.configure(yscrollcommand=_troscroll.set)
@@ -3421,10 +3463,46 @@ def run_gui(start_path=None):
             return
         _trophy_start(_e, r)
 
-    def _on_troph_tab(_ev=None):
-        # lazy load: worker starts only when the Trophies tab is opened
+    def _sync_leftcover():
+        # Images tab open -> left cover box shows image info text instead
+        # of the same picture twice. Same box size: tabs never jump.
         try:
-            if nb.select() != str(state["troph_tab"]):
+            if nb.select() == str(state.get("images_tab") or "") and \
+                    state.get("pil") is not None:
+                _nm = str(state.get("img_name") or "")
+                try:
+                    _w, _h = state["pil"].size
+                except Exception:
+                    _w = _h = 0
+                _pos = ""
+                try:
+                    _vals = state.get("imgnames") or []
+                    _pos = f"{_vals.index(state.get('img_name')) + 1}" \
+                        f"/{len(_vals)}"
+                except Exception:
+                    pass
+                _txt = _nm + (f"\n{_w}x{_h}" if _w else "") + \
+                    (f"\n{_pos}" if _pos else "")
+                imglabel.config(image="", text=_txt or "(no image)")
+                return
+            _ph = state.get("photo")
+            if _ph is not None:
+                imglabel.config(image=_ph, text="")
+        except Exception:
+            pass
+
+    def _on_troph_tab(_ev=None):
+        # lazy load: worker starts only when the Trophies tab is opened.
+        try:
+            _sel = nb.select()
+        except Exception:
+            return
+        try:
+            _sync_leftcover()
+        except Exception:
+            pass
+        try:
+            if _sel != str(state["troph_tab"]):
                 return
         except Exception:
             return
@@ -3720,6 +3798,18 @@ def run_gui(start_path=None):
         except Exception:
             pass
 
+    # badge strip inside the Specs tab, under the grid (moved out of
+    # Details so everything spec-like lives in one place)
+    detbadgerow = ttk.Frame(tab_specs, style="Card.TFrame")
+    detbadgerow.pack(fill="x", pady=(0, 8))
+    _blabs = []
+    for _bv in state["badges"]:
+        _lb = mkpill(detbadgerow, textvariable=_bv, parent_bg=CARD,
+                     font=(FONT[0], 10, "bold"), padx=12, pady=5)
+        # start hidden (empty): load() packs only the non-empty ones
+        _lb.pack_forget()
+        _blabs.append(_lb)
+    state["badge_labels"] = _blabs
     metabar = ttk.Frame(tab_meta, style="Card.TFrame")
     metabar.pack(fill="x", pady=(0, 4))
     detailvar = tk.StringVar(value="Show all")
@@ -3745,17 +3835,7 @@ def run_gui(start_path=None):
                         command=lambda: select_all_text(metatext))
     metatext.bind("<Button-3>", lambda e: ctxmenu.tk_popup(e.x_root, e.y_root))
 
-    bottombar = ttk.Frame(root)
-    bottombar.pack(fill="x", side="bottom")
-    statusvar = tk.StringVar(value="Ready")
-    _status_lbl = tk.Label(bottombar, textvariable=statusvar, bg=BG, fg=MUTED,
-                           font=FONT_SMALL, anchor="w", justify="left",
-                           padx=12, pady=6)
-    _status_lbl.pack(side="left", fill="x", expand=True)
-    # wrap status text on narrow windows instead of clipping it
-    bottombar.bind("<Configure>",
-                   lambda e: _status_lbl.config(wraplength=max(200, e.width - 24)))
-
+    # (bottombar created up top, before body, so it stays pinned)
     def _set_status(base=None):
         # persistent base (e.g. file entries) + update note, shown together
         try:
@@ -4730,7 +4810,7 @@ def run_gui(start_path=None):
             for k, v in r.get("rows", []):
                 parts.append(f"{k} = {v}")
             try:
-                det = spectext.get("1.0", "end-1c").strip()
+                det = metatext.get("1.0", "end-1c").strip()
             except Exception:
                 det = ""
             if det:
@@ -4827,18 +4907,15 @@ def run_gui(start_path=None):
                 lb.config(bg=col, fg="#171717")
             except Exception:
                 pass
+            # dumps (e.g. PS5 folders) have no Package row: hide the
+            # empty pill instead of leaving a blank badge
             try:
-                _cl = state.get("compact_badge_labels", []) or []
-                if i < len(_cl):
-                    _cl[i].config(bg=col, fg="#171717")
+                if val:
+                    lb.pack(side="left", padx=(0, 8), pady=2)
+                else:
+                    lb.pack_forget()
             except Exception:
                 pass
-        try:
-            state["compact_ver"].set(
-                _rd.get("Version", "") or _rd.get("Content Ver", "") or "—")
-            state["compact_tid"].set(_rd.get("Title ID", "") or "—")
-        except Exception:
-            pass
         _flat = [(k, v) for (k, v) in r["rows"]
                  if k not in ("Platform", "Size", "Region")]
         _flat = _flat[:10]
@@ -4895,28 +4972,22 @@ def run_gui(start_path=None):
         # image choices: png entries
         pngs = [e["name"] for e in r["entries"]
                 if e["name"].lower().endswith(".png") and e["size"] > 0]
-        imgchoice["values"] = pngs
-        try:
-            state["imgcount"].set(f"{len(pngs)} images" if len(pngs) != 1 else "1 image")
-        except Exception:
-            pass
+        state["imgnames"] = pngs
+        _fill_imgtab(pngs)
         if pngs:
             first = "icon0.png" if "icon0.png" in pngs else pngs[0]
-            imgchoice.set(first)
             show_image(first)
         elif r.get("store_cid"):
-            imgchoice.set("")
+            state["pil"] = None
+            _sync_imgtab()
+            _fill_imgtab([])
             imglabel.config(image="", text="Fetching cover...")
-            _sync_compact_cover("Fetching cover...")
-            try:
-                state["imgcount"].set("1 online image")
-            except Exception:
-                pass
             fetch_store_async(r["store_cid"])
         else:
-            imgchoice.set("")
+            state["pil"] = None
+            _sync_imgtab()
+            _fill_imgtab([])
             imglabel.config(image="", text="(no image)")
-            _sync_compact_cover("(no image)")
         if r.get("patch_tid"):
             fetch_patch_async(r["patch_tid"], r.get("own_ver", ""))
         _set_rename_enabled(True)
@@ -4926,15 +4997,7 @@ def run_gui(start_path=None):
 
     def refresh_details():
         r = state.get("result")
-        # bottom Details tab stays empty for now (user request)
-        try:
-            metatext.delete("1.0", "end")
-        except Exception:
-            pass
-        try:
-            spectext.delete("1.0", "end")
-        except Exception:
-            return
+        metatext.delete("1.0", "end")
         if not r:
             return
         if state.get("show_all"):
@@ -4949,22 +5012,22 @@ def run_gui(start_path=None):
         if r.get("patch_lines"):
             lines = list(lines) + ([""] if lines else []) + \
                 ["-- Updates --"] + list(r["patch_lines"])
-        spectext.insert("end", "\n".join(lines) + ("\n" if lines else ""))
+        metatext.insert("end", "\n".join(lines) + ("\n" if lines else ""))
         # highlight the "-- Updates --" (patch tracker) section in amber
         # + embed a Copy link button right on its header line.
         try:
             for i, ln in enumerate(lines, start=1):
                 if ln.strip() == "-- Updates --":
-                    spectext.tag_add("updates", f"{i}.0", "end-1c")
+                    metatext.tag_add("updates", f"{i}.0", "end-1c")
                     try:
-                        _cb = tk.Button(spectext, text="Copy link",
+                        _cb = tk.Button(metatext, text="Copy link",
                                         bg=CARD2, fg=TEXT, relief="flat",
                                         font=FONT_SMALL, cursor="hand2",
                                         padx=8, pady=0,
                                         activebackground=ACCENT,
                                         activeforeground="#171717",
                                         command=lambda: copy_update_link())
-                        spectext.window_create(f"{i}.end", window=_cb)
+                        metatext.window_create(f"{i}.end", window=_cb)
                         state["copylink_embed"] = _cb  # keep a ref
                     except Exception:
                         pass
@@ -5034,105 +5097,19 @@ def run_gui(start_path=None):
         try:
             state["pil"] = im.copy()
             state["img_name"] = label
-            im.thumbnail((380, 380))
-            canvas = Image.new("RGB", (400, 400), CARD)
-            canvas.paste(im, ((400 - im.size[0]) // 2,
-                              (400 - im.size[1]) // 2))
+            im.thumbnail((260, 260))
+            canvas = Image.new("RGB", (280, 280), CARD)
+            canvas.paste(im, ((280 - im.size[0]) // 2,
+                              (280 - im.size[1]) // 2))
             ph = ImageTk.PhotoImage(canvas)
             state["photo"] = ph
             imglabel.config(image=ph, text="")
             imglabel.image = ph
-            _sync_compact_cover()
+            _sync_imgtab()
+            _sync_leftcover()
             return None
         except Exception as ex:
             return str(ex)
-
-    def _sync_compact_cover(msg=None):
-        """Mirror cover / no-image state into the compact summary art."""
-        try:
-            cl = state.get("compact_imglabel")
-            if cl is None:
-                return
-            if msg is not None:
-                cl.config(image="", text=msg)
-                return
-            im = state.get("pil")
-            if im is None or not has_pil:
-                cl.config(image="", text="(no image)")
-                return
-            t = im.copy()
-            t.thumbnail((150, 150))
-            c = Image.new("RGB", (160, 160), CARD)
-            c.paste(t, ((160 - t.size[0]) // 2, (160 - t.size[1]) // 2))
-            ph = ImageTk.PhotoImage(c)
-            state["compact_photo"] = ph
-            cl.config(image=ph, text="")
-            cl.image = ph
-        except Exception:
-            pass
-
-    def set_compact(on, save=True):
-        """Toggle compact summary mode (small window, cover+badges+key info)."""
-        state["compact"] = bool(on)
-        try:
-            if state["compact"]:
-                left.grid_remove()
-                right.grid_remove()
-                _pl = state.get("pathlabel")
-                if _pl is not None:
-                    _pl.pack_forget()
-                # compact keeps only the old buttons (Open | Compact | About)
-                try:
-                    renamebtn.pack_forget()
-                except Exception:
-                    pass
-                try:
-                    batchbtn.pack_forget()
-                except Exception:
-                    pass
-                try:
-                    undobtn.pack_forget()
-                except Exception:
-                    pass
-                compact.grid(row=0, column=0, sticky="n", pady=(6, 0))
-                compactbtn.config(text="Expand")
-                try:
-                    # shrink-wrap the window around the compact content
-                    root.update_idletasks()
-                    _cw = min(max(root.winfo_reqwidth(), 360), 620)
-                    _ch = min(max(root.winfo_reqheight(), 280), 800)
-                    root.geometry("%dx%d" % (_cw, _ch))
-                    root.minsize(_cw, _ch)
-                except Exception:
-                    root.geometry("440x470")
-                    root.minsize(400, 430)
-            else:
-                compact.grid_remove()
-                left.grid()
-                right.grid()
-                # restore original header order: Rename/Batch before pathlabel
-                try:
-                    renamebtn.pack(side="left", padx=(8, 0))
-                except Exception:
-                    pass
-                try:
-                    batchbtn.pack(side="left", padx=(8, 0))
-                except Exception:
-                    pass
-                try:
-                    undobtn.pack(side="left", padx=(8, 0))
-                except Exception:
-                    pass
-                _pl = state.get("pathlabel")
-                if _pl is not None:
-                    _pl.pack(side="left", padx=(14, 0))
-                root.geometry("1060x700")
-                root.minsize(900, 600)
-                compactbtn.config(text="Compact")
-        except Exception:
-            pass
-        if save:
-            _save_settings({"compact": state["compact"]})
 
     def fetch_store_async(cid):
         """Background: store cover + title → display via root.after."""
@@ -5175,29 +5152,22 @@ def run_gui(start_path=None):
             data[:2] == b"\xff\xd8" else b""
         if not state["store_bytes"]:
             imglabel.config(image="", text="(cover unavailable)")
-            _sync_compact_cover("(cover unavailable)")
             return
         if not has_pil:
             imglabel.config(text="(Pillow not installed)")
-            _sync_compact_cover("(Pillow not installed)")
             return
         try:
             im = Image.open(io.BytesIO(state["store_bytes"]))
         except Exception:
             imglabel.config(image="", text="(bad image)")
-            _sync_compact_cover("(bad image)")
             return
         err = display_pil(im, "cover.jpg")
         if err:
             imglabel.config(text="(bad image)")
-            _sync_compact_cover("(bad image)")
             statusvar.set(f"Error: {err}")
         else:
-            try:
-                imgchoice["values"] = ["cover.jpg"]
-                imgchoice.set("cover.jpg")
-            except Exception:
-                pass
+            state["imgnames"] = ["cover.jpg"]
+            _fill_imgtab(["cover.jpg"])
             statusvar.set("OK - store cover")
 
     def fetch_patch_async(tid, own_ver):
@@ -5256,32 +5226,30 @@ def run_gui(start_path=None):
             return
         if data[:8] != b"\x89PNG\r\n\x1a\n":
             imglabel.config(image="", text="(not a PNG)")
-            _sync_compact_cover("(not a PNG)")
             statusvar.set("OK")
             return
         if not has_pil:
             imglabel.config(text=f"PNG {fmt_size(len(data))}\n(Pillow not installed)")
-            _sync_compact_cover("image info")
             statusvar.set("OK")
             return
         try:
             im = Image.open(io.BytesIO(data))
             state["pil"] = im.copy()
             state["img_name"] = name
-            im.thumbnail((380, 380))
+            im.thumbnail((260, 260))
             # fixed-size canvas: pad with card bg so layout never shifts
-            canvas = Image.new("RGB", (400, 400), CARD)
-            canvas.paste(im, ((400 - im.size[0]) // 2,
-                              (400 - im.size[1]) // 2))
+            canvas = Image.new("RGB", (280, 280), CARD)
+            canvas.paste(im, ((280 - im.size[0]) // 2,
+                              (280 - im.size[1]) // 2))
             ph = ImageTk.PhotoImage(canvas)
             state["photo"] = ph
             imglabel.config(image=ph, text="")
             imglabel.image = ph
-            _sync_compact_cover()
+            _sync_imgtab()
+            _sync_leftcover()
             statusvar.set(f"OK - {name} ({im.size[0]}x{im.size[1]})")
         except Exception as ex:
             imglabel.config(text="(bad image)")
-            _sync_compact_cover("(bad image)")
             statusvar.set(f"Error: {ex}")
 
     if start_path and os.path.exists(start_path):
@@ -5320,11 +5288,6 @@ def run_gui(start_path=None):
         except Exception as ex:
             statusvar.set(f"Drop disabled: {ex}")
     root.after(2500, lambda: check_updates())
-    try:
-        if _load_settings().get("compact"):
-            set_compact(True, save=False)
-    except Exception:
-        pass
     if len(sys.argv) > 1 and os.path.exists(sys.argv[1]):
         _startup = sys.argv[1]
         root.after(100, lambda: load(_startup))
