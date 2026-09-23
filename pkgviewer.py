@@ -683,11 +683,13 @@ def parse_pkg(path):
             kind = "PS4" if sfo and not sfo.get("_error") else "CNT"
             rows = [("Platform", f"{kind} (CNT metadata)"),
                     ("Package", cnt_package_type(hdr)),
-                    ("Content ID", sfo.get("CONTENT_ID", cid) if sfo else cid),
                     ("Size", fmt_size(size)),
                     ("Entries", f"{n} ({sc} sys)"),
                     ("Body", f"@ {body_off:#x}")]
             rows += extra
+            if not any(k == "Content ID" for k, _ in rows):
+                rows.insert(2, ("Content ID",
+                                sfo.get("CONTENT_ID", cid) if sfo else cid))
             return {"ok": True, "kind": "ps4", "path": path, "size": size,
                     "title": title or os.path.basename(path),
                     "rows": rows, "entries": ents, "meta": meta or sfo,
