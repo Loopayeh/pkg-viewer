@@ -383,7 +383,7 @@ def mkpill(parent, text="", textvariable=None, bg="#2a2a2a", fg="#171717",
         return PillLabel(parent, text=text, textvariable=textvariable, bg=bg,
                          fg=fg, font=font, parent_bg=parent_bg, **kw)
     return _tk.Label(parent, text=text, textvariable=textvariable, bg=bg,
-                     fg=fg, font=font, padx=8, pady=3, **kw)
+                     fg=fg, font=font, **dict({"padx": 8, "pady": 3}, **kw))
 
 CNT_MAGIC = b"\x7fCNT"
 FIH_MAGIC = b"\x7fFIH"
