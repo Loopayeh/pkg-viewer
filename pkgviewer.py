@@ -667,12 +667,42 @@ def parse_pkg(path):
                 _ver4 = sfo.get("VERSION", "")
                 if str(_cat4).lower() == "gp" and sfo.get("APP_VER"):
                     _ver4 = sfo.get("APP_VER")
+                # languages: TITLE, TITLE_02..TITLE_29 (non-empty count)
+                _langs = 0
+                try:
+                    for _k, _v in sfo.items():
+                        if (_k == "TITLE" or _k.startswith("TITLE_")) and str(_v or "").strip():
+                            _langs += 1
+                except Exception:
+                    pass
+                # build date from PUBTOOLINFO c_date=YYYYMMDD
+                _built = "-"
+                try:
+                    import re as _re
+                    _m = _re.search(r"c_date=(\d{4})(\d{2})(\d{2})",
+                                    str(sfo.get("PUBTOOLINFO", "")))
+                    if _m:
+                        _built = f"{_m.group(1)}-{_m.group(2)}-{_m.group(3)}"
+                except Exception:
+                    pass
                 extra = [("Title ID", sfo.get("TITLE_ID", "")),
                          ("Content ID", _cid4),
                          ("Region", content_region(_cid4)),
                          ("Type", ps4_pkg_type(_cat4)),
-                         ("Version", _ver4),
-                         ("Min. System", str(sfo.get("SYSTEM_VER", "-")))]
+                         ("Version", _ver4)]
+                # patch PKGs: also show the base game version it applies to
+                if str(_cat4).lower() == "gp" and sfo.get("VERSION"):
+                    extra.append(("Base Version", sfo.get("VERSION", "")))
+                extra += [("Min. System", str(sfo.get("SYSTEM_VER", "-"))),
+                          ("Languages", str(_langs) if _langs else "-"),
+                          ("Built", _built)]
+                # FPKG hint: which passcode full-extract needs
+                try:
+                    _pt = struct.unpack_from(">I", hdr, 0x04)[0]
+                    if not (_pt & 0x80000000):
+                        extra.append(("Passcode", "zeros (FPKG default)"))
+                except Exception:
+                    pass
             elif pj and pj["size"] and pj["size"] < 100_000:
                 f.seek(pj["off"])
                 try:
@@ -684,8 +714,7 @@ def parse_pkg(path):
             rows = [("Platform", f"{kind} (CNT metadata)"),
                     ("Package", cnt_package_type(hdr)),
                     ("Size", fmt_size(size)),
-                    ("Entries", f"{n} ({sc} sys)"),
-                    ("Body", f"@ {body_off:#x}")]
+                     ("Entries", f"{n} ({sc} sys)")]
             rows += extra
             if not any(k == "Content ID" for k, _ in rows):
                 rows.insert(2, ("Content ID",
@@ -695,7 +724,8 @@ def parse_pkg(path):
                     "rows": rows, "entries": ents, "meta": meta or sfo,
                     "icon_entry": "icon0.png",
                     "patch_tid": sfo.get("TITLE_ID", "") if isinstance(sfo, dict) else "",
-                    "own_ver": _ver4 if sfo and not sfo.get("_error") else ""}
+                    "own_ver": _ver4 if sfo and not sfo.get("_error") else "",
+                    "body_off": body_off}
         else:
             # split retail part without header? resolve via sibling _0.
             stub = _split_part_stub(path, size)
@@ -2230,6 +2260,123 @@ def fmt_size(n):
     return f"{n} B"
 
 
+def sanitize_pkg_path(name):
+    """Entry name -> safe relative path (keeps subdirs, kills .. / drive)."""
+    parts = []
+    for p in (name or "").replace("\\", "/").split("/"):
+        p = p.strip()
+        if not p or p in (".", ".."):
+            continue
+        p = "".join(c for c in p if c not in '<>:"|?*')
+        if p:
+            parts.append(p)
+    return "/".join(parts)
+
+
+def extract_pkg_structured(pkg_path, entries, dest, progress=None):
+    """Extract entries preserving folder structure. Returns (ok, fail, gp4_path)."""
+    import shutil
+    ok, fail = 0, 0
+    for e in entries:
+        rel = sanitize_pkg_path(e.get("name") or "")
+        if not rel or e.get("size", 0) <= 0:
+            continue
+        out = os.path.join(dest, *rel.split("/"))
+        try:
+            os.makedirs(os.path.dirname(out) or dest, exist_ok=True)
+            if e.get("local_path") and os.path.isfile(e["local_path"]):
+                shutil.copyfile(e["local_path"], out)
+            elif e.get("cached") is not None:
+                with open(out, "wb") as fw:
+                    fw.write(e["cached"])
+            elif isinstance(e.get("abs_off"), int) and e["abs_off"] >= 0:
+                with open(pkg_path, "rb") as fh, open(out, "wb") as fw:
+                    fh.seek(e["abs_off"])
+                    left = e["size"]
+                    while left > 0:
+                        buf = fh.read(min(64 * 1024 * 1024, left))
+                        if not buf:
+                            break
+                        fw.write(buf)
+                        left -= len(buf)
+            else:  # PS3-crypto / exfat chains
+                data = read_entry_bytes(pkg_path, e["abs_off"], e["size"],
+                                        limit=2_000_000_000)
+                if not data:
+                    raise OSError("unreadable entry")
+                with open(out, "wb") as fw:
+                    fw.write(data)
+            ok += 1
+        except Exception:
+            fail += 1
+        if progress:
+            try:
+                progress(rel)
+            except Exception:
+                pass
+    return ok, fail
+
+
+def write_gp4(result, extracted_dir, gp4_path):
+    """Write a minimal .gp4 project for orbis-pub-gen from parsed metadata."""
+    import xml.sax.saxutils as _sx
+    meta = result.get("meta") or {}
+    rows = dict(result.get("rows", []))
+    cid = (meta.get("CONTENT_ID", "") if isinstance(meta, dict) else "") or rows.get("Content ID", "")
+    tid = (meta.get("TITLE_ID", "") if isinstance(meta, dict) else "") or rows.get("Title ID", "")
+    cat = (meta.get("CATEGORY", "") if isinstance(meta, dict) else "") or "gd"
+    ver = (meta.get("APP_VER", "") or meta.get("VERSION", "") or rows.get("Version", "01.00")
+           if isinstance(meta, dict) else rows.get("Version", "01.00"))
+    title = (meta.get("TITLE", "") if isinstance(meta, dict) else "") or result.get("title", tid)
+    files = []
+    for dp, _dn, fns in os.walk(extracted_dir):
+        for fn in sorted(fns):
+            fp = os.path.join(dp, fn)
+            rel = os.path.relpath(fp, extracted_dir).replace(os.sep, "/")
+            if rel.lower() == os.path.basename(gp4_path).lower():
+                continue
+            sz = os.path.getsize(fp)
+            files.append((rel, sz))
+    flines = "\n".join(
+        '    <file targ_path="%s" orig_path="%s"/>' % (_sx.escape(r), _sx.escape(r))
+        for r, _s in files)
+    gp4 = ('<?xml version="1.0" encoding="utf-8"?>\n'
+           '<psproject fmt="gp4" version="1000">\n'
+           '  <volume>\n'
+           '    <volume_type>pkg_ps4_app</volume_type>\n'
+           '    <volume_id>PS4VOLUME</volume_id>\n'
+           '    <volume_ts>2024-01-01 00:00:00</volume_ts>\n'
+           '    <package content_id="%s" passcode="00000000000000000000000000000000"/>\n'
+           '    <chunk_info chunk_count="1" scenario_count="1"/>\n'
+           '  </volume>\n'
+           '  <contents>\n%s\n  </contents>\n'
+           '  <chunks>\n    <chunk id="0" label="Chunk #0">\n%s\n    </chunk>\n'
+           '  </chunks>\n'
+           '  <scenarios default_id="0">\n'
+           '    <scenario id="0" type="sp" initial_chunk_count="1" label="Single Play">\n'
+           '      <chunk idref="0"/>\n'
+           '    </scenario>\n'
+           '  </scenarios>\n'
+           '</psproject>\n' % (
+               _sx.escape(cid or "UP0000-%s_00-0000000000000000" % tid),
+               flines,
+               "\n".join('      <file idref="%s"/>' % _sx.escape(r) for r, _s in files)))
+    with open(gp4_path, "w", encoding="utf-8") as f:
+        f.write(gp4)
+    return gp4_path
+
+
+def find_orbis_tool():
+    """orbis-pub-chk / orbis-pub-gen / gp4 binary on PATH, or ''."""
+    import shutil as _sh
+    for n in ("orbis-pub-chk", "orbis-pub-chk.exe", "orbis-pub-gen",
+              "orbis-pub-gen.exe", "gengp4", "gengp4.exe"):
+        p = _sh.which(n)
+        if p:
+            return p
+    return ""
+
+
 CURATED_SFO = ["TITLE", "TITLE_ID", "CATEGORY", "VERSION", "CONTENT_ID", "FORMAT"]
 # (key in param.json, friendly label shown in Details; None = decode via fmt_fw)
 CURATED_JSON = [("titleId", "Title ID"),
@@ -2979,6 +3126,29 @@ def run_gui(start_path=None):
         undobtn.config(state="disabled")
     except Exception:
         pass
+    def _open_tools_menu():
+        # Top "Tools" dropdown: actions registered later (extract/build...).
+        import tkinter as _tk2
+        m = _tk2.Menu(root, tearoff=0, bg=CARD, fg=TEXT,
+                      activebackground=ACCENT, activeforeground="#171717")
+        acts = state.get("tools_actions") or []
+        if not acts:
+            m.add_command(label="(no tools yet — open a PKG first)",
+                          command=lambda: statusvar.set("Open a PKG first"))
+        else:
+            for _lbl, _fn in acts:
+                m.add_command(label=_lbl, command=_fn)
+        try:
+            x, y = toolsbtn.winfo_rootx(), toolsbtn.winfo_rooty() + toolsbtn.winfo_height() + 4
+            m.tk_popup(x, y)
+        finally:
+            try:
+                m.grab_release()
+            except Exception:
+                pass
+    toolsbtn = mkbtn(header, text="Tools \u25be", style="Ghost.TButton",
+                     command=lambda: _open_tools_menu())
+    toolsbtn.pack(side="left", padx=(8, 0))
     def toggle_pin(force=None):
         # always-on-top toggle (Pin button, header right)
         try:
@@ -3178,26 +3348,9 @@ def run_gui(start_path=None):
     # Specs tab: the classic 2-column grid (PACKAGE/SIGNATURE/...)
     # for whoever wants the fine details at a glance
     specbox = ttk.Frame(tab_specs, style="Card.TFrame", padding=8)
-    specbox.pack(fill="x", pady=(0, 8))
-    spec_rows = []
-    for _ in range(5):
-        row = ttk.Frame(specbox, style="Card.TFrame")
-        row.pack(fill="x", pady=1)
-        row.columnconfigure(0, weight=1)
-        row.columnconfigure(1, weight=1)
-        cells = []
-        for col in (0, 1):
-            cell = ttk.Frame(row, style="Card.TFrame")
-            cell.grid(row=0, column=col, sticky="w", padx=(0, 12))
-            k = ttk.Label(cell, text="", style="SpecKey.TLabel")
-            k.pack(anchor="w")
-            v = tk.Entry(cell, bg=CARD, fg=TEXT, font=FONT_MID, relief="flat",
-                         readonlybackground=CARD, highlightthickness=0,
-                         state="readonly", width=34)
-            v.pack(anchor="w")
-            cells.append((k, v))
-        spec_rows.append(cells)
-    state["spec_cells"] = spec_rows
+    specbox.pack(fill="x", pady=(0, 4))
+    state["specbox"] = specbox
+    state["spec_cells"] = []  # rebuilt per file (see load())
     tab_troph = ttk.Frame(nb)
     tab_images = ttk.Frame(nb)
     nb.add(tab_images, text="  Images  ")
@@ -3983,12 +4136,14 @@ def run_gui(start_path=None):
             pass
 
     # badge strip inside the Specs tab, under the grid (moved out of
-    # Details so everything spec-like lives in one place)
-    detbadgerow = ttk.Frame(tab_specs, style="Card.TFrame")
-    detbadgerow.pack(fill="x", pady=(0, 8))
+    # Details so everything spec-like lives in one place).
+    # No card behind: row blends into the tab bg so only the round
+    # pills show (tkinter frames can't have rounded corners).
+    detbadgerow = ttk.Frame(tab_specs, style="TFrame")
+    detbadgerow.pack(fill="x", pady=(0, 2))
     _blabs = []
     for _bv in state["badges"]:
-        _lb = mkpill(detbadgerow, textvariable=_bv, parent_bg=CARD,
+        _lb = mkpill(detbadgerow, textvariable=_bv, parent_bg=BG,
                      font=(FONT[0], 10, "bold"), padx=12, pady=5)
         # start hidden (empty): load() packs only the non-empty ones
         _lb.pack_forget()
@@ -4103,6 +4258,9 @@ def run_gui(start_path=None):
                    "https://loopayeh.github.io/")).pack(side="left", ipadx=10, ipady=4)
         mkbtn(_links, text="Support  ↗", style="Ghost.TButton", bg=CARD,
                command=lambda: _wb.open(SUPPORT_URL)).pack(side="left", ipadx=10, ipady=4)
+        mkbtn(_links, text="☕ حمایت تومانی  ↗", style="Ghost.TButton", bg=CARD,
+               command=lambda: _wb.open(
+                   "https://coffeebede.com/loopayeh")).pack(side="left", ipadx=10, ipady=4)
         mkbtn(_ab, text="Close", style="Accent.TButton", bg=CARD,
                command=_ab.destroy).pack(pady=(16, 20))
         # center over main window instead of top-left corner
@@ -4965,6 +5123,287 @@ def run_gui(start_path=None):
                 fail += 1
         statusvar.set(f"Extracted {ok} files" + (f" ({fail} skipped)" if fail else ""))
 
+    def _run_worker_dialog(title, worker_args, on_done):
+        # Progress dialog for long orbis jobs: live log + file counter,
+        # indeterminate bar, Pause/Resume (NtSuspendProcess) + Cancel (kill).
+        import subprocess as _sp
+        import threading as _th
+        dlg = tk.Toplevel(root)
+        dlg.title(title)
+        dlg.transient(root)
+        try:
+            root.update_idletasks()
+            _rx, _ry = root.winfo_rootx(), root.winfo_rooty()
+            _rw, _rh = root.winfo_width(), root.winfo_height()
+            _dw, _dh = 460, 210
+            _dx = _rx + max((_rw - _dw) // 2, 0)
+            _dy = _ry + max((_rh - _dh) // 2, 0)
+            dlg.geometry(f"{_dw}x{_dh}+{_dx}+{_dy}")
+        except Exception:
+            dlg.geometry("460x210")
+        dlg.grab_set()
+        try:
+            dlg.configure(bg=CARD)
+        except Exception:
+            pass
+        _tvar = tk.StringVar(value=title + "...")
+        tk.Label(dlg, textvariable=_tvar, bg=CARD, fg=TEXT,
+                 font=(FONT[0], 10, "bold"), wraplength=420,
+                 justify="left").pack(fill="x", padx=14, pady=(12, 4))
+        _fvar = tk.StringVar(value="")
+        tk.Label(dlg, textvariable=_fvar, bg=CARD, fg=MUTED,
+                 font=(FONT[0], 9)).pack(fill="x", padx=14)
+        try:
+            _bar = ttk.Progressbar(dlg, mode="indeterminate")
+            _bar.pack(fill="x", padx=14, pady=10)
+            _bar.start(30)
+        except Exception:
+            _bar = None
+        _brow = ttk.Frame(dlg)
+        _brow.pack(pady=(0, 12))
+        _pvar = tk.StringVar(value="Pause")
+        _st = {"proc": None, "paused": False, "done": False}
+
+        def _suspend(pid, on):
+            try:
+                import ctypes as _ct
+                _k32 = _ct.windll.kernel32
+                _nt = _ct.windll.ntdll
+                h = _k32.OpenProcess(0x0800, False, pid)
+                if not h:
+                    return False
+                try:
+                    r = (_nt.NtSuspendProcess if on else _nt.NtResumeProcess)(h)
+                    return int(r) == 0
+                finally:
+                    _k32.CloseHandle(h)
+            except Exception:
+                return False
+
+        def _toggle_pause():
+            p = _st["proc"]
+            if not p or _st["done"]:
+                return
+            want = not _st["paused"]
+            if _suspend(p.pid, want):
+                _st["paused"] = want
+                _pvar.set("Resume" if want else "Pause")
+                _tvar.set((title + " (paused)") if want else (title + "..."))
+                try:
+                    if _bar is not None:
+                        _bar.stop() if want else _bar.start(30)
+                except Exception:
+                    pass
+
+        def _cancel():
+            p = _st["proc"]
+            _st["done"] = True
+            try:
+                if p and p.poll() is None:
+                    if _st["paused"]:
+                        _suspend(p.pid, False)
+                    p.kill()
+            except Exception:
+                pass
+            try:
+                dlg.grab_release()
+            except Exception:
+                pass
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+            statusvar.set(title + " cancelled")
+
+        mkbtn(_brow, textvariable=_pvar, style="Ghost.TButton",
+              bg=CARD, command=lambda: _toggle_pause()).pack(side="left")
+        mkbtn(_brow, text="Cancel", style="Accent.TButton",
+              command=lambda: _cancel()).pack(side="left", padx=(8, 0))
+        dlg.protocol("WM_DELETE_WINDOW", lambda: _cancel())
+
+        def _reader():
+            try:
+                _py = sys.executable or "python"
+                _wrk = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "orbis_full.py")
+                p = _sp.Popen([_py, "-u", _wrk] + list(worker_args),
+                              stdout=_sp.PIPE, stderr=_sp.STDOUT,
+                              text=True, bufsize=1)
+                _st["proc"] = p
+                _res, _err = "", ""
+                try:
+                    for _ln in p.stdout:
+                        _ln = _ln.rstrip("\n")
+                        if _ln.startswith("LOG "):
+                            _tx = _ln[4:][:120]
+                            root.after(0, _tvar.set, _tx)
+                        elif _ln.startswith("FILES "):
+                            _fc = _ln[6:].strip()
+                            root.after(0, _fvar.set, f"{_fc} files written")
+                        elif _ln.startswith("RESULT "):
+                            _res = _ln[7:].strip()
+                        elif _ln.startswith("ERROR "):
+                            _err = _ln[6:].strip()
+                        elif _ln.strip():
+                            _tx2 = _ln.strip()[:120]
+                            root.after(0, _tvar.set, _tx2)
+                except Exception:
+                    pass
+                try:
+                    p.wait(timeout=30)
+                except Exception:
+                    pass
+                if _st["done"]:
+                    return
+                _st["done"] = True
+
+                def _finish():
+                    try:
+                        dlg.grab_release()
+                    except Exception:
+                        pass
+                    try:
+                        dlg.destroy()
+                    except Exception:
+                        pass
+                    if _err or (p.returncode not in (0, None) and not _res):
+                        statusvar.set(f"{title} failed: "
+                                      f"{(_err or ('exit %s' % p.returncode))[:200]}")
+                    else:
+                        try:
+                            on_done(_res)
+                        except Exception as ex:
+                            statusvar.set(f"{title} done, callback failed: {ex}")
+                root.after(0, _finish)
+            except Exception as ex:
+                root.after(0, statusvar.set, f"{title} failed: {ex}")
+                root.after(0, lambda: (_cancel()))
+
+        _th.Thread(target=_reader, daemon=True).start()
+
+    def _ask_passcode():
+        # Modal passcode prompt: defaults to 32 zeros (16 bytes, FPKG
+        # standard), editable for PKGs with a custom passcode.
+        # Returns the hex string, or None if cancelled.
+        _res = {"code": None}
+        _d = tk.Toplevel(root)
+        _d.title("Passcode")
+        _d.transient(root)
+        try:
+            root.update_idletasks()
+            _rx, _ry = root.winfo_rootx(), root.winfo_rooty()
+            _rw, _rh = root.winfo_width(), root.winfo_height()
+            _dw, _dh = 380, 150
+            _d.geometry(f"{_dw}x{_dh}"
+                        f"+{_rx + max((_rw - _dw) // 2, 0)}"
+                        f"+{_ry + max((_rh - _dh) // 2, 0)}")
+        except Exception:
+            _d.geometry("380x150")
+        _d.grab_set()
+        try:
+            _d.configure(bg=CARD)
+        except Exception:
+            pass
+        tk.Label(_d, text="PKG passcode (hex, 16 bytes):", bg=CARD, fg=TEXT,
+                 font=(FONT[0], 10)).pack(padx=14, pady=(12, 4), anchor="w")
+        _var = tk.StringVar(value="0" * 32)
+        _ent = tk.Entry(_d, textvariable=_var, font=("Consolas", 10),
+                        width=36, bg=CARD2, fg=TEXT, insertbackground=TEXT)
+        _ent.pack(padx=14, pady=(0, 4), fill="x")
+        _ent.selection_range(0, "end")
+        _ent.focus_set()
+        tk.Label(_d, text="Default zeros = FPKG. Retail PKGs need their own.",
+                 bg=CARD, fg=MUTED, font=(FONT[0], 8)).pack(padx=14, anchor="w")
+        _brow = ttk.Frame(_d)
+        _brow.pack(pady=8)
+
+        def _ok():
+            _c = (_var.get() or "").strip()
+            if len(_c) != 32 or any(ch not in "0123456789abcdefABCDEF"
+                                    for ch in _c):
+                statusvar.set("Passcode must be 32 hex chars")
+                return
+            _res["code"] = _c
+            try:
+                _d.grab_release()
+            except Exception:
+                pass
+            _d.destroy()
+
+        def _no():
+            try:
+                _d.grab_release()
+            except Exception:
+                pass
+            _d.destroy()
+
+        mkbtn(_brow, text="OK", style="Accent.TButton",
+              bg=CARD, command=lambda: _ok()).pack(side="left")
+        mkbtn(_brow, text="Cancel", style="Ghost.TButton",
+              bg=CARD, command=lambda: _no()).pack(side="left", padx=(8, 0))
+        _d.protocol("WM_DELETE_WINDOW", lambda: _no())
+        _d.bind("<Return>", lambda _e: _ok())
+        _d.bind("<Escape>", lambda _e: _no())
+        root.wait_window(_d)
+        return _res["code"]
+
+    def extract_structured():
+        # FULL extract via LibOrbisPkg (same engine as PkgEditor):
+        # decrypts inner PFS -> all real files + .gp4 project.
+        from tkinter import filedialog as _fd
+        r = state.get("result")
+        if not r or not r.get("ok"):
+            statusvar.set("Open a PKG first")
+            return
+        if r.get("kind") == "ps3":
+            statusvar.set("PS3 uses Files-tab extract (no PFS)")
+            return
+        dest = _fd.askdirectory(title="Extract FULL package to folder")
+        if not dest:
+            return
+        code = _ask_passcode()
+        if not code:
+            statusvar.set("Extract cancelled")
+            return
+
+        def _done(res):
+            try:
+                n = sum(len(fns) for _dp, _dn, fns in os.walk(dest))
+            except Exception:
+                n = 0
+            gp4 = os.path.basename(res) if res else ""
+            statusvar.set(f"Full extract: {n} files"
+                          + (f" + {gp4}" if gp4 else ""))
+
+        _run_worker_dialog("Full extract",
+                           ["extract", r["path"], dest, code], _done)
+
+    def build_pkg():
+        # Rebuild FPKG from a .gp4 project via LibOrbisPkg (no SDK needed).
+        from tkinter import filedialog as _fd
+        gp4 = _fd.askopenfilename(title="Select .gp4 project",
+                                  filetypes=[("GP4 projects", "*.gp4")])
+        if not gp4:
+            return
+        out = _fd.asksaveasfilename(title="Save PKG as",
+                                    defaultextension=".pkg",
+                                    initialfile=os.path.splitext(
+                                        os.path.basename(gp4))[0] + ".pkg",
+                                    filetypes=[("PKG files", "*.pkg")])
+        if not out:
+            return
+
+        def _done(res):
+            statusvar.set(
+                f"Built {os.path.basename(out)} ({fmt_size(os.path.getsize(out))})")
+
+        _run_worker_dialog("Build PKG", ["build", gp4, out], _done)
+
+    state["tools_actions"] = [
+        ("Extract FULL (all files + .gp4)...", lambda: extract_structured()),
+        ("Build PKG from .gp4...", lambda: build_pkg()),
+    ]
+
     def copy_update_link():
         # LMAN-style "CopyLinks": copy the patch-tracker page for this
         # title (direct Sony links are blocked; orbispatches needs a
@@ -5101,19 +5540,42 @@ def run_gui(start_path=None):
             except Exception:
                 pass
         _flat = [(k, v) for (k, v) in r["rows"]
-                 if k not in ("Platform", "Size", "Region")]
-        _flat = _flat[:10]
-        cells = [c for row in state.get("spec_cells", []) for c in row]
+                 if k not in ("Platform", "Size", "Region",
+                              "Entries", "Built", "Passcode")]
+        # dynamic grid: one cell per row-item (2 columns), so nothing
+        # gets cut (PS5 has 13+: ..., Min. System, DRM, SDK).
+        _box = state.get("specbox")
+        try:
+            for _ch in _box.winfo_children():
+                _ch.destroy()
+        except Exception:
+            pass
+        cells = []
+        try:
+            for _i in range(0, len(_flat), 2):
+                _row = ttk.Frame(_box, style="Card.TFrame")
+                _row.pack(fill="x", pady=1)
+                _row.columnconfigure(0, weight=1)
+                _row.columnconfigure(1, weight=1)
+                for _col in (0, 1):
+                    _cell = ttk.Frame(_row, style="Card.TFrame")
+                    _cell.grid(row=0, column=_col, sticky="w", padx=(0, 12))
+                    _k = ttk.Label(_cell, text="", style="SpecKey.TLabel")
+                    _k.pack(anchor="w")
+                    _v = tk.Entry(_cell, bg=CARD, fg=TEXT, font=FONT_MID,
+                                  relief="flat", readonlybackground=CARD,
+                                  highlightthickness=0,
+                                  state="readonly", width=34)
+                    _v.pack(anchor="w")
+                    cells.append((_k, _v))
+        except Exception:
+            pass
+        state["spec_cells"] = cells
         for (k, v), (kl, vl) in zip(_flat, cells):
             kl.config(text=k.upper())
             vl.config(state="normal")
             vl.delete(0, "end")
             vl.insert(0, str(v)[:60])
-            vl.config(state="readonly")
-        for kl, vl in cells[len(_flat):]:
-            kl.config(text="")
-            vl.config(state="normal")
-            vl.delete(0, "end")
             vl.config(state="readonly")
         tree.delete(*tree.get_children())
         state["trp_children"] = {}
@@ -5193,16 +5655,36 @@ def run_gui(start_path=None):
         if r.get("store_lines"):
             lines = list(lines) + ([""] if lines else []) + \
                 ["-- PlayStation Store --"] + list(r["store_lines"])
+        _rd = dict(r.get("rows", []))
+        _layout = []
+        if r.get("kind") == "ps4" and r.get("body_off") is not None:
+            try:
+                _layout.append(f"Body @ {r['body_off']:#x}")
+            except Exception:
+                pass
+        for _lk in ("Entries", "Built", "Passcode"):
+            if _rd.get(_lk):
+                _layout.append(f"{_lk} = {_rd[_lk]}")
+        if _layout:
+            lines = list(lines) + ([""] if lines else []) + \
+                ["-- Layout --"] + _layout
         if r.get("patch_lines"):
             lines = list(lines) + ([""] if lines else []) + \
                 ["-- Updates --"] + list(r["patch_lines"])
         metatext.insert("end", "\n".join(lines) + ("\n" if lines else ""))
         # highlight the "-- Updates --" (patch tracker) section in amber
-        # + embed a Copy link button right on its header line.
+        # (only up to the next section header) + embed a Copy link
+        # button on its header line. "-- Layout --" stays plain.
         try:
             for i, ln in enumerate(lines, start=1):
                 if ln.strip() == "-- Updates --":
-                    metatext.tag_add("updates", f"{i}.0", "end-1c")
+                    _end = len(lines) + 1
+                    for j in range(i, len(lines)):
+                        _s2 = lines[j].strip()
+                        if _s2.startswith("-- ") and _s2.endswith(" --"):
+                            _end = j + 1
+                            break
+                    metatext.tag_add("updates", f"{i}.0", f"{_end}.0")
                     try:
                         _cb = tk.Button(metatext, text="Copy link",
                                         bg=CARD2, fg=TEXT, relief="flat",
