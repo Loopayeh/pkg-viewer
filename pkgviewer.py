@@ -3135,6 +3135,20 @@ def run_gui(start_path=None):
         if not acts:
             m.add_command(label="(no tools yet — open a PKG first)",
                           command=lambda: statusvar.set("Open a PKG first"))
+        elif isinstance(acts, dict):
+            for _group, _items in acts.items():
+                _sub = _tk2.Menu(m, tearoff=0, bg=CARD, fg=TEXT,
+                                 activebackground=ACCENT,
+                                 activeforeground="#171717")
+                if not _items:
+                    _sub.add_command(
+                        label="(coming soon)",
+                        command=lambda: statusvar.set(
+                            "PS5 tools coming soon"))
+                else:
+                    for _lbl, _fn in _items:
+                        _sub.add_command(label=_lbl, command=_fn)
+                m.add_cascade(label=_group, menu=_sub)
         else:
             for _lbl, _fn in acts:
                 m.add_command(label=_lbl, command=_fn)
@@ -5124,10 +5138,11 @@ def run_gui(start_path=None):
         statusvar.set(f"Extracted {ok} files" + (f" ({fail} skipped)" if fail else ""))
 
     def _run_worker_dialog(title, worker_args, on_done):
-        # Progress dialog for long orbis jobs: live log + file counter,
-        # indeterminate bar, Pause/Resume (NtSuspendProcess) + Cancel (kill).
+        # Progress dialog for long orbis jobs: live log + file counter +
+        # elapsed time, indeterminate bar, Pause/Resume + Cancel.
         import subprocess as _sp
         import threading as _th
+        import time as _time
         dlg = tk.Toplevel(root)
         dlg.title(title)
         dlg.transient(root)
@@ -5159,6 +5174,16 @@ def run_gui(start_path=None):
             _bar.start(30)
         except Exception:
             _bar = None
+        _t0 = _time.time()
+
+        def _progress_line(n):
+            el = _time.time() - _t0
+            try:
+                s = max(0, int(el))
+                clock = f"{s // 60:02d}:{s % 60:02d}"
+            except Exception:
+                clock = "--:--"
+            return f"{n} files  •  {clock} elapsed"
         _brow = ttk.Frame(dlg)
         _brow.pack(pady=(0, 12))
         _pvar = tk.StringVar(value="Pause")
@@ -5223,12 +5248,40 @@ def run_gui(start_path=None):
 
         def _reader():
             try:
-                _py = sys.executable or "python"
-                _wrk = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                    "orbis_full.py")
+                import shutil as _sh
+                if getattr(sys, "frozen", False):
+                    # Frozen exe: sys.executable IS the GUI itself, so it
+                    # must NOT be used as the python interpreter (that bug
+                    # just reopened an empty app window). Find a real python.
+                    _py = (_sh.which("python") or _sh.which("py")
+                           or "python")
+                    _base = getattr(sys, "_MEIPASS", None) or ""
+                    _wrk = os.path.join(_base, "orbis_full.py")
+                    if not _base or not os.path.isfile(_wrk):
+                        # dev fallback: script next to the exe
+                        _wrk = os.path.join(
+                            os.path.dirname(sys.executable),
+                            "orbis_full.py")
+                else:
+                    _py = sys.executable or "python"
+                    _wrk = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)),
+                        "orbis_full.py")
+                if not os.path.isfile(_wrk):
+                    root.after(0, statusvar.set,
+                               f"{title} failed: worker script not found")
+                    root.after(0, dlg.destroy)
+                    return
+                _cf = 0
+                try:
+                    import subprocess as _sp2
+                    _cf = _sp2.CREATE_NO_WINDOW
+                except Exception:
+                    _cf = 0
                 p = _sp.Popen([_py, "-u", _wrk] + list(worker_args),
                               stdout=_sp.PIPE, stderr=_sp.STDOUT,
-                              text=True, bufsize=1)
+                              text=True, bufsize=1,
+                              creationflags=_cf)
                 _st["proc"] = p
                 _res, _err = "", ""
                 try:
@@ -5239,7 +5292,11 @@ def run_gui(start_path=None):
                             root.after(0, _tvar.set, _tx)
                         elif _ln.startswith("FILES "):
                             _fc = _ln[6:].strip()
-                            root.after(0, _fvar.set, f"{_fc} files written")
+                            try:
+                                _n = int(_fc)
+                            except Exception:
+                                _n = 0
+                            root.after(0, _fvar.set, _progress_line(_n))
                         elif _ln.startswith("RESULT "):
                             _res = _ln[7:].strip()
                         elif _ln.startswith("ERROR "):
@@ -5267,13 +5324,46 @@ def run_gui(start_path=None):
                     except Exception:
                         pass
                     if _err or (p.returncode not in (0, None) and not _res):
-                        statusvar.set(f"{title} failed: "
-                                      f"{(_err or ('exit %s' % p.returncode))[:200]}")
+                        _msg = (_err or ('exit %s' % p.returncode))[:2000]
+                        statusvar.set(f"{title} failed: {_msg[:200]}")
+                        try:
+                            _logp = os.path.join(
+                                os.environ.get("TEMP", os.path.expanduser("~")),
+                                "PKGViewer_last_error.txt")
+                            with open(_logp, "w", encoding="utf-8") as _lf:
+                                _lf.write(f"{title} failed\n{_msg}\n")
+                        except Exception:
+                            _logp = ""
+                        try:
+                            from tkinter import messagebox as _mb
+                            _mb.showerror(
+                                f"{title} failed",
+                                f"{_msg[:800]}"
+                                + (f"\n\nFull log: {_logp}" if _logp else ""))
+                        except Exception:
+                            pass
                     else:
                         try:
                             on_done(_res)
                         except Exception as ex:
                             statusvar.set(f"{title} done, callback failed: {ex}")
+                            return
+                        # Success confirmation: short summary popup so it is
+                        # clear the job actually finished (not just silence).
+                        try:
+                            _detail = _res or ""
+                            if os.path.isfile(_res):
+                                _detail = (f"{_res}\n"
+                                           f"({fmt_size(os.path.getsize(_res))})")
+                            elif os.path.isdir(_res):
+                                _n = sum(len(fns) for _dp, _dn, fns
+                                         in os.walk(_res))
+                                _detail = f"{_res}\n({_n} files)"
+                            from tkinter import messagebox as _mb2
+                            _mb2.showinfo(f"{title} done",
+                                          f"Completed successfully.\n\n{_detail}")
+                        except Exception:
+                            pass
                 root.after(0, _finish)
             except Exception as ex:
                 root.after(0, statusvar.set, f"{title} failed: {ex}")
@@ -5399,10 +5489,12 @@ def run_gui(start_path=None):
 
         _run_worker_dialog("Build PKG", ["build", gp4, out], _done)
 
-    state["tools_actions"] = [
-        ("Extract FULL (all files + .gp4)...", lambda: extract_structured()),
-        ("Build PKG from .gp4...", lambda: build_pkg()),
-    ]
+    state["tools_actions"] = {
+        "PS4 PKG": [
+            ("Extract...", lambda: extract_structured()),
+            ("Build from .gp4...", lambda: build_pkg()),
+        ],
+    }
 
     def copy_update_link():
         # LMAN-style "CopyLinks": copy the patch-tracker page for this
