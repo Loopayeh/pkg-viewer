@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.14.3"  # bump on every release — the updater compares this
+APP_VERSION = "v1.14.4"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -3161,23 +3161,20 @@ def run_gui(start_path=None):
         m = _tk2.Menu(root, tearoff=0, bg=CARD, fg=TEXT,
                       activebackground=ACCENT, activeforeground="#171717")
         acts = state.get("tools_actions") or []
-        if not acts:
+        r = state.get("result") or {}
+        # Extract/Build only exist for PS4 PKGs (LibOrbisPkg): show them
+        # flat, with no subgroup — and hide them for everything else.
+        _is_ps4pkg = (r.get("kind") == "ps4") and os.path.isfile(r.get("path") or "")
+        if not r:
             m.add_command(label="(no tools yet — open a PKG first)",
                           command=lambda: statusvar.set("Open a PKG first"))
+        elif not _is_ps4pkg:
+            m.add_command(label="(no tools for this file type)",
+                          command=lambda: statusvar.set("Extract/Build is PS4 PKG only"))
         elif isinstance(acts, dict):
             for _group, _items in acts.items():
-                _sub = _tk2.Menu(m, tearoff=0, bg=CARD, fg=TEXT,
-                                 activebackground=ACCENT,
-                                 activeforeground="#171717")
-                if not _items:
-                    _sub.add_command(
-                        label="(coming soon)",
-                        command=lambda: statusvar.set(
-                            "PS5 tools coming soon"))
-                else:
-                    for _lbl, _fn in _items:
-                        _sub.add_command(label=_lbl, command=_fn)
-                m.add_cascade(label=_group, menu=_sub)
+                for _lbl, _fn in (_items or []):
+                    m.add_command(label=_lbl, command=_fn)
         else:
             for _lbl, _fn in acts:
                 m.add_command(label=_lbl, command=_fn)
@@ -3386,7 +3383,7 @@ def run_gui(start_path=None):
     tab_info = ttk.Frame(nb)
     nb.add(tab_info, text="  Info  ")
     nb.add(tab_entries, text="  Files  ")
-    # Info tab (merged Specs+Details): scrollable; badges top,
+    # Info tab (merged Specs+Details): scrollable; CONTENT ID bar,
     # CONTENT ID bar, update banner, spec grid, details text.
     # Nothing is shown twice.
     infocanvas = tk.Canvas(tab_info, bg=CARD, borderwidth=0,
@@ -3427,17 +3424,6 @@ def run_gui(start_path=None):
     tab_specs.pack(fill="x")
     tab_meta = ttk.Frame(infobody, style="Card.TFrame")
     tab_meta.pack(fill="both", expand=True)
-    # badge strip FIRST (top), grid below it
-    detbadgerow = ttk.Frame(tab_specs, style="TFrame")
-    detbadgerow.pack(fill="x", pady=(0, 2))
-    _blabs = []
-    for _bv in state["badges"]:
-        _lb = mkpill(detbadgerow, textvariable=_bv, parent_bg=BG,
-                     font=(FONT[0], 9, "bold"), padx=10, pady=3)
-        # start hidden (empty): load() packs only the non-empty ones
-        _lb.pack_forget()
-        _blabs.append(_lb)
-    state["badge_labels"] = _blabs
     # CONTENT ID bar: full value on its own row (never truncated)
     # with a tiny copy button just for it
     cidrow = ttk.Frame(tab_specs, style="Card.TFrame")
@@ -3486,6 +3472,17 @@ def run_gui(start_path=None):
     specbox.pack(fill="x", pady=(0, 4))
     state["specbox"] = specbox
     state["spec_cells"] = []  # rebuilt per file (see load())
+    # badge strip LAST (bottom), below the grid
+    detbadgerow = ttk.Frame(tab_specs, style="TFrame")
+    detbadgerow.pack(fill="x", pady=(2, 0))
+    _blabs = []
+    for _bv in state["badges"]:
+        _lb = mkpill(detbadgerow, textvariable=_bv, parent_bg=BG,
+                     font=(FONT[0], 9, "bold"), padx=10, pady=3)
+        # start hidden (empty): load() packs only the non-empty ones
+        _lb.pack_forget()
+        _blabs.append(_lb)
+    state["badge_labels"] = _blabs
     tab_troph = ttk.Frame(nb)
     tab_images = ttk.Frame(nb)
     nb.add(tab_images, text="  Images  ")
@@ -3659,6 +3656,20 @@ def run_gui(start_path=None):
     sb.pack(side="right", fill="y")
     tree.pack(side="left", fill="both", expand=True)
 
+    def _srcdir():
+        # default save/extract folder: next to the opened file/folder
+        try:
+            _p = (state.get("result") or {}).get("path") or ""
+            if _p:
+                _d = os.path.abspath(_p)
+                if os.path.isfile(_d):
+                    _d = os.path.dirname(_d)
+                if os.path.isdir(_d):
+                    return _d
+        except Exception:
+            pass
+        return "."
+
     def extract_single():
         # Extract one Files-tab entry with rename (save-as dialog), streamed.
         import threading as _th
@@ -3686,6 +3697,7 @@ def run_gui(start_path=None):
                 if not _td:
                     raise OSError("unreadable TRP")
                 out = _fd.asksaveasfilename(title="Extract file as",
+                                            initialdir=_srcdir(),
                                             initialfile=_in["name"],
                                             filetypes=[("All files", "*.*")])
                 if not out:
@@ -3708,6 +3720,7 @@ def run_gui(start_path=None):
             return
         safe = nm.replace("/", "_").replace("\\", "_")
         out = _fd.asksaveasfilename(title="Extract file as",
+                                    initialdir=_srcdir(),
                                     initialfile=safe,
                                     filetypes=[("All files", "*.*")])
         if not out:
@@ -4001,7 +4014,8 @@ def run_gui(start_path=None):
         if not _trs or not _sq or _td is None:
             statusvar.set("No trophy icons loaded")
             return
-        dest = _fd.askdirectory(title="Save trophy icons to folder")
+        dest = _fd.askdirectory(title="Save trophy icons to folder",
+                                  initialdir=_srcdir())
         if not dest:
             return
 
@@ -4270,7 +4284,7 @@ def run_gui(start_path=None):
         except Exception:
             pass
 
-    # (badge strip moved to top of Info tab, above the grid)
+    # (badge strip lives at bottom of Info tab, below the grid)
     metabar = ttk.Frame(tab_meta, style="Card.TFrame")
     metabar.pack(fill="x", pady=(0, 4))
     detailvar = tk.StringVar(value="Show all")
@@ -5134,6 +5148,7 @@ def run_gui(start_path=None):
 
     # logic
     def pick():
+        # files only — folders come in via drag & drop
         p = filedialog.askopenfilename(title="Select PKG / image file",
                                        filetypes=[("Game files", "*.pkg *.exfat *.ffpfsc *.ffpkg"),
                                                   ("PKG", "*.pkg"),
@@ -5141,21 +5156,14 @@ def run_gui(start_path=None):
                                                   ("all", "*.*")])
         if p:
             load(p)
-        else:
-            d = filedialog.askdirectory(title="...or select an app folder")
-            if d:
-                load(d)
 
     def pick_many():
+        # files only — folders come in via drag & drop
         ps = filedialog.askopenfilenames(title="Select files for batch rename",
                                          filetypes=[("Game files", "*.pkg *.exfat *.ffpfsc *.ffpkg"),
                                                     ("all", "*.*")])
         if ps:
             show_batch(list(ps))
-        else:
-            d = filedialog.askdirectory(title="...or select a folder to batch-scan")
-            if d:
-                show_batch([d])
 
     def show_tab(idx):
         # Extra > List Contents (Files) / Package Update note (Details).
@@ -5217,7 +5225,8 @@ def run_gui(start_path=None):
         if not r or not r.get("entries"):
             statusvar.set("Nothing to extract")
             return
-        dest = _fd.askdirectory(title="Extract package to folder")
+        dest = _fd.askdirectory(title="Extract package to folder",
+                                  initialdir=_srcdir())
         if not dest:
             return
         ok, fail = 0, 0
@@ -5556,7 +5565,8 @@ def run_gui(start_path=None):
         if r.get("kind") == "ps3":
             statusvar.set("PS3 uses Files-tab extract (no PFS)")
             return
-        dest = _fd.askdirectory(title="Extract FULL package to folder")
+        dest = _fd.askdirectory(title="Extract FULL package to folder",
+                                  initialdir=_srcdir())
         if not dest:
             return
         code = _ask_passcode()
@@ -5580,11 +5590,14 @@ def run_gui(start_path=None):
         # Rebuild FPKG from a .gp4 project via LibOrbisPkg (no SDK needed).
         from tkinter import filedialog as _fd
         gp4 = _fd.askopenfilename(title="Select .gp4 project",
+                                  initialdir=_srcdir(),
                                   filetypes=[("GP4 projects", "*.gp4")])
         if not gp4:
             return
+        _gdir = os.path.dirname(os.path.abspath(gp4))
         out = _fd.asksaveasfilename(title="Save PKG as",
                                     defaultextension=".pkg",
+                                    initialdir=_gdir,
                                     initialfile=os.path.splitext(
                                         os.path.basename(gp4))[0] + ".pkg",
                                     filetypes=[("PKG files", "*.pkg")])
@@ -5598,7 +5611,7 @@ def run_gui(start_path=None):
         _run_worker_dialog("Build PKG", ["build", gp4, out], _done)
 
     state["tools_actions"] = {
-        "PS4 PKG": [
+        "PKG": [
             ("Extract...", lambda: extract_structured()),
             ("Build from .gp4...", lambda: build_pkg()),
         ],
@@ -5946,6 +5959,36 @@ def run_gui(start_path=None):
         state["show_all"] = not state.get("show_all")
         detailvar.set("Show less" if state["show_all"] else "Show all")
         refresh_details()
+        # Hint that there is more content below: grow the window a bit
+        # on Show all, restore it on Show less.
+        try:
+            if state["show_all"]:
+                if "win_h_before_expand" not in state:
+                    state["win_h_before_expand"] = root.winfo_height()
+                _w = root.winfo_width()
+                _h = root.winfo_height()
+                _sh = root.winfo_screenheight()
+                _nh = min(_h + 140, max(_h + 40, _sh - 80))
+                if _nh > _h:
+                    root.geometry("%dx%d" % (_w, _nh))
+                # nudge the Info scroll so the cut-off bottom row peeks in
+                try:
+                    infocanvas.update_idletasks()
+                    infocanvas.yview_scroll(2, "units")
+                    root.after(250, lambda: infocanvas.yview_scroll(-2, "units"))
+                except Exception:
+                    pass
+            else:
+                _prev = state.pop("win_h_before_expand", None)
+                if _prev:
+                    _w = root.winfo_width()
+                    root.geometry("%dx%d" % (_w, int(_prev)))
+                try:
+                    infocanvas.yview_moveto(0.0)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def copy_text_selection(widget):
         try:
@@ -5980,6 +6023,7 @@ def run_gui(start_path=None):
             return
         dest = filedialog.asksaveasfilename(
             title="Save image", defaultextension=".png",
+            initialdir=_srcdir(),
             initialfile=name.replace("/", "_"),
             filetypes=[("PNG", "*.png"), ("all", "*.*")])
         if not dest:
