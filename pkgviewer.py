@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.14.4"  # bump on every release — the updater compares this
+APP_VERSION = "v1.14.5"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -69,12 +69,17 @@ except ImportError:
     _PIL_OK = False
 
 _RBTN_RADIUS = 4
-_RBTN_PAD = {"accent": (16, 9), "ghost": (12, 7)}
+_RBTN_PAD = {"accent": (16, 9), "ghost": (12, 7), "mini": (10, 4),
+             "mini_accent": (10, 4)}
 _RBTN_FACE = {
     "accent": {"face": "#4f8ef7", "hover": "#6fa8ff", "pressed": "#3b70c9",
                "fg": "#171717", "disabled_face": "#2a2a2a", "disabled_fg": "#8b93a5"},
     "ghost": {"face": "#404040", "hover": "#2c3342", "pressed": "#333a44",
               "fg": "#f1f3f8", "disabled_face": "#2a2a2a", "disabled_fg": "#8b93a5"},
+    "mini": {"face": "#404040", "hover": "#2c3342", "pressed": "#333a44",
+             "fg": "#f1f3f8", "disabled_face": "#2a2a2a", "disabled_fg": "#8b93a5"},
+    "mini_accent": {"face": "#4f8ef7", "hover": "#6fa8ff", "pressed": "#3b70c9",
+                    "fg": "#171717", "disabled_face": "#2a2a2a", "disabled_fg": "#8b93a5"},
 }
 _RBTN_DEFAULT_BG = "#171717"
 _RBTN_DEFAULT_FONT = ("Segoe UI", 10)
@@ -2531,6 +2536,16 @@ NAME_PARTS = (("title", "Title"), ("tid", "Title ID"),
                ("ver", "Version"), ("region", "Region"))
 
 
+# Canonical spec-grid order for every format: identity first, then
+# versions, then system, then package details. Unknown keys keep
+# their relative order at the end. Matched case-insensitively.
+GRID_ORDER = ["Title ID", "Concept ID",
+              "Version", "Base Version", "Content Ver", "Master Ver",
+              "App Ver", "Min. System", "SDK", "DRM", "Signature",
+              "Languages", "Built", "Entries", "Files", "PFS image",
+              "Assets", "Inner file", "Part", "Passcode", "Note"]
+
+
 def build_clean_name(result, parts=None):
     """Clean uniform file/folder base name from parsed PKG info.
 
@@ -3050,9 +3065,9 @@ def run_gui(start_path=None):
     except Exception:
         pass
     root.title("PKG Viewer %s  •  PS3 / PS4 / PS5  •  by Loopayeh" % APP_VERSION)
-    root.geometry("880x450")
+    root.geometry("880x410")
     root.configure(bg=BG)
-    root.minsize(880, 450)
+    root.minsize(880, 410)
     try:
         _ic = os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)
                             if getattr(sys, "frozen", False) else "."), "assets", "logo.ico")
@@ -3082,7 +3097,7 @@ def run_gui(start_path=None):
     style.map("Accent.TButton", background=[("active", "#6fa8ff")])
     style.configure("TNotebook", background=BG, borderwidth=0,
                     lightcolor=BG, darkcolor=BG, bordercolor=BG)
-    style.configure("TNotebook.Tab", background=CARD, foreground=MUTED, padding=(18, 8), font=FONT,
+    style.configure("TNotebook.Tab", background=CARD, foreground=MUTED, padding=(12, 5), font=FONT,
                     borderwidth=0, lightcolor=CARD, darkcolor=CARD, bordercolor=CARD)
     style.map("TNotebook.Tab", background=[("selected", CARD2)],
               foreground=[("selected", TEXT)],
@@ -3272,8 +3287,8 @@ def run_gui(start_path=None):
                             root.geometry("%dx%d" % _sg)
                             root.minsize(_sg[0], _sg[1])
                         else:
-                            root.geometry("880x450")
-                            root.minsize(880, 450)
+                            root.geometry("880x410")
+                            root.minsize(880, 410)
                 except Exception:
                     pass
         except Exception:
@@ -3312,7 +3327,7 @@ def run_gui(start_path=None):
     statusvar = tk.StringVar(value="Ready")
     _status_lbl = tk.Label(bottombar, textvariable=statusvar, bg=BG, fg=MUTED,
                            font=FONT_SMALL, anchor="w", justify="left",
-                           padx=12, pady=6)
+                           padx=12, pady=3)
     _status_lbl.pack(side="left", fill="x", expand=True)
     # small About / updates buttons, bottom-right (PKG Sender style)
     updatebtn = mkbtn(bottombar, text="Check updates", style="Ghost.TButton",
@@ -3335,7 +3350,7 @@ def run_gui(start_path=None):
     # ---- hero: cover + title/badges (left) ----
     left = ttk.Frame(body, style="Card.TFrame", padding=8)
     left.grid(row=0, column=0, sticky="ns", padx=(0, 10))
-    imgframe = tk.Frame(left, bg=CARD, width=280, height=280)
+    imgframe = tk.Frame(left, bg=CARD, width=240, height=240)
     imgframe.pack(pady=(6, 0))
     imgframe.pack_propagate(False)
     state["imgframe"] = imgframe
@@ -3405,7 +3420,11 @@ def run_gui(start_path=None):
 
     def _info_width(ev):
         try:
-            infocanvas.itemconfig(_info_win, width=ev.width)
+            # stretch the body to the viewport height so the
+            # bottom-anchored section sits at the bottom when short
+            infocanvas.itemconfig(_info_win, width=ev.width,
+                                  height=max(infobody.winfo_reqheight(),
+                                             ev.height))
         except Exception:
             pass
     infocanvas.bind("<Configure>", _info_width)
@@ -3421,13 +3440,17 @@ def run_gui(start_path=None):
     infobody.bind("<Leave>",
                   lambda _e: infocanvas.unbind_all("<MouseWheel>"))
     tab_specs = ttk.Frame(infobody, style="Card.TFrame")
-    tab_specs.pack(fill="x")
-    tab_meta = ttk.Frame(infobody, style="Card.TFrame")
-    tab_meta.pack(fill="both", expand=True)
-    # CONTENT ID bar: full value on its own row (never truncated)
-    # with a tiny copy button just for it
+    tab_specs.pack(side="top", fill="x")
+    # bottom-anchored section: badges + details stay glued to the
+    # bottom of the tab even when the spec grid above is short
+    tab_bottom = ttk.Frame(infobody, style="Card.TFrame")
+    tab_bottom.pack(side="bottom", fill="x")
+    tab_meta = ttk.Frame(tab_bottom, style="Card.TFrame")
+    tab_meta.pack(fill="x")
+    # CONTENT ID bar on top: full value on its own row (never
+    # truncated) with a tiny copy button just for it
     cidrow = ttk.Frame(tab_specs, style="Card.TFrame")
-    cidrow.pack(fill="x", pady=(0, 4))
+    cidrow.pack(fill="x", pady=(0, 2))
     ttk.Label(cidrow, text="CONTENT ID", style="SpecKey.TLabel").pack(
         side="left", padx=(8, 6))
     state["cidvar"] = tk.StringVar(value="")
@@ -3447,12 +3470,19 @@ def run_gui(start_path=None):
         except Exception:
             pass
     mkbtn(cidrow, text="Copy", style="Ghost.TButton", bg=CARD,
+          kind="mini", font=(FONT[0], 9),
           command=_copy_cid).pack(side="left", padx=(6, 8))
     state["cidrow"] = cidrow
-    # Update banner: patch status lives here at the top (not buried
-    # at the bottom of the details text). Filled by refresh_details.
+    # Specs tab: the classic 2-column grid (PACKAGE/SIGNATURE/...)
+    # for whoever wants the fine details at a glance
+    specbox = ttk.Frame(tab_specs, style="Card.TFrame", padding=(6, 2, 6, 2))
+    specbox.pack(fill="x", pady=(0, 2))
+    state["specbox"] = specbox
+    state["spec_cells"] = []  # rebuilt per file (see load())
+    # Update banner below the grid (patch status). Hidden until
+    # patch info arrives (see refresh_details).
     updrow = ttk.Frame(tab_specs, style="Card.TFrame")
-    updrow.pack(fill="x", pady=(0, 4))
+    updrow.pack(fill="x", pady=(0, 2))
     ttk.Label(updrow, text="UPDATES", style="SpecKey.TLabel").pack(
         side="left", padx=(8, 6))
     state["updvar"] = tk.StringVar(value="")
@@ -3463,18 +3493,13 @@ def run_gui(start_path=None):
     updentry.pack(side="left", fill="x", expand=True)
     state["updentry"] = updentry
     mkbtn(updrow, text="Copy link", style="Ghost.TButton", bg=CARD,
+          kind="mini", font=(FONT[0], 9),
           command=lambda: copy_update_link()).pack(side="left", padx=(6, 8))
     state["updrow"] = updrow
     updrow.pack_forget()  # shown once patch info arrives
-    # Specs tab: the classic 2-column grid (PACKAGE/SIGNATURE/...)
-    # for whoever wants the fine details at a glance
-    specbox = ttk.Frame(tab_specs, style="Card.TFrame", padding=8)
-    specbox.pack(fill="x", pady=(0, 4))
-    state["specbox"] = specbox
-    state["spec_cells"] = []  # rebuilt per file (see load())
-    # badge strip LAST (bottom), below the grid
-    detbadgerow = ttk.Frame(tab_specs, style="TFrame")
-    detbadgerow.pack(fill="x", pady=(2, 0))
+    # badge strip: top of the bottom-anchored section (above details)
+    detbadgerow = ttk.Frame(tab_bottom, style="TFrame")
+    detbadgerow.pack(fill="x", before=tab_meta)
     _blabs = []
     for _bv in state["badges"]:
         _lb = mkpill(detbadgerow, textvariable=_bv, parent_bg=BG,
@@ -3489,16 +3514,13 @@ def run_gui(start_path=None):
     nb.add(tab_troph, text="  Trophies  ")
     state["troph_tab"] = tab_troph
     state["images_tab"] = tab_images
-    # Images tab: big preview on top, one horizontal button row
-    # pinned at the bottom (no side bar eating preview width)
+    # Images tab: button row on TOP (always visible), preview below it.
+    # (Buttons used to sit at the bottom, where a tall image pushed
+    # them out of view — this tab has no scrollbar.)
     _imgbody = ttk.Frame(tab_images, style="Card.TFrame")
     _imgbody.pack(fill="both", expand=True)
-    imgtablabel = tk.Label(_imgbody, bg=CARD, fg=MUTED, font=FONT_MID,
-                           text="(no image)")
-    imgtablabel.pack(fill="both", expand=True)
-    state["imgtablabel"] = imgtablabel
     _imgbar = ttk.Frame(_imgbody, style="Card.TFrame")
-    _imgbar.pack(fill="x", pady=(6, 0))
+    _imgbar.pack(fill="x", pady=(0, 6))
     mkbtn(_imgbar, text="< Prev", style="Ghost.TButton", bg=CARD,
           command=lambda: _step_image(-1)).pack(side="left")
     mkbtn(_imgbar, text="Next >", style="Ghost.TButton", bg=CARD,
@@ -3517,6 +3539,10 @@ def run_gui(start_path=None):
     state["imgtabcount"] = tk.StringVar(value="No images")
     tk.Label(_imgbar, textvariable=state["imgtabcount"], bg=CARD, fg=MUTED,
              font=FONT_SMALL).pack(side="right")
+    imgtablabel = tk.Label(_imgbody, bg=CARD, fg=MUTED, font=FONT_MID,
+                           text="(no image)")
+    imgtablabel.pack(fill="both", expand=True)
+    state["imgtablabel"] = imgtablabel
     def _sync_imgtab():
         # mirror the current cover into the Images tab preview
         try:
@@ -4301,17 +4327,21 @@ def run_gui(start_path=None):
     metabar.pack(fill="x", pady=(0, 4))
     detailvar = tk.StringVar(value="Show all")
     mkbtn(metabar, text="Extract all", style="Ghost.TButton", bg=CARD,
+          kind="mini", font=(FONT[0], 9),
           command=lambda: extract_all()).pack(side="left")
     mkbtn(metabar, text="Copy info", style="Ghost.TButton", bg=CARD,
+          kind="mini", font=(FONT[0], 9),
           command=lambda: copy_all_info()).pack(side="left", padx=(8, 0))
-    detailbtn = ttk.Button(metabar, textvariable=detailvar, style="Accent.TButton",
-                           command=lambda: toggle_details())
+    detailbtn = mkbtn(metabar, textvariable=detailvar, style="Accent.TButton", bg=CARD,
+                      kind="mini_accent", font=(FONT[0], 9),
+                      command=lambda: toggle_details())
     detailbtn.pack(side="right")
     metatext = tk.Text(tab_meta, bg=CARD, fg=TEXT, font=("Consolas", 8),
-                       wrap="none", borderwidth=0, highlightthickness=0, padx=10, pady=10,
+                       wrap="none", borderwidth=0, highlightthickness=0, padx=8, pady=6,
                         height=8, selectbackground=ACCENT,
                         selectforeground="#171717", insertbackground=TEXT)
     metatext.pack(fill="both", expand=True)
+    metatext.pack_forget()  # shown by refresh_details only when lines exist
     metatext.tag_config("updates", foreground="#f0b429")
     root.bind_all("<KeyPress>", lambda e: _global_ctrl_keys(e, root, statusvar))
     ctxmenu = tk.Menu(root, tearoff=0, bg=CARD, fg=TEXT,
@@ -5790,12 +5820,21 @@ def run_gui(start_path=None):
                  if k not in ("Platform", "Size", "Region",
                               "Content ID", "Type", "Package")
                  and str(v or "").strip() not in ("", "-")]
+        # logical order for every format (identity → versions →
+        # system → package); unknown keys stay at the end as parsed
+        try:
+            _prio = {k.lower(): i for i, k in enumerate(GRID_ORDER)}
+            _flat = [kv for _, kv in
+                     sorted(enumerate(_flat),
+                            key=lambda t: (_prio.get(t[1][0].lower(), 999), t[0]))]
+        except Exception:
+            pass
         # CONTENT ID lives on its own bar above the grid: full + copyable
         try:
             _cid = str(_rd.get("Content ID", "") or "").strip()
             state.get("cidvar", tk.StringVar(value="")).set(_cid)
             if _cid and _cid != "-":
-                state["cidrow"].pack(fill="x", pady=(0, 4))
+                state["cidrow"].pack(fill="x", pady=(0, 2))
             else:
                 state["cidrow"].pack_forget()
         except Exception:
@@ -5812,16 +5851,17 @@ def run_gui(start_path=None):
         try:
             for _i in range(0, len(_flat), 2):
                 _row = ttk.Frame(_box, style="Card.TFrame")
-                _row.pack(fill="x", pady=1)
+                _row.pack(fill="x")
                 _row.columnconfigure(0, weight=1)
                 _row.columnconfigure(1, weight=1)
                 for _col in (0, 1):
                     _cell = ttk.Frame(_row, style="Card.TFrame")
                     _cell.grid(row=0, column=_col, sticky="w", padx=(0, 12))
-                    _k = ttk.Label(_cell, text="", style="SpecKey.TLabel")
+                    _k = ttk.Label(_cell, text="", style="SpecKey.TLabel",
+                                   font=(FONT[0], 8))
                     _k.pack(anchor="w")
                     _v = tk.Entry(_cell, bg=CARD, fg=TEXT,
-                                  font=(FONT[0], 10, "bold"),
+                                  font=(FONT[0], 9, "bold"),
                                   relief="flat", readonlybackground=CARD,
                                   highlightthickness=0,
                                   state="readonly", width=34)
@@ -5913,6 +5953,14 @@ def run_gui(start_path=None):
             lines = full_meta_lines(r.get("meta"))
         else:
             lines = curated_meta_lines(r.get("kind"), r.get("meta"))
+            # Show less: hide localized titles (TITLE_xx) — back with Show all
+            _clean = []
+            for _ln in lines:
+                _kk = _ln.partition("=")[0].strip()
+                if _kk.lower().startswith("title_") and _kk[6:7].isdigit():
+                    continue
+                _clean.append(_ln)
+            lines = _clean
         # dedup: drop detail lines whose key OR value already appears
         # in the spec grid rows (Title/ID/Version etc. shown twice otherwise)
         _ROWKEYS = {"package", "signature", "type", "title", "title_id",
@@ -5938,6 +5986,13 @@ def run_gui(start_path=None):
                         _key, _, _val = ln.partition("=")
                         _key = _key.strip().lower()
                         _val = _val.strip().lower()
+                        # localized titles (TITLE_xx) carry per-language
+                        # info — never dedup them, even if the value
+                        # matches the grid's Title row
+                        _suf = _key[6:].strip() if _key.startswith("title_") else ""
+                        if _suf[:1].isdigit():
+                            kept.append(ln)
+                            continue
                         if _key in _ROWKEYS:
                             continue
                         if _val and (_val in rowvals or normalize_version(_val) in rowvals):
@@ -5952,10 +6007,11 @@ def run_gui(start_path=None):
             lines = list(lines) + ([""] if lines else []) + \
                 ["-- PlayStation Store --"] + list(r["store_lines"])
         _rd = dict(r.get("rows", []))
-        # Entries/Built/Passcode now live in the grid above; only the
-        # techy Body offset stays here (and only when it exists).
+        # Entries/Built/Passcode now live in the grid above; the techy
+        # Body offset stays here, but only in Show all (and only when
+        # it exists).
         _layout = []
-        if r.get("kind") == "ps4" and r.get("body_off") is not None:
+        if state.get("show_all") and r.get("kind") == "ps4" and r.get("body_off") is not None:
             try:
                 _layout.append(f"Body @ {r['body_off']:#x}")
             except Exception:
@@ -5976,16 +6032,21 @@ def run_gui(start_path=None):
                         else "#f0b429")
                 except Exception:
                     pass
-                state["updrow"].pack(fill="x", pady=(0, 4))
+                state["updrow"].pack(fill="x", pady=(0, 2))
             else:
                 state["updrow"].pack_forget()
         except Exception:
             pass
         metatext.insert("end", "\n".join(lines) + ("\n" if lines else ""))
         # auto-height: the text box fits its content (no big empty
-        # box when lines are few); the tab scrolls if it grows long.
+        # box when lines are few); hidden entirely when there is
+        # nothing to show, so the buttons stay last at the bottom.
         try:
-            metatext.config(height=max(4, min(30, len(lines) + 1)))
+            if lines:
+                metatext.pack(fill="both", expand=True)
+                metatext.config(height=max(4, min(30, len(lines) + 1)))
+            else:
+                metatext.pack_forget()
         except Exception:
             pass
 
