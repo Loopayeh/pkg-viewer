@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.14.2"  # bump on every release — the updater compares this
+APP_VERSION = "v1.14.3"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -485,6 +485,35 @@ def content_region(cid):
         return "-"
 
 
+def fmt_fw32(v):
+    """Decode 32-bit Sony fw int (SFO SYSTEM_VER, e.g. 0x05010000)
+    nibble-BCD -> '5.01'. Real fw versions are major.minor only,
+    so the low word is not a version part. Passes anything else
+    through untouched."""
+    try:
+        if isinstance(v, int):
+            n = v
+        else:
+            s = str(v or "").strip()
+            if s in ("", "-"):
+                return "-"
+            if not s.lstrip("+-").isdigit():
+                return s  # already dotted ("05.050.000", "4.80", ...)
+            n = int(s, 0)
+    except Exception:
+        return str(v)
+    try:
+        if not (0x01000000 <= n <= 0xFFFFFFFF):
+            return str(v)
+        hi, lo = (n >> 24) & 0xFF, (n >> 16) & 0xFF
+        if (hi >> 4) > 9 or (hi & 0xF) > 9 or \
+           (lo >> 4) > 9 or (lo & 0xF) > 9:
+            return str(v)  # not BCD -> don't invent a version
+        return f"{hi:02X}.{lo:02X}".lstrip("0") or "0"
+    except Exception:
+        return str(v)
+
+
 def fmt_fw(v):
     """Decode PS5 fw hex (0x0250...) -> '2.50'. Passes other values through."""
     if v is None or v == "":
@@ -493,7 +522,7 @@ def fmt_fw(v):
         n = v if isinstance(v, int) else int(str(v).strip(), 0)
         top = (n >> 48) & 0xFFFF
         if not top:
-            return str(v)
+            return fmt_fw32(n)  # 32-bit Sony fw/SDK int, not raw text
         return f"{(top >> 8) & 0xFF:X}.{top & 0xFF:02X}"
     except Exception:
         return str(v)
@@ -693,7 +722,7 @@ def parse_pkg(path):
                 # patch PKGs: also show the base game version it applies to
                 if str(_cat4).lower() == "gp" and sfo.get("VERSION"):
                     extra.append(("Base Version", sfo.get("VERSION", "")))
-                extra += [("Min. System", str(sfo.get("SYSTEM_VER", "-"))),
+                extra += [("Min. System", fmt_fw32(sfo.get("SYSTEM_VER", "-"))),
                           ("Languages", str(_langs) if _langs else "-"),
                           ("Built", _built)]
                 # FPKG hint: which passcode full-extract needs
@@ -827,7 +856,7 @@ def parse_ps3_folder(path):
             ("Region", PS3_TID_REGION.get(
                 ((sfo.get("TITLE_ID", "") if sfo else "") or "")[:4].upper(), "-")),
             ("Version", ver or "-"),
-            ("Min. System", sfo.get("PS3_SYSTEM_VER", "-") if sfo else "-"),
+            ("Min. System", fmt_fw32(sfo.get("PS3_SYSTEM_VER", "-")) if sfo else "-"),
             ("Size", f"{fmt_size(total)} ({nfiles} files)")]
     ents, _eid = [], 0
     try:
@@ -1181,7 +1210,7 @@ def parse_ps3_pkg(path):
             ("Region", content_region(cid) if "-" in (cid or "")
              else PS3_TID_REGION.get((tid or "")[:4].upper(), "-")),
             ("Version", ver or "-"),
-            ("Min. System", sfo.get("PS3_SYSTEM_VER", "-") if sfo else "-"),
+            ("Min. System", fmt_fw32(sfo.get("PS3_SYSTEM_VER", "-")) if sfo else "-"),
             ("Size", fmt_size(size)),
             ("Files", str(len(ents)) if ents else f"{n} (encrypted)")]
     if not ents:
@@ -3354,11 +3383,103 @@ def run_gui(start_path=None):
     nb.pack(fill="both", expand=True)
     state["notebook"] = nb
     tab_entries = ttk.Frame(nb)
-    tab_meta = ttk.Frame(nb)
-    tab_specs = ttk.Frame(nb)
-    nb.add(tab_specs, text="  Specs  ")
-    nb.add(tab_meta, text="  Details  ")
+    tab_info = ttk.Frame(nb)
+    nb.add(tab_info, text="  Info  ")
     nb.add(tab_entries, text="  Files  ")
+    # Info tab (merged Specs+Details): scrollable; badges top,
+    # CONTENT ID bar, update banner, spec grid, details text.
+    # Nothing is shown twice.
+    infocanvas = tk.Canvas(tab_info, bg=CARD, borderwidth=0,
+                           highlightthickness=0)
+    infoscroll = ttk.Scrollbar(tab_info, orient="vertical",
+                               command=infocanvas.yview)
+    infocanvas.configure(yscrollcommand=infoscroll.set)
+    infoscroll.pack(side="right", fill="y")
+    infocanvas.pack(side="left", fill="both", expand=True)
+    infobody = ttk.Frame(infocanvas, style="Card.TFrame")
+    _info_win = infocanvas.create_window((0, 0), window=infobody, anchor="nw")
+
+    def _info_region(_ev=None):
+        try:
+            infocanvas.configure(scrollregion=infocanvas.bbox("all"))
+        except Exception:
+            pass
+    infobody.bind("<Configure>", _info_region)
+
+    def _info_width(ev):
+        try:
+            infocanvas.itemconfig(_info_win, width=ev.width)
+        except Exception:
+            pass
+    infocanvas.bind("<Configure>", _info_width)
+
+    def _info_wheel(ev):
+        try:
+            infocanvas.yview_scroll(-1 * (ev.delta // 120), "units")
+        except Exception:
+            pass
+        return "break"
+    infobody.bind("<Enter>",
+                  lambda _e: infocanvas.bind_all("<MouseWheel>", _info_wheel))
+    infobody.bind("<Leave>",
+                  lambda _e: infocanvas.unbind_all("<MouseWheel>"))
+    tab_specs = ttk.Frame(infobody, style="Card.TFrame")
+    tab_specs.pack(fill="x")
+    tab_meta = ttk.Frame(infobody, style="Card.TFrame")
+    tab_meta.pack(fill="both", expand=True)
+    # badge strip FIRST (top), grid below it
+    detbadgerow = ttk.Frame(tab_specs, style="TFrame")
+    detbadgerow.pack(fill="x", pady=(0, 2))
+    _blabs = []
+    for _bv in state["badges"]:
+        _lb = mkpill(detbadgerow, textvariable=_bv, parent_bg=BG,
+                     font=(FONT[0], 9, "bold"), padx=10, pady=3)
+        # start hidden (empty): load() packs only the non-empty ones
+        _lb.pack_forget()
+        _blabs.append(_lb)
+    state["badge_labels"] = _blabs
+    # CONTENT ID bar: full value on its own row (never truncated)
+    # with a tiny copy button just for it
+    cidrow = ttk.Frame(tab_specs, style="Card.TFrame")
+    cidrow.pack(fill="x", pady=(0, 4))
+    ttk.Label(cidrow, text="CONTENT ID", style="SpecKey.TLabel").pack(
+        side="left", padx=(8, 6))
+    state["cidvar"] = tk.StringVar(value="")
+    cidentry = tk.Entry(cidrow, textvariable=state["cidvar"], bg=CARD2,
+                        fg=TEXT, font=("Consolas", 9), relief="flat",
+                        readonlybackground=CARD2, highlightthickness=0,
+                        state="readonly")
+    cidentry.pack(side="left", fill="x", expand=True)
+    def _copy_cid():
+        try:
+            v = state.get("cidvar", tk.StringVar(value="")).get()
+            if not v:
+                return
+            root.clipboard_clear()
+            root.clipboard_append(v)
+            statusvar.set("Content ID copied")
+        except Exception:
+            pass
+    mkbtn(cidrow, text="Copy", style="Ghost.TButton", bg=CARD,
+          command=_copy_cid).pack(side="left", padx=(6, 8))
+    state["cidrow"] = cidrow
+    # Update banner: patch status lives here at the top (not buried
+    # at the bottom of the details text). Filled by refresh_details.
+    updrow = ttk.Frame(tab_specs, style="Card.TFrame")
+    updrow.pack(fill="x", pady=(0, 4))
+    ttk.Label(updrow, text="UPDATES", style="SpecKey.TLabel").pack(
+        side="left", padx=(8, 6))
+    state["updvar"] = tk.StringVar(value="")
+    updentry = tk.Entry(updrow, textvariable=state["updvar"], bg=CARD2,
+                        fg="#f0b429", font=FONT_SMALL, relief="flat",
+                        readonlybackground=CARD2, highlightthickness=0,
+                        state="readonly")
+    updentry.pack(side="left", fill="x", expand=True)
+    state["updentry"] = updentry
+    mkbtn(updrow, text="Copy link", style="Ghost.TButton", bg=CARD,
+          command=lambda: copy_update_link()).pack(side="left", padx=(6, 8))
+    state["updrow"] = updrow
+    updrow.pack_forget()  # shown once patch info arrives
     # Specs tab: the classic 2-column grid (PACKAGE/SIGNATURE/...)
     # for whoever wants the fine details at a glance
     specbox = ttk.Frame(tab_specs, style="Card.TFrame", padding=8)
@@ -4149,20 +4270,7 @@ def run_gui(start_path=None):
         except Exception:
             pass
 
-    # badge strip inside the Specs tab, under the grid (moved out of
-    # Details so everything spec-like lives in one place).
-    # No card behind: row blends into the tab bg so only the round
-    # pills show (tkinter frames can't have rounded corners).
-    detbadgerow = ttk.Frame(tab_specs, style="TFrame")
-    detbadgerow.pack(fill="x", pady=(0, 2))
-    _blabs = []
-    for _bv in state["badges"]:
-        _lb = mkpill(detbadgerow, textvariable=_bv, parent_bg=BG,
-                     font=(FONT[0], 10, "bold"), padx=12, pady=5)
-        # start hidden (empty): load() packs only the non-empty ones
-        _lb.pack_forget()
-        _blabs.append(_lb)
-    state["badge_labels"] = _blabs
+    # (badge strip moved to top of Info tab, above the grid)
     metabar = ttk.Frame(tab_meta, style="Card.TFrame")
     metabar.pack(fill="x", pady=(0, 4))
     detailvar = tk.StringVar(value="Show all")
@@ -4173,9 +4281,9 @@ def run_gui(start_path=None):
     detailbtn = ttk.Button(metabar, textvariable=detailvar, style="Accent.TButton",
                            command=lambda: toggle_details())
     detailbtn.pack(side="right")
-    metatext = tk.Text(tab_meta, bg=CARD, fg=TEXT, font=("Consolas", 9),
+    metatext = tk.Text(tab_meta, bg=CARD, fg=TEXT, font=("Consolas", 8),
                        wrap="none", borderwidth=0, highlightthickness=0, padx=10, pady=10,
-                        height=12, selectbackground=ACCENT,
+                        height=8, selectbackground=ACCENT,
                         selectforeground="#171717", insertbackground=TEXT)
     metatext.pack(fill="both", expand=True)
     metatext.tag_config("updates", foreground="#f0b429")
@@ -5633,7 +5741,18 @@ def run_gui(start_path=None):
                 pass
         _flat = [(k, v) for (k, v) in r["rows"]
                  if k not in ("Platform", "Size", "Region",
-                              "Entries", "Built", "Passcode")]
+                              "Content ID", "Type", "Package")
+                 and str(v or "").strip() not in ("", "-")]
+        # CONTENT ID lives on its own bar above the grid: full + copyable
+        try:
+            _cid = str(_rd.get("Content ID", "") or "").strip()
+            state.get("cidvar", tk.StringVar(value="")).set(_cid)
+            if _cid and _cid != "-":
+                state["cidrow"].pack(fill="x", pady=(0, 4))
+            else:
+                state["cidrow"].pack_forget()
+        except Exception:
+            pass
         # dynamic grid: one cell per row-item (2 columns), so nothing
         # gets cut (PS5 has 13+: ..., Min. System, DRM, SDK).
         _box = state.get("specbox")
@@ -5654,7 +5773,8 @@ def run_gui(start_path=None):
                     _cell.grid(row=0, column=_col, sticky="w", padx=(0, 12))
                     _k = ttk.Label(_cell, text="", style="SpecKey.TLabel")
                     _k.pack(anchor="w")
-                    _v = tk.Entry(_cell, bg=CARD, fg=TEXT, font=FONT_MID,
+                    _v = tk.Entry(_cell, bg=CARD, fg=TEXT,
+                                  font=(FONT[0], 10, "bold"),
                                   relief="flat", readonlybackground=CARD,
                                   highlightthickness=0,
                                   state="readonly", width=34)
@@ -5668,6 +5788,10 @@ def run_gui(start_path=None):
             vl.config(state="normal")
             vl.delete(0, "end")
             vl.insert(0, str(v)[:60])
+            try:
+                vl.config(width=max(20, min(60, len(str(v)[:60]) + 2)))
+            except Exception:
+                pass
             vl.config(state="readonly")
         tree.delete(*tree.get_children())
         state["trp_children"] = {}
@@ -5742,54 +5866,79 @@ def run_gui(start_path=None):
             lines = full_meta_lines(r.get("meta"))
         else:
             lines = curated_meta_lines(r.get("kind"), r.get("meta"))
+        # dedup: drop detail lines whose key OR value already appears
+        # in the spec grid rows (Title/ID/Version etc. shown twice otherwise)
+        _ROWKEYS = {"package", "signature", "type", "title", "title_id",
+                    "titleid", "content_id", "contentid", "version",
+                    "app_ver", "appver", "system_ver", "systemver",
+                    "category", "format", "parental_level", "parental",
+                    "region", "size", "platform", "sdk", "drm",
+                    "min. system", "min system", "passcode"}
+        try:
+            rowvals = set()
+            for (_k, _v) in (r.get("rows") or []):
+                _s = str(_v or "").strip().lower()
+                if _s:
+                    rowvals.add(_s)
+                    try:
+                        rowvals.add(normalize_version(_s))
+                    except Exception:
+                        pass
+            if rowvals:
+                kept = []
+                for ln in lines:
+                    if "=" in ln and not ln.startswith("--"):
+                        _key, _, _val = ln.partition("=")
+                        _key = _key.strip().lower()
+                        _val = _val.strip().lower()
+                        if _key in _ROWKEYS:
+                            continue
+                        if _val and (_val in rowvals or normalize_version(_val) in rowvals):
+                            continue
+                    kept.append(ln)
+                lines = kept
+        except Exception:
+            pass
         if r.get("ampr_lines"):
             lines = list(lines) + ["", "-- AMPR containers --"] + list(r["ampr_lines"])
         if r.get("store_lines"):
             lines = list(lines) + ([""] if lines else []) + \
                 ["-- PlayStation Store --"] + list(r["store_lines"])
         _rd = dict(r.get("rows", []))
+        # Entries/Built/Passcode now live in the grid above; only the
+        # techy Body offset stays here (and only when it exists).
         _layout = []
         if r.get("kind") == "ps4" and r.get("body_off") is not None:
             try:
                 _layout.append(f"Body @ {r['body_off']:#x}")
             except Exception:
                 pass
-        for _lk in ("Entries", "Built", "Passcode"):
-            if _rd.get(_lk):
-                _layout.append(f"{_lk} = {_rd[_lk]}")
         if _layout:
             lines = list(lines) + ([""] if lines else []) + \
                 ["-- Layout --"] + _layout
-        if r.get("patch_lines"):
-            lines = list(lines) + ([""] if lines else []) + \
-                ["-- Updates --"] + list(r["patch_lines"])
-        metatext.insert("end", "\n".join(lines) + ("\n" if lines else ""))
-        # highlight the "-- Updates --" (patch tracker) section in amber
-        # (only up to the next section header) + embed a Copy link
-        # button on its header line. "-- Layout --" stays plain.
+        # Updates live in the banner at the top (not in this text),
+        # so they are never buried below the fold.
         try:
-            for i, ln in enumerate(lines, start=1):
-                if ln.strip() == "-- Updates --":
-                    _end = len(lines) + 1
-                    for j in range(i, len(lines)):
-                        _s2 = lines[j].strip()
-                        if _s2.startswith("-- ") and _s2.endswith(" --"):
-                            _end = j + 1
-                            break
-                    metatext.tag_add("updates", f"{i}.0", f"{_end}.0")
-                    try:
-                        _cb = tk.Button(metatext, text="Copy link",
-                                        bg=CARD2, fg=TEXT, relief="flat",
-                                        font=FONT_SMALL, cursor="hand2",
-                                        padx=8, pady=0,
-                                        activebackground=ACCENT,
-                                        activeforeground="#171717",
-                                        command=lambda: copy_update_link())
-                        metatext.window_create(f"{i}.end", window=_cb)
-                        state["copylink_embed"] = _cb  # keep a ref
-                    except Exception:
-                        pass
-                    break
+            _pl = r.get("patch_lines") or []
+            if _pl:
+                _uptxt = "  •  ".join(_pl)
+                state["updvar"].set(_uptxt)
+                try:
+                    state["updentry"].config(
+                        fg="#10b981" if "up to date" in _uptxt.lower()
+                        else "#f0b429")
+                except Exception:
+                    pass
+                state["updrow"].pack(fill="x", pady=(0, 4))
+            else:
+                state["updrow"].pack_forget()
+        except Exception:
+            pass
+        metatext.insert("end", "\n".join(lines) + ("\n" if lines else ""))
+        # auto-height: the text box fits its content (no big empty
+        # box when lines are few); the tab scrolls if it grows long.
+        try:
+            metatext.config(height=max(4, min(30, len(lines) + 1)))
         except Exception:
             pass
 
@@ -5952,14 +6101,14 @@ def run_gui(start_path=None):
         line1 = f"Latest patch = {latest} ({count} known)"
         if date:
             line1 += f" — {date[:10]}" + (f" ({ago})" if ago else "")
-        lines = [line1]
+        # verdict only: the PKG version itself already lives in the
+        # grid (VERSION), so repeating it here would duplicate it.
         if own_ver:
-            lines.append(f"PKG version = {own_ver} " +
-                         ("(up to date)" if own_ver.strip() == latest.strip()
-                          else "(behind latest)"))
+            line1 += (" — up to date" if own_ver.strip() == latest.strip()
+                      else " — behind latest")
         else:
-            lines.append("PKG version unknown (encrypted)")
-        r["patch_lines"] = lines
+            line1 += " — PKG version unknown (encrypted)"
+        r["patch_lines"] = [line1]
         refresh_details()
 
     def show_image(name):
