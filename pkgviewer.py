@@ -3565,7 +3565,7 @@ def run_gui(start_path=None):
     titlerow.pack(pady=(6, 4), anchor="w", fill="x")
     state["titlerow"] = titlerow
     fmtlabel = tk.Label(titlerow, bg=CARD, fg=MUTED, text="")
-    fmtlabel.pack(side="left", padx=(0, 8))
+    fmtlabel.pack(side="left", padx=(0, 8), anchor="n")
     state["fmtlabel"] = fmtlabel
     # selectable + wrapping title: read-only Text (Entry can't wrap,
     # Label can't be selected)
@@ -3597,6 +3597,15 @@ def run_gui(start_path=None):
         try:
             _titletext.delete("1.0", "end")
             _titletext.insert("1.0", t or "—")
+            # auto-height (1-2 lines) so a short title doesn't leave
+            # an empty second line that unseats the PKG badge
+            _titletext.update_idletasks()
+            try:
+                _nl = _titletext.count("1.0", "end-1c", "displaylines")
+                _nl = _nl[0] if isinstance(_nl, tuple) else int(_nl or 1)
+            except Exception:
+                _nl = 1
+            _titletext.config(height=min(2, max(1, _nl)))
         except Exception:
             pass
     state["titletext"] = _titletext
@@ -3685,7 +3694,7 @@ def run_gui(start_path=None):
     cidrow = ttk.Frame(tab_specs, style="Card.TFrame")
     cidrow.pack(fill="x", pady=(0, 2))
     ttk.Label(cidrow, text="CONTENT ID", style="SpecKey.TLabel").pack(
-        side="left", padx=(8, 6))
+        side="left", padx=(6, 6))
     state["cidvar"] = tk.StringVar(value="")
     cidentry = tk.Entry(cidrow, textvariable=state["cidvar"], bg=CARD2,
                         fg=TEXT, font=("Consolas", 9), relief="flat",
@@ -3717,7 +3726,7 @@ def run_gui(start_path=None):
     updrow = ttk.Frame(tab_specs, style="Card.TFrame")
     updrow.pack(fill="x", pady=(0, 2))
     ttk.Label(updrow, text="UPDATES", style="SpecKey.TLabel").pack(
-        side="left", padx=(8, 6))
+        side="left", padx=(6, 6))
     state["updvar"] = tk.StringVar(value="")
     updentry = tk.Entry(updrow, textvariable=state["updvar"], bg=CARD2,
                         fg="#f0b429", font=FONT_SMALL, relief="flat",
