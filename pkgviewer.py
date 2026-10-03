@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.14.5"  # bump on every release — the updater compares this
+APP_VERSION = "v1.14.6"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -2546,6 +2546,142 @@ GRID_ORDER = ["Title ID", "Concept ID",
               "Assets", "Inner file", "Part", "Passcode", "Note"]
 
 
+# PS5 engine: PSVIETHOA FPKG Builder CLI (external program, the
+# built-in LibOrbisPkg only understands PS4).
+FPKG_CLI_CANDIDATES = [
+    r"C:\Program Files\PSVIETHOA FPKG Builder\fpkg-cli\fpkg-cli.exe",
+]
+
+
+def find_fpkg_cli():
+    """Locate fpkg-cli.exe for PS5 extract/build. Returns path or ''."""
+    try:
+        for _c in FPKG_CLI_CANDIDATES:
+            try:
+                if _c and os.path.isfile(_c):
+                    return _c
+            except Exception:
+                pass
+        try:
+            import shutil as _sh
+            _w = _sh.which("fpkg-cli") or _sh.which("fpkg-cli.exe")
+            if _w:
+                return _w
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return ""
+
+
+def _disk_free(path):
+    """Free bytes on the drive holding path, or -1 when unknown."""
+    try:
+        import shutil as _sh
+        return _sh.disk_usage(os.path.abspath(path or ".")).free
+    except Exception:
+        pass
+    try:
+        import shutil as _sh2
+        return _sh2.disk_usage(".").free
+    except Exception:
+        return -1
+
+
+def _fs_type(path):
+    """Filesystem name (e.g. NTFS/exFAT/FAT32) for path's drive, else ''."""
+    try:
+        import ctypes as _ct
+        _k32 = _ct.windll.kernel32
+        _drive = os.path.splitdrive(os.path.abspath(path or "."))[0] + "\\"
+        _fs = _ct.create_unicode_buffer(260)
+        if _k32.GetVolumeInformationW(_drive, None, 0, None, None,
+                                      None, _fs, 260):
+            return _fs.value or ""
+    except Exception:
+        pass
+    return ""
+
+
+def _du_size(path):
+    """Data size of a file or folder. Slow on huge trees — call it in
+    a thread. Never raises."""
+    try:
+        if os.path.isfile(path):
+            return os.path.getsize(path)
+        _total = 0
+        for _dp, _dn, _fns in os.walk(path):
+            for _fn in _fns:
+                try:
+                    _total += os.path.getsize(os.path.join(_dp, _fn))
+                except Exception:
+                    pass
+        return _total
+    except Exception:
+        return 0
+
+
+def _kill_tree(pid):
+    """Kill a worker process and every child it spawned (e.g. fpkg-cli
+    shells out to Sony SDK tools that outlive their parent).
+    Never raises."""
+    try:
+        import ctypes as _ct
+        _k32 = _ct.windll.kernel32
+        _kids = {}
+        try:
+            _snap = _k32.CreateToolhelp32Snapshot(0x2, 0)
+            if _snap and int(_snap) != -1:
+                try:
+                    class _PE(_ct.Structure):
+                        _fields_ = [
+                            ("dwSize", _ct.c_ulong),
+                            ("cntUsage", _ct.c_ulong),
+                            ("th32ProcessID", _ct.c_ulong),
+                            ("th32DefaultHeapID", _ct.c_void_p),
+                            ("th32ModuleID", _ct.c_ulong),
+                            ("cntThreads", _ct.c_ulong),
+                            ("th32ParentProcessID", _ct.c_ulong),
+                            ("pcPriClassBase", _ct.c_long),
+                            ("dwFlags", _ct.c_ulong),
+                            ("szExeFile", _ct.c_wchar * 260)]
+                    _pe = _PE()
+                    _pe.dwSize = _ct.sizeof(_PE)
+                    _ok = _k32.Process32FirstW(_snap, _ct.byref(_pe))
+                    while _ok:
+                        try:
+                            _kids.setdefault(
+                                _pe.th32ParentProcessID,
+                                []).append(_pe.th32ProcessID)
+                        except Exception:
+                            pass
+                        _ok = _k32.Process32NextW(_snap, _ct.byref(_pe))
+                finally:
+                    _k32.CloseHandle(_snap)
+        except Exception:
+            pass
+        _dead = set()
+
+        def _kill(_p):
+            if _p in _dead:
+                return
+            _dead.add(_p)
+            for _c in _kids.get(_p, []):
+                _kill(_c)
+            try:
+                _h = _k32.OpenProcess(0x0001, False, _p)
+                if _h:
+                    try:
+                        _k32.TerminateProcess(_h, 1)
+                    finally:
+                        _k32.CloseHandle(_h)
+            except Exception:
+                pass
+        _kill(int(pid))
+    except Exception:
+        pass
+
+
 def build_clean_name(result, parts=None):
     """Clean uniform file/folder base name from parsed PKG info.
 
@@ -3177,22 +3313,59 @@ def run_gui(start_path=None):
                       activebackground=ACCENT, activeforeground="#171717")
         acts = state.get("tools_actions") or []
         r = state.get("result") or {}
-        # Extract/Build only exist for PS4 PKGs (LibOrbisPkg): show them
-        # flat, with no subgroup — and hide them for everything else.
-        _is_ps4pkg = (r.get("kind") == "ps4") and os.path.isfile(r.get("path") or "")
+        # Separate tools per file: PS4 PKGs get the built-in engine,
+        # PS5 gets fpkg-cli — never mixed in one menu.
+        _path = r.get("path") or ""
+        _isfile = os.path.isfile(_path)
+        _is_ps4pkg = (r.get("kind") == "ps4") and _isfile
+        _is_ps5 = (r.get("kind") == "ps5")
         if not r:
-            m.add_command(label="(no tools yet — open a PKG first)",
-                          command=lambda: statusvar.set("Open a PKG first"))
-        elif not _is_ps4pkg:
-            m.add_command(label="(no tools for this file type)",
-                          command=lambda: statusvar.set("Extract/Build is PS4 PKG only"))
-        elif isinstance(acts, dict):
-            for _group, _items in acts.items():
-                for _lbl, _fn in (_items or []):
+            # nothing loaded: only tools that ask for their own input
+            if not find_fpkg_cli():
+                m.add_command(
+                    label="(PS5 tools need FPKG Builder)",
+                    command=lambda: statusvar.set(
+                        "Install PSVIETHOA FPKG Builder for PS5 extract/build"))
+            else:
+                m.add_command(label="Extract (PS5)...",
+                              command=lambda: extract_ps5())
+                m.add_command(label="Build PS5 from folder...",
+                              command=lambda: build_ps5_folder())
+                m.add_command(label="Build PS5 from image...",
+                              command=lambda: build_ps5_image())
+            try:
+                m.add_separator()
+            except Exception:
+                pass
+            m.add_command(label="Extract (PS4)...",
+                          command=lambda: extract_ps4_pick())
+            m.add_command(label="Build from .gp4...",
+                          command=lambda: build_pkg())
+        elif _is_ps4pkg:
+            if isinstance(acts, dict):
+                for _group, _items in acts.items():
+                    for _lbl, _fn in (_items or []):
+                        m.add_command(label=_lbl, command=_fn)
+            else:
+                for _lbl, _fn in acts:
                     m.add_command(label=_lbl, command=_fn)
+        elif _is_ps5:
+            if not find_fpkg_cli():
+                m.add_command(
+                    label="(PS5 tools need FPKG Builder)",
+                    command=lambda: statusvar.set(
+                        "Install PSVIETHOA FPKG Builder for PS5 extract/build"))
+            else:
+                if _isfile and _path.lower().endswith(".pkg"):
+                    m.add_command(label="Extract (PS5)...",
+                                  command=lambda: extract_ps5())
+                m.add_command(label="Build PS5 from folder...",
+                              command=lambda: build_ps5_folder())
+                m.add_command(label="Build PS5 from image...",
+                              command=lambda: build_ps5_image())
         else:
-            for _lbl, _fn in acts:
-                m.add_command(label=_lbl, command=_fn)
+            m.add_command(label="(no tools for this file type)",
+                          command=lambda: statusvar.set("Extract/Build is PS4/PS5 only"))
         try:
             x, y = toolsbtn.winfo_rootx(), toolsbtn.winfo_rooty() + toolsbtn.winfo_height() + 4
             m.tk_popup(x, y)
@@ -3341,6 +3514,36 @@ def run_gui(start_path=None):
     bottombar.bind("<Configure>",
                    lambda e: _status_lbl.config(wraplength=max(200, e.width - 24)))
 
+    def _kill_children():
+        # worker jobs (extract/build) must not outlive the app —
+        # including children they spawned (Sony SDK tools)
+        try:
+            for q in list(state.get("child_procs") or []):
+                try:
+                    if q.poll() is None:
+                        try:
+                            _kill_tree(q.pid)
+                        except Exception:
+                            pass
+                        if q.poll() is None:
+                            q.kill()
+                except Exception:
+                    pass
+            state["child_procs"] = []
+        except Exception:
+            pass
+
+    def _on_app_close():
+        _kill_children()
+        try:
+            root.destroy()
+        except Exception:
+            pass
+    try:
+        root.protocol("WM_DELETE_WINDOW", _on_app_close)
+    except Exception:
+        pass
+
     # body
     body = ttk.Frame(root, padding=(10, 2))
     body.pack(fill="both", expand=True)
@@ -3358,15 +3561,45 @@ def run_gui(start_path=None):
                         text="Drop a file or folder here\n\nor click Open",
                         font=FONT_MID, justify="center")
     imglabel.place(relx=0.5, rely=0.5, anchor="center")
-    titlevar = tk.StringVar(value="—")
     titlerow = tk.Frame(left, bg=CARD)
     titlerow.pack(pady=(6, 4), anchor="w", fill="x")
     state["titlerow"] = titlerow
     fmtlabel = tk.Label(titlerow, bg=CARD, fg=MUTED, text="")
     fmtlabel.pack(side="left", padx=(0, 8))
     state["fmtlabel"] = fmtlabel
-    tk.Label(titlerow, textvariable=titlevar, bg=CARD, fg=TEXT, font=(FONT[0], 11, "bold"),
-             wraplength=220, justify="left").pack(side="left", anchor="w")
+    # selectable + wrapping title: read-only Text (Entry can't wrap,
+    # Label can't be selected)
+    _titletext = tk.Text(titlerow, bg=CARD, fg=TEXT,
+                         font=(FONT[0], 11, "bold"),
+                         wrap="word", height=2, width=24,
+                         relief="flat", borderwidth=0,
+                         highlightthickness=0,
+                         selectbackground=ACCENT,
+                         selectforeground="#171717",
+                         insertbackground=TEXT)
+    _titletext.pack(side="left", anchor="w", fill="x", expand=True)
+    _titletext.insert("1.0", "—")
+    def _titlekey(ev):
+        # read-only: arrows pass, ctrl+C/A pass, everything else blocked
+        try:
+            if (ev.state & 0x4) != 0:
+                if (ev.keysym or "").lower() in ("c", "a"):
+                    return None
+                return "break"
+        except Exception:
+            pass
+        if (ev.keysym or "") in ("Left", "Right", "Up", "Down",
+                                 "Home", "End", "Prior", "Next"):
+            return None
+        return "break"
+    _titletext.bind("<KeyPress>", _titlekey)
+    def _set_title(t):
+        try:
+            _titletext.delete("1.0", "end")
+            _titletext.insert("1.0", t or "—")
+        except Exception:
+            pass
+    state["titletext"] = _titletext
     badgevars = [tk.StringVar(value="") for _ in range(5)]
     state["badges"] = badgevars
     state["badge_labels"] = []
@@ -4439,6 +4672,10 @@ def run_gui(start_path=None):
         mkbtn(_links, text="☕ حمایت تومانی  ↗", style="Ghost.TButton", bg=CARD,
                command=lambda: _wb.open(
                    "https://coffeebede.com/loopayeh")).pack(side="left", ipadx=10, ipady=4)
+        tk.Label(_ab, text="PS5 extract/build via PSVIETHOA FPKG Builder (fpkg-cli)\n"
+                              "engine: Drakmor LibProsperoPkg",
+                 bg=CARD, fg=MUTED, font=FONT_SMALL, justify="center").pack(padx=36,
+                                                                           pady=(10, 0))
         mkbtn(_ab, text="Close", style="Accent.TButton", bg=CARD,
                command=_ab.destroy).pack(pady=(16, 20))
         # center over main window instead of top-left corner
@@ -5307,7 +5544,7 @@ def run_gui(start_path=None):
                 fail += 1
         statusvar.set(f"Extracted {ok} files" + (f" ({fail} skipped)" if fail else ""))
 
-    def _run_worker_dialog(title, worker_args, on_done):
+    def _run_worker_dialog(title, worker_args, on_done, argv=None):
         # Progress dialog for long orbis jobs: live log + file counter +
         # elapsed time, indeterminate bar, Pause/Resume + Cancel.
         import subprocess as _sp
@@ -5397,7 +5634,12 @@ def run_gui(start_path=None):
                 if p and p.poll() is None:
                     if _st["paused"]:
                         _suspend(p.pid, False)
-                    p.kill()
+                    try:
+                        _kill_tree(p.pid)
+                    except Exception:
+                        pass
+                    if p.poll() is None:
+                        p.kill()
             except Exception:
                 pass
             try:
@@ -5419,44 +5661,75 @@ def run_gui(start_path=None):
         def _reader():
             try:
                 import shutil as _sh
-                if getattr(sys, "frozen", False):
-                    # Frozen exe: sys.executable IS the GUI itself, so it
-                    # must NOT be used as the python interpreter (that bug
-                    # just reopened an empty app window). Find a real python.
-                    _py = (_sh.which("python") or _sh.which("py")
-                           or "python")
-                    _base = getattr(sys, "_MEIPASS", None) or ""
-                    _wrk = os.path.join(_base, "orbis_full.py")
-                    if not _base or not os.path.isfile(_wrk):
-                        # dev fallback: script next to the exe
-                        _wrk = os.path.join(
-                            os.path.dirname(sys.executable),
-                            "orbis_full.py")
+                if argv:
+                    # external tool (e.g. fpkg-cli): spawn it directly
+                    _argv = list(argv)
                 else:
-                    _py = sys.executable or "python"
-                    _wrk = os.path.join(
-                        os.path.dirname(os.path.abspath(__file__)),
-                        "orbis_full.py")
-                if not os.path.isfile(_wrk):
-                    root.after(0, statusvar.set,
-                               f"{title} failed: worker script not found")
-                    root.after(0, dlg.destroy)
-                    return
+                    if getattr(sys, "frozen", False):
+                        # Frozen exe: sys.executable IS the GUI itself, so it
+                        # must NOT be used as the python interpreter (that bug
+                        # just reopened an empty app window). Find a real python.
+                        _py = (_sh.which("python") or _sh.which("py")
+                               or "python")
+                        _base = getattr(sys, "_MEIPASS", None) or ""
+                        _wrk = os.path.join(_base, "orbis_full.py")
+                        if not _base or not os.path.isfile(_wrk):
+                            # dev fallback: script next to the exe
+                            _wrk = os.path.join(
+                                os.path.dirname(sys.executable),
+                                "orbis_full.py")
+                    else:
+                        _py = sys.executable or "python"
+                        _wrk = os.path.join(
+                            os.path.dirname(os.path.abspath(__file__)),
+                            "orbis_full.py")
+                    if not os.path.isfile(_wrk):
+                        root.after(0, statusvar.set,
+                                   f"{title} failed: worker script not found")
+                        root.after(0, dlg.destroy)
+                        return
+                    _argv = [_py, "-u", _wrk] + list(worker_args)
                 _cf = 0
                 try:
                     import subprocess as _sp2
                     _cf = _sp2.CREATE_NO_WINDOW
                 except Exception:
                     _cf = 0
-                p = _sp.Popen([_py, "-u", _wrk] + list(worker_args),
+                if _st["done"]:
+                    # cancelled (or app closing) before spawn: don't start
+                    return
+                p = _sp.Popen(_argv,
                               stdout=_sp.PIPE, stderr=_sp.STDOUT,
                               text=True, bufsize=1,
                               creationflags=_cf)
                 _st["proc"] = p
+                if _st["done"]:
+                    # cancelled while spawning: kill the whole tree at once
+                    try:
+                        _kill_tree(p.pid)
+                    except Exception:
+                        pass
+                    try:
+                        if p.poll() is None:
+                            p.kill()
+                    except Exception:
+                        pass
+                    return
+                try:
+                    _jobs = state.setdefault("child_procs", [])
+                    _jobs.append(p)
+                    state["child_procs"] = [q for q in _jobs
+                                            if q.poll() is None]
+                except Exception:
+                    pass
                 _res, _err = "", ""
+                _all = []
                 try:
                     for _ln in p.stdout:
                         _ln = _ln.rstrip("\n")
+                        _all.append(_ln)
+                        if len(_all) > 5000:
+                            del _all[:4000]
                         if _ln.startswith("LOG "):
                             _tx = _ln[4:][:120]
                             root.after(0, _tvar.set, _tx)
@@ -5483,6 +5756,12 @@ def run_gui(start_path=None):
                 if _st["done"]:
                     return
                 _st["done"] = True
+                try:
+                    state["child_procs"] = [
+                        q for q in (state.get("child_procs") or [])
+                        if q is not p and q.poll() is None]
+                except Exception:
+                    pass
 
                 def _finish():
                     try:
@@ -5494,14 +5773,21 @@ def run_gui(start_path=None):
                     except Exception:
                         pass
                     if _err or (p.returncode not in (0, None) and not _res):
-                        _msg = (_err or ('exit %s' % p.returncode))[:2000]
+                        _tail = [_l.strip() for _l in _all
+                                 if _l.strip()][-8:]
+                        _msg = (_err or ('exit %s' % p.returncode))
+                        if _tail and not _err:
+                            _msg = f"{_msg} — {'; '.join(_tail)[:1500]}"
+                        _msg = _msg[:2000]
                         statusvar.set(f"{title} failed: {_msg[:200]}")
                         try:
                             _logp = os.path.join(
                                 os.environ.get("TEMP", os.path.expanduser("~")),
                                 "PKGViewer_last_error.txt")
                             with open(_logp, "w", encoding="utf-8") as _lf:
-                                _lf.write(f"{title} failed\n{_msg}\n")
+                                _lf.write(f"{title} failed\n{_msg}\n"
+                                          f"\n--- full output ---\n"
+                                          + "\n".join(_all[-500:]))
                         except Exception:
                             _logp = ""
                         try:
@@ -5574,7 +5860,7 @@ def run_gui(start_path=None):
         _ent.focus_set()
         tk.Label(_d, text="Default zeros = FPKG. Retail PKGs need their own.",
                  bg=CARD, fg=MUTED, font=(FONT[0], 8)).pack(padx=14, anchor="w")
-        _brow = ttk.Frame(_d)
+        _brow = ttk.Frame(_d, style="Card.TFrame")
         _brow.pack(pady=8)
 
         def _ok():
@@ -5606,6 +5892,23 @@ def run_gui(start_path=None):
         _d.bind("<Escape>", lambda _e: _no())
         root.wait_window(_d)
         return _res["code"]
+
+    def extract_ps4_pick():
+        # Empty-state PS4 extract: pick a PKG, load it into the app,
+        # then run the normal loaded-file flow.
+        from tkinter import filedialog as _fd
+        p = _fd.askopenfilename(title="Select PS4 PKG to extract",
+                                initialdir=_srcdir(),
+                                filetypes=[("PS4 packages", "*.pkg"),
+                                           ("All files", "*.*")])
+        if not p:
+            return
+        load(p)
+        r2 = state.get("result") or {}
+        if not r2.get("ok") or r2.get("kind") != "ps4":
+            statusvar.set("That is not a PS4 PKG")
+            return
+        extract_structured()
 
     def extract_structured():
         # FULL extract via LibOrbisPkg (same engine as PkgEditor):
@@ -5674,6 +5977,752 @@ def run_gui(start_path=None):
 
         _run_worker_dialog("Build PKG", ["build", gp4, out], _done)
 
+    def extract_ps5():
+        # One window for the whole PS5 extract: dest, temp, passcode,
+        # live space check. Blocked until space is sufficient. Uses
+        # the loaded PS5 PKG when there is one, otherwise asks.
+        from tkinter import filedialog as _fd
+        _cli = find_fpkg_cli()
+        if not _cli:
+            statusvar.set("PS5 tools need PSVIETHOA FPKG Builder (fpkg-cli not found)")
+            return
+        r = state.get("result") or {}
+        _pkg = ""
+        _rp = r.get("path") or ""
+        if (r.get("ok") and r.get("kind") == "ps5"
+                and os.path.isfile(_rp) and _rp.lower().endswith(".pkg")):
+            _pkg = _rp
+        if not _pkg:
+            _pkg = _fd.askopenfilename(
+                title="Select PS5 PKG to extract",
+                initialdir=_srcdir(),
+                filetypes=[("PS5 packages", "*.pkg"),
+                           ("All files", "*.*")])
+            if not _pkg:
+                return
+        _rr = r if (r.get("ok") and (r.get("path") or "") == _pkg) else {}
+        try:
+            _gsz = os.path.getsize(_pkg)
+        except Exception:
+            _gsz = 0
+        _need = int(_gsz * 2) if _gsz else 0
+        try:
+            _gdir = (build_clean_name(_rr)
+                     or sanitize_filename_part(_rr.get("title") or "")
+                     or os.path.splitext(os.path.basename(_pkg))[0]
+                     or "extract")
+        except Exception:
+            _gdir = "extract"
+        _d = tk.Toplevel(root)
+        _d.title("Extract PS5 PKG")
+        _d.transient(root)
+        try:
+            root.update_idletasks()
+            _rx, _ry = root.winfo_rootx(), root.winfo_rooty()
+            _rw, _rh = root.winfo_width(), root.winfo_height()
+            _dw, _dh = 480, 380
+            _d.geometry(f"{_dw}x{_dh}"
+                        f"+{_rx + max((_rw - _dw) // 2, 0)}"
+                        f"+{_ry + max((_rh - _dh) // 2, 0)}")
+        except Exception:
+            _d.geometry("480x380")
+        _d.grab_set()
+        try:
+            _d.configure(bg=CARD)
+        except Exception:
+            pass
+        tk.Label(_d, text=f"Package: {os.path.basename(_pkg)}"
+                          f" ({fmt_size(_gsz)})",
+                 bg=CARD, fg=TEXT, font=(FONT[0], 10, "bold"),
+                 wraplength=440, justify="left").pack(fill="x", padx=14,
+                                                      pady=(12, 0))
+
+        def _row(_label):
+            tk.Label(_d, text=_label, bg=CARD, fg=MUTED,
+                     font=(FONT[0], 9)).pack(anchor="w", padx=14, pady=(8, 0))
+            _f = ttk.Frame(_d, style="Card.TFrame")
+            _f.pack(fill="x", padx=14)
+            return _f
+
+        _fdest = _row("Destination folder (a game folder is created inside)")
+        _saved_out, _saved_tmp = "", ""
+        try:
+            _ss = _load_settings()
+            _saved_out = _ss.get("last_outdir") or ""
+            _saved_tmp = _ss.get("last_tmpdir") or ""
+        except Exception:
+            pass
+        if not (_saved_out and os.path.isdir(_saved_out)):
+            _saved_out = _srcdir()
+        _destvar = tk.StringVar(value=_saved_out)
+        tk.Entry(_fdest, textvariable=_destvar, bg=CARD2, fg=TEXT,
+                 font=FONT_SMALL, relief="flat",
+                 readonlybackground=CARD2, highlightthickness=0,
+                 state="readonly").pack(side="left", fill="x", expand=True)
+        _ftmp = _row("Temp folder")
+        if not (_saved_tmp and os.path.isdir(_saved_tmp)):
+            _saved_tmp = _destvar.get()
+        _tmpvar = tk.StringVar(value=_saved_tmp)
+        tk.Entry(_ftmp, textvariable=_tmpvar, bg=CARD2, fg=TEXT,
+                 font=FONT_SMALL, relief="flat",
+                 readonlybackground=CARD2, highlightthickness=0,
+                 state="readonly").pack(side="left", fill="x", expand=True)
+        _tmp_touched = {"v": _tmpvar.get() != _destvar.get()}
+        tk.Label(_d, text="Tip: temp does the heavy read/write — put it on an SSD",
+                 bg=CARD, fg=MUTED, font=(FONT[0], 8)).pack(anchor="w",
+                                                             padx=14)
+        _fpw = _row("Passcode (hex, 32 chars — zeros = FPKG)")
+        _pwvar = tk.StringVar(value="0" * 32)
+        _pwentry = tk.Entry(_fpw, textvariable=_pwvar, bg=CARD2, fg=TEXT,
+                            font=("Consolas", 10), width=36,
+                            relief="flat", highlightthickness=0,
+                            insertbackground=TEXT)
+        _pwentry.pack(side="left", fill="x", expand=True)
+        _spcvar = tk.StringVar(value="…")
+        _spclbl = tk.Label(_d, textvariable=_spcvar, bg=CARD, fg=MUTED,
+                           font=(FONT[0], 9), justify="left", anchor="w")
+        _spclbl.pack(fill="x", padx=14, pady=(8, 0))
+        _brow = ttk.Frame(_d, style="Card.TFrame")
+        _brow.pack(fill="x", padx=14, pady=12)
+        _startbtn = mkbtn(_brow, text="Start", style="Accent.TButton",
+                           bg=CARD, command=lambda: _go())
+        _startbtn.pack(side="left")
+        try:
+            _startbtn.config(state="disabled")
+        except Exception:
+            pass
+        mkbtn(_brow, text="Cancel", style="Ghost.TButton",
+              bg=CARD, command=lambda: _no()).pack(side="left",
+                                                    padx=(8, 0))
+
+        def _refresh(*_a):
+            _free_o, _free_t = -1, -1
+            try:
+                _msgs = []
+                _ok = True
+                _o = _destvar.get()
+                _t = _tmpvar.get() or _o
+                _code = (_pwvar.get() or "").strip()
+                if not _o:
+                    _ok = False
+                    _msgs.append("destination folder missing")
+                else:
+                    try:
+                        os.makedirs(_o, exist_ok=True)
+                    except Exception as ex:
+                        _ok = False
+                        _msgs.append(f"destination not writable: {ex}")
+                if len(_code) != 32 or any(
+                        ch not in "0123456789abcdefABCDEF" for ch in _code):
+                    _ok = False
+                    _msgs.append("passcode must be 32 hex chars")
+                if not _need:
+                    _ok = False
+                    _msgs.append("cannot read package size")
+                else:
+                    _free_o = _disk_free(_o) if _o else -1
+                    _free_t = _disk_free(_t) if _t else -1
+                    _same = (os.path.splitdrive(
+                        os.path.abspath(_o or "."))[0].lower()
+                             == os.path.splitdrive(
+                                 os.path.abspath(_t or "."))[0].lower())
+                    if _free_o < 0 or _free_t < 0:
+                        _ok = False
+                        _msgs.append("cannot read free space")
+                    elif _same:
+                        if _free_o < _need:
+                            _ok = False
+                            _msgs.append(
+                                f"not enough space: need ~{fmt_size(_need)}, "
+                                f"free {fmt_size(_free_o)}")
+                    else:
+                        if _free_o < _need:
+                            _ok = False
+                            _msgs.append(
+                                f"destination full: need ~{fmt_size(_need)}, "
+                                f"free {fmt_size(_free_o)}")
+                        if _free_t < _need:
+                            _ok = False
+                            _msgs.append(
+                                f"temp full: need ~{fmt_size(_need)}, "
+                                f"free {fmt_size(_free_t)}")
+                    for _pp, _nm in ((_o, "destination"), (_t, "temp")):
+                        try:
+                            if (_fs_type(_pp or ".") == "FAT32"
+                                    and _need > 4294967295):
+                                _ok = False
+                                _msgs.append(
+                                    f"{_nm} is FAT32 (4GB file limit)")
+                        except Exception:
+                            pass
+                if _ok:
+                    _spcvar.set(
+                        f"need ~{fmt_size(_need)} · "
+                        f"dest {fmt_size(_free_o)} · "
+                        f"temp {fmt_size(_free_t)} ✓")
+                    try:
+                        _spclbl.config(fg="#10b981")
+                    except Exception:
+                        pass
+                else:
+                    _spcvar.set(" · ".join(_msgs) if _msgs else "…")
+                    try:
+                        _spclbl.config(fg="#e17b7b")
+                    except Exception:
+                        pass
+                try:
+                    _startbtn.config(state="normal" if _ok else "disabled")
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        def _chg_dest():
+            _n = _fd.askdirectory(title="Extract PS5 package to folder",
+                                  initialdir=_destvar.get() or ".")
+            if _n:
+                _destvar.set(_n)
+                if not _tmp_touched["v"]:
+                    _tmpvar.set(_n)
+                _refresh()
+
+        def _chg_tmp():
+            _n = _fd.askdirectory(title="Temp folder",
+                                  initialdir=_tmpvar.get() or ".")
+            if _n:
+                _tmpvar.set(_n)
+                _tmp_touched["v"] = True
+                _refresh()
+
+        mkbtn(_fdest, text="...", style="Ghost.TButton", bg=CARD,
+              kind="mini", font=(FONT[0], 9),
+              command=_chg_dest).pack(side="left", padx=(6, 0))
+        mkbtn(_ftmp, text="...", style="Ghost.TButton", bg=CARD,
+              kind="mini", font=(FONT[0], 9),
+              command=_chg_tmp).pack(side="left", padx=(6, 0))
+        try:
+            _pwvar.trace_add("write", _refresh)
+        except Exception:
+            pass
+
+        def _go():
+            _o = _destvar.get()
+            _t = _tmpvar.get() or _o
+            try:
+                _save_settings({"last_outdir": _o, "last_tmpdir": _t})
+            except Exception:
+                pass
+            _code = (_pwvar.get() or "").strip()
+            _dest = os.path.join(_o, _gdir)
+            try:
+                os.makedirs(_dest, exist_ok=True)
+            except Exception as ex:
+                statusvar.set(f"Cannot create folder: {ex}")
+                return
+
+            def _done(res):
+                try:
+                    n = sum(len(fns) for _dp, _dn, fns in os.walk(_dest))
+                except Exception:
+                    n = 0
+                statusvar.set(f"PS5 extract: {n} files")
+
+            try:
+                _d.grab_release()
+            except Exception:
+                pass
+            try:
+                _d.destroy()
+            except Exception:
+                pass
+            _run_worker_dialog("Extract PS5", [], _done,
+                               argv=[_cli, "pkg-extract", _pkg,
+                                     "--output", _dest, "--passcode", _code,
+                                     "--temp", _t])
+
+        def _no():
+            try:
+                _d.grab_release()
+            except Exception:
+                pass
+            try:
+                _d.destroy()
+            except Exception:
+                pass
+
+        _d.protocol("WM_DELETE_WINDOW", lambda: _no())
+        _d.bind("<Escape>", lambda _e: _no())
+        _refresh()
+        # auto-fit height to content (no dead space at the bottom)
+        try:
+            _d.update_idletasks()
+            _nh = _d.winfo_reqheight() + 30
+            _sw = _d.winfo_screenheight()
+            _d.geometry("480x%d" % min(max(_nh, 260), _sw - 60))
+        except Exception:
+            pass
+        root.wait_window(_d)
+
+    def _build_ps5_dialog(src):
+        # One window for the whole PS5 build: source, preset, PFS, kind,
+        # output, temp, live space check, verify. Starts the job on Start.
+        from tkinter import filedialog as _fd
+        _cli = find_fpkg_cli()
+        if not _cli:
+            statusvar.set("PS5 tools need PSVIETHOA FPKG Builder (fpkg-cli not found)")
+            return
+        if not src or not os.path.exists(src):
+            return
+        _d = tk.Toplevel(root)
+        _d.title("Build PS5 FPKG")
+        _d.transient(root)
+        try:
+            root.update_idletasks()
+            _rx, _ry = root.winfo_rootx(), root.winfo_rooty()
+            _rw, _rh = root.winfo_width(), root.winfo_height()
+            _dw, _dh = 500, 570
+            _d.geometry(f"{_dw}x{_dh}"
+                        f"+{_rx + max((_rw - _dw) // 2, 0)}"
+                        f"+{_ry + max((_rh - _dh) // 2, 0)}")
+        except Exception:
+            _d.geometry("500x570")
+        _d.grab_set()
+        try:
+            _d.configure(bg=CARD)
+        except Exception:
+            pass
+
+        def _row(_label):
+            tk.Label(_d, text=_label, bg=CARD, fg=MUTED,
+                     font=(FONT[0], 9)).pack(anchor="w", padx=14, pady=(8, 0))
+            _f = ttk.Frame(_d, style="Card.TFrame")
+            _f.pack(fill="x", padx=14)
+            return _f
+
+        def _path_entry(_parent, _var):
+            tk.Entry(_parent, textvariable=_var, bg=CARD2, fg=TEXT,
+                     font=FONT_SMALL, relief="flat",
+                     readonlybackground=CARD2, highlightthickness=0,
+                     state="readonly").pack(side="left", fill="x",
+                                            expand=True)
+
+        def _radio(_parent, _var, _val, _lbl, _cmd=None, _padx=0):
+            tk.Radiobutton(_parent, text=_lbl, variable=_var, value=_val,
+                           bg=CARD, fg=TEXT, selectcolor=CARD2,
+                           activebackground=CARD, activeforeground=TEXT,
+                           font=(FONT[0], 9),
+                           command=_cmd).pack(side="left", padx=(_padx, 0))
+
+        # source
+        _fsrc = _row("Source")
+        _srcvar = tk.StringVar(value=src)
+        _path_entry(_fsrc, _srcvar)
+        # preset
+        _fpre = _row("Preset")
+        _prevar = tk.StringVar(value="balanced")
+        for _val, _lbl in (("fast", "Fast"), ("balanced", "Standard"),
+                           ("smallest", "Smallest"),
+                           ("maximum", "Maximum")):
+            _radio(_fpre, _prevar, _val, _lbl)
+        # PFS + kind
+        _fpk = _row("PFS / Kind")
+        _pfsvar = tk.StringVar(value="v2")
+        for _val in ("v2", "v3"):
+            _radio(_fpk, _pfsvar, _val, "PFS " + _val,
+                   lambda: _refresh())
+        _kindvar = tk.StringVar(value="app")
+        for _val in ("app", "homebrew", "dlc"):
+            _radio(_fpk, _kindvar, _val, _val, _padx=10)
+        # engine: Sony SDK by default (toolkit-identical); uncheck for
+        # the lenient built-in engine (bad dumps, SDK failures)
+        _feng = _row("Engine")
+        _sdkvar = tk.BooleanVar(value=True)
+        tk.Checkbutton(_feng, text="Sony SDK (uncheck = built-in engine)",
+                       variable=_sdkvar, bg=CARD, fg=TEXT,
+                       selectcolor=CARD2, activebackground=CARD,
+                       activeforeground=TEXT,
+                       font=(FONT[0], 9)).pack(anchor="w")
+        # IDs: prefilled from the file name (and the loaded title);
+        # only sent when filled — they repair/replace a missing or
+        # inconsistent source param.json
+        _base = os.path.basename(src.rstrip("/\\"))
+        _ptitle, _pver = "", ""
+        try:
+            import re as _re2
+            _m2 = _re2.search(r"[vV]?(\d+)\.(\d+)(?:\.(\d+))?", _base)
+            if _m2:
+                _pver = "%02d.%03d.%03d" % (int(_m2.group(1)),
+                                            int(_m2.group(2)),
+                                            int(_m2.group(3) or 0))
+            _ptitle = _re2.split(r"\s+-\s+(?:PPSA|CUSA)", _base,
+                                 maxsplit=1)[0].strip()
+        except Exception:
+            pass
+        try:
+            _lr = state.get("result") or {}
+            if (_lr.get("ok") and (_lr.get("path") or "") == src
+                    and _lr.get("title")):
+                _ptitle = _lr.get("title")
+        except Exception:
+            pass
+        _fids = _row("IDs (fill in when source param.json is missing/broken)")
+        _cidvar = tk.StringVar(value="")
+        _btitlevar = tk.StringVar(value=_ptitle)
+        _bvervar = tk.StringVar(value=_pver)
+        for _lab, _var, _w in (("Content ID", _cidvar, 34),
+                               ("Title", _btitlevar, 18),
+                               ("Version", _bvervar, 11)):
+            tk.Label(_fids, text=_lab, bg=CARD, fg=MUTED,
+                     font=(FONT[0], 8)).pack(side="left")
+            _en = tk.Entry(_fids, textvariable=_var, bg=CARD2, fg=TEXT,
+                           font=FONT_SMALL, relief="flat",
+                           highlightthickness=0, width=_w,
+                           insertbackground=TEXT)
+            _en.pack(side="left", padx=(2, 8))
+            try:
+                _var.trace_add("write", lambda *_a: _refresh())
+            except Exception:
+                pass
+        # output (last-used dir remembered, else next to the source)
+        _saved_out, _saved_tmp = "", ""
+        try:
+            _ss = _load_settings()
+            _saved_out = _ss.get("last_outdir") or ""
+            _saved_tmp = _ss.get("last_tmpdir") or ""
+        except Exception:
+            pass
+        if not (_saved_out and os.path.isdir(_saved_out)):
+            _saved_out = os.path.dirname(os.path.abspath(src))
+        _fout = _row("Output folder")
+        _outvar = tk.StringVar(value=_saved_out)
+        _path_entry(_fout, _outvar)
+        # temp (asked every time; last-used dir remembered)
+        _ftmp = _row("Temp folder")
+        if not (_saved_tmp and os.path.isdir(_saved_tmp)):
+            _saved_tmp = _outvar.get()
+        _tmpvar = tk.StringVar(value=_saved_tmp)
+        _path_entry(_ftmp, _tmpvar)
+        _tmp_touched = {"v": _saved_tmp != _outvar.get()}
+        tk.Label(_d, text="Tip: temp does the heavy read/write — put it on an SSD",
+                 bg=CARD, fg=MUTED, font=(FONT[0], 8)).pack(anchor="w",
+                                                             padx=14)
+        # live space panel
+        _spcvar = tk.StringVar(value="…")
+        _spclbl = tk.Label(_d, textvariable=_spcvar, bg=CARD, fg=MUTED,
+                           font=(FONT[0], 9), justify="left", anchor="w")
+        _spclbl.pack(fill="x", padx=14, pady=(8, 0))
+        # source warnings from fpkg-cli inspect (param.json, icon…)
+        _warnvar = tk.StringVar(value="")
+        _warnlbl = tk.Label(_d, textvariable=_warnvar, bg=CARD, fg="#f0b429",
+                            font=(FONT[0], 8), justify="left", anchor="w",
+                            wraplength=460)
+        _warnlbl.pack(fill="x", padx=14)
+        _size = {"v": None}  # None = still calculating
+        # verify
+        _vervar = tk.BooleanVar(value=False)
+        tk.Checkbutton(_d, text="Verify after build (slow)",
+                       variable=_vervar, bg=CARD, fg=TEXT,
+                       selectcolor=CARD2, activebackground=CARD,
+                       activeforeground=TEXT,
+                       font=(FONT[0], 9)).pack(anchor="w", padx=14,
+                                                pady=(4, 0))
+        # buttons
+        _brow = ttk.Frame(_d, style="Card.TFrame")
+        _brow.pack(fill="x", padx=14, pady=12)
+        _startbtn = mkbtn(_brow, text="Start", style="Accent.TButton",
+                           bg=CARD, command=lambda: _go())
+        _startbtn.pack(side="left")
+        try:
+            _startbtn.config(state="disabled")
+        except Exception:
+            pass
+        mkbtn(_brow, text="Cancel", style="Ghost.TButton",
+              bg=CARD, command=lambda: _no()).pack(side="left",
+                                                    padx=(8, 0))
+
+        def _calc_size(_p):
+            import threading as _th
+
+            def _w():
+                _v = _du_size(_p)
+                try:
+                    root.after(0, lambda: (_size.update(v=_v), _refresh()))
+                except Exception:
+                    pass
+            _th.Thread(target=_w, daemon=True).start()
+
+        def _refresh():
+            # live space/validity check; Start stays disabled until all OK
+            _need, _free_o, _free_t = 0, -1, -1
+            try:
+                _msgs = []
+                _ok = True
+                _s = _srcvar.get()
+                _o = _outvar.get()
+                _t = _tmpvar.get() or _o
+                if not (_s and os.path.exists(_s)):
+                    _ok = False
+                    _msgs.append("source missing")
+                if not _o:
+                    _ok = False
+                    _msgs.append("output folder missing")
+                else:
+                    try:
+                        os.makedirs(_o, exist_ok=True)
+                    except Exception as ex:
+                        _ok = False
+                        _msgs.append(f"output not writable: {ex}")
+                _cidchk = (_cidvar.get() or "").strip()
+                if _cidchk and len(_cidchk) != 36:
+                    _ok = False
+                    _msgs.append("Content ID must be 36 chars")
+                _sz = _size["v"]
+                if _sz is None:
+                    _ok = False
+                    _msgs.append("calculating source size…")
+                else:
+                    _need = int(_sz * 1.5)
+                    _free_o = _disk_free(_o) if _o else -1
+                    _free_t = _disk_free(_t) if _t else -1
+                    _same = (os.path.splitdrive(
+                        os.path.abspath(_o or "."))[0].lower()
+                             == os.path.splitdrive(
+                                 os.path.abspath(_t or "."))[0].lower())
+                    if _free_o < 0 or _free_t < 0:
+                        _ok = False
+                        _msgs.append("cannot read free space")
+                    elif _same:
+                        if _free_o < _need:
+                            _ok = False
+                            _msgs.append(
+                                f"not enough space: need ~{fmt_size(_need)}, "
+                                f"free {fmt_size(_free_o)}")
+                    else:
+                        if _free_o < _need:
+                            _ok = False
+                            _msgs.append(
+                                f"output full: need ~{fmt_size(_need)}, "
+                                f"free {fmt_size(_free_o)}")
+                        if _free_t < _need:
+                            _ok = False
+                            _msgs.append(
+                                f"temp full: need ~{fmt_size(_need)}, "
+                                f"free {fmt_size(_free_t)}")
+                    for _pp, _nm in ((_o, "output"), (_t, "temp")):
+                        try:
+                            if (_fs_type(_pp or ".") == "FAT32"
+                                    and _need > 4294967295):
+                                _ok = False
+                                _msgs.append(
+                                    f"{_nm} is FAT32 (4GB file limit)")
+                        except Exception:
+                            pass
+                    if _pfsvar.get() == "v3":
+                        _msgs.append("note: PFS v3 needs firmware 7.00+")
+                if _ok:
+                    _spcvar.set(
+                        f"need ~{fmt_size(_need)} · "
+                        f"output {fmt_size(_free_o)} · "
+                        f"temp {fmt_size(_free_t)} ✓")
+                    try:
+                        _spclbl.config(fg="#10b981")
+                    except Exception:
+                        pass
+                else:
+                    _spcvar.set(" · ".join(_msgs) if _msgs else "…")
+                    try:
+                        _spclbl.config(fg="#e17b7b")
+                    except Exception:
+                        pass
+                try:
+                    _startbtn.config(state="normal" if _ok else "disabled")
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        def _chg_src():
+            _cur = _srcvar.get()
+            if os.path.isdir(_cur):
+                _n = _fd.askdirectory(title="Select PS5 app folder",
+                                      initialdir=_cur)
+            else:
+                _n = _fd.askopenfilename(
+                    title="Select PS5 image or GP5 project",
+                    initialdir=os.path.dirname(_cur),
+                    filetypes=[("Disk images", "*.exfat *.ffpfsc *.ffpkg"),
+                               ("GP5 projects", "*.gp5"),
+                               ("All files", "*.*")])
+            if _n:
+                _srcvar.set(_n)
+                _size["v"] = None
+                _calc_size(_n)
+                _preflight(_n)
+                _refresh()
+
+        def _preflight(_p):
+            # fast source check via fpkg-cli inspect: param.json, icon,
+            # junk, AMPR… shown as warnings (Start stays allowed)
+            import threading as _th
+
+            def _w():
+                _warns = []
+                try:
+                    import subprocess as _sp2
+                    _cf = 0
+                    try:
+                        _cf = _sp2.CREATE_NO_WINDOW
+                    except Exception:
+                        pass
+                    _po = _sp2.run([_cli, "inspect", _p],
+                                   stdout=_sp2.PIPE, stderr=_sp2.STDOUT,
+                                   text=True, timeout=300, creationflags=_cf)
+                    _lo = (_po.stdout or "").lower()
+                    if ("param.json: none" in _lo
+                            or "param.json: no" in _lo
+                            or "no param.json" in _lo):
+                        _warns.append(
+                            "source has no param.json — fill the IDs above "
+                            "or the Sony SDK will fail (or uncheck Sony SDK)")
+                    if "icon0.png: no" in _lo:
+                        _warns.append(
+                            "icon0.png missing (build continues; cover blank)")
+                    if "junk" in _lo and "junk files: none" not in _lo:
+                        _warns.append("OS junk files detected (auto-skipped)")
+                    if "ampr" in _lo and "no ampr" not in _lo:
+                        _warns.append(
+                            "AMPR traces present — game may hang on splash")
+                except Exception as ex:
+                    _warns.append(f"inspect failed: {ex}")
+                try:
+                    root.after(
+                        0, lambda: (_warnvar.set("\n".join(_warns)),
+                                    _refresh()))
+                except Exception:
+                    pass
+            _th.Thread(target=_w, daemon=True).start()
+
+        def _chg_out():
+            _n = _fd.askdirectory(title="Save built PS5 PKG to folder",
+                                  initialdir=_outvar.get() or ".")
+            if _n:
+                _outvar.set(_n)
+                if not _tmp_touched["v"]:
+                    _tmpvar.set(_n)
+                _refresh()
+
+        def _chg_tmp():
+            _n = _fd.askdirectory(title="Temp folder",
+                                  initialdir=_tmpvar.get() or ".")
+            if _n:
+                _tmpvar.set(_n)
+                _tmp_touched["v"] = True
+                _refresh()
+
+        mkbtn(_fsrc, text="...", style="Ghost.TButton", bg=CARD,
+              kind="mini", font=(FONT[0], 9),
+              command=_chg_src).pack(side="left", padx=(6, 0))
+        mkbtn(_fout, text="...", style="Ghost.TButton", bg=CARD,
+              kind="mini", font=(FONT[0], 9),
+              command=_chg_out).pack(side="left", padx=(6, 0))
+        mkbtn(_ftmp, text="...", style="Ghost.TButton", bg=CARD,
+              kind="mini", font=(FONT[0], 9),
+              command=_chg_tmp).pack(side="left", padx=(6, 0))
+
+        def _go():
+            _o = _outvar.get()
+            _t = _tmpvar.get() or _o
+            try:
+                _save_settings({"last_outdir": _o, "last_tmpdir": _t})
+            except Exception:
+                pass
+            _args = [_cli, "build", "--source", _srcvar.get(),
+                     "--output", _o, "--temp", _t,
+                     "--preset", _prevar.get(),
+                     "--pfs", _pfsvar.get(), "--kind", _kindvar.get()]
+            if not _sdkvar.get():
+                _args.append("--no-sony-sdk")
+            _cid = (_cidvar.get() or "").strip()
+            if _cid:
+                _args += ["--content-id", _cid]
+            _bt = (_btitlevar.get() or "").strip()
+            if _bt:
+                _args += ["--title", _bt]
+            _bv = (_bvervar.get() or "").strip()
+            if _bv:
+                _args += ["--version", _bv]
+            if _vervar.get():
+                _args.append("--full-verify")
+
+            def _done(res):
+                try:
+                    _pkgs = [os.path.join(_o, f)
+                             for f in os.listdir(_o)
+                             if f.lower().endswith(".pkg")]
+                    _pkgs.sort(key=lambda p: os.path.getmtime(p),
+                               reverse=True)
+                    if _pkgs:
+                        statusvar.set(
+                            f"Built {os.path.basename(_pkgs[0])} "
+                            f"({fmt_size(os.path.getsize(_pkgs[0]))})")
+                        return
+                except Exception:
+                    pass
+                statusvar.set("PS5 build finished")
+
+            try:
+                _d.grab_release()
+            except Exception:
+                pass
+            try:
+                _d.destroy()
+            except Exception:
+                pass
+            _run_worker_dialog("Build PS5", [], _done, argv=_args)
+
+        def _no():
+            try:
+                _d.grab_release()
+            except Exception:
+                pass
+            try:
+                _d.destroy()
+            except Exception:
+                pass
+
+        _d.protocol("WM_DELETE_WINDOW", lambda: _no())
+        _d.bind("<Escape>", lambda _e: _no())
+        _calc_size(src)
+        _preflight(src)
+        _refresh()
+        # auto-fit height to content (no dead space at the bottom)
+        try:
+            _d.update_idletasks()
+            _nh = _d.winfo_reqheight() + 30
+            _sw = _d.winfo_screenheight()
+            _d.geometry("500x%d" % min(max(_nh, 300), _sw - 60))
+        except Exception:
+            pass
+        root.wait_window(_d)
+
+    def build_ps5_folder():
+        from tkinter import filedialog as _fd
+        src = _fd.askdirectory(title="Select PS5 app folder (with sce_sys)",
+                               initialdir=_srcdir())
+        if src:
+            _build_ps5_dialog(src)
+
+    def build_ps5_image():
+        from tkinter import filedialog as _fd
+        src = _fd.askopenfilename(
+            title="Select PS5 image or GP5 project",
+            initialdir=_srcdir(),
+            filetypes=[("Disk images", "*.exfat *.ffpfsc *.ffpkg"),
+                       ("GP5 projects", "*.gp5"),
+                       ("All files", "*.*")])
+        if src:
+            _build_ps5_dialog(src)
+
     state["tools_actions"] = {
         "PKG": [
             ("Extract...", lambda: extract_structured()),
@@ -5738,7 +6787,7 @@ def run_gui(start_path=None):
         state["show_all"] = False
         detailvar.set("Show all")
         pathvar.set(os.path.basename(p))
-        titlevar.set(r["title"])
+        _set_title(r["title"])
         try:
             _ext = os.path.splitext(p)[1].lower()
             _fmt = {".ffpkg": "ffpkg", ".ffpfsc": "ffpfsc",
@@ -6182,7 +7231,7 @@ def run_gui(start_path=None):
         if not r or not r.get("store_cid"):
             return
         if name and name != r["title"]:
-            titlevar.set(name)
+            _set_title(name)
             r["title"] = name
         lines = []
         if name:
