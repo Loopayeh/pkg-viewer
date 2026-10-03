@@ -4018,6 +4018,18 @@ def run_gui(start_path=None):
                                   initialdir=_srcdir())
         if not dest:
             return
+        # save into a game-named subfolder, not loose files
+        try:
+            _rr = state.get("result") or {}
+            _gdir = (build_clean_name(_rr)
+                     or sanitize_filename_part(_rr.get("title") or "")
+                     or os.path.splitext(os.path.basename(_rr.get("path") or ""))[0]
+                     or "trophies")
+            dest = os.path.join(dest, _gdir)
+            os.makedirs(dest, exist_ok=True)
+        except Exception as ex:
+            statusvar.set(f"Cannot create folder: {ex}")
+            return
 
         def _work():
             try:
@@ -5229,6 +5241,17 @@ def run_gui(start_path=None):
                                   initialdir=_srcdir())
         if not dest:
             return
+        # extract into a game-named subfolder, not loose files
+        try:
+            _gdir = (build_clean_name(r)
+                     or sanitize_filename_part(r.get("title") or "")
+                     or os.path.splitext(os.path.basename(r.get("path") or ""))[0]
+                     or "extract")
+            dest = os.path.join(dest, _gdir)
+            os.makedirs(dest, exist_ok=True)
+        except Exception as ex:
+            statusvar.set(f"Cannot create folder: {ex}")
+            return
         ok, fail = 0, 0
         for e in r["entries"]:
             nm = (e.get("name") or "").strip()
@@ -5568,6 +5591,17 @@ def run_gui(start_path=None):
         dest = _fd.askdirectory(title="Extract FULL package to folder",
                                   initialdir=_srcdir())
         if not dest:
+            return
+        # extract into a game-named subfolder, not loose files
+        try:
+            _gdir = (build_clean_name(r)
+                     or sanitize_filename_part(r.get("title") or "")
+                     or os.path.splitext(os.path.basename(r.get("path") or ""))[0]
+                     or "extract")
+            dest = os.path.join(dest, _gdir)
+            os.makedirs(dest, exist_ok=True)
+        except Exception as ex:
+            statusvar.set(f"Cannot create folder: {ex}")
             return
         code = _ask_passcode()
         if not code:
