@@ -1,0 +1,75 @@
+name: Build macOS app
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version label for the zip name (default: from pkgviewer.py)"
+        required: false
+        default: ""
+
+jobs:
+  build-mac:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+          - runner: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller pillow cryptography tkinterdnd2
+
+      - name: macOS icon (.icns from logo.png)
+        run: |
+          if [ -f assets/logo.png ]; then
+            mkdir -p icon.iconset
+            sips -z 16 16     assets/logo.png --out icon.iconset/icon_16x16.png
+            sips -z 32 32     assets/logo.png --out icon.iconset/icon_16x16@2x.png
+            sips -z 32 32     assets/logo.png --out icon.iconset/icon_32x32.png
+            sips -z 64 64     assets/logo.png --out icon.iconset/icon_32x32@2x.png
+            sips -z 128 128   assets/logo.png --out icon.iconset/icon_128x128.png
+            sips -z 256 256   assets/logo.png --out icon.iconset/icon_128x128@2x.png
+            sips -z 256 256   assets/logo.png --out icon.iconset/icon_256x256.png
+            sips -z 512 512   assets/logo.png --out icon.iconset/icon_256x256@2x.png
+            sips -z 512 512   assets/logo.png --out icon.iconset/icon_512x512.png
+            cp assets/logo.png icon.iconset/icon_512x512@2x.png
+            iconutil -c icns icon.iconset -o icon.icns
+          fi
+
+      - name: Build with PyInstaller
+        run: |
+          ICON_ARG=""
+          [ -f icon.icns ] && ICON_ARG="--icon icon.icns"
+          python -m PyInstaller --noconfirm --clean --windowed \
+            --name PKGViewer $ICON_ARG \
+            --add-data "assets:assets" \
+            --add-data "assets_about.png:." \
+            --add-data "orbis_full.py:." \
+            --collect-submodules PIL \
+            pkgviewer.py
+
+      - name: Zip the .app
+        run: |
+          VER="${{ inputs.version }}"
+          if [ -z "$VER" ]; then
+            VER="v$(grep -oP 'APP_VERSION = \"v\K[0-9.]+' pkgviewer.py)"
+          fi
+          ditto -c -k --sequesterRsrc --keepParent dist/PKGViewer.app \
+            "PKGViewer-macOS-${{ matrix.arch }}-${VER}.zip"
+          ls -la PKGViewer-macOS-*.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PKGViewer-macOS-${{ matrix.runner }}
+          path: PKGViewer-macOS-*.zip
