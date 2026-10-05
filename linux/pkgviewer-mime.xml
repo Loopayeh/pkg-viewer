@@ -29,4 +29,22 @@
     <glob pattern="*.ffpkg"/>
     <glob pattern="*.FFPKG"/>
   </mime-type>
+  <mime-type type="application/x-pkgviewer-nsp">
+    <comment>Switch NSP Package</comment>
+    <icon name="application-x-pkgviewer-nsp"/>
+    <glob pattern="*.nsp"/>
+    <glob pattern="*.NSP"/>
+    <magic priority="80">
+      <match type="string" value="PFS0" offset="0"/>
+    </magic>
+  </mime-type>
+  <mime-type type="application/x-pkgviewer-xci">
+    <comment>Switch XCI Image</comment>
+    <icon name="application-x-pkgviewer-xci"/>
+    <glob pattern="*.xci"/>
+    <glob pattern="*.XCI"/>
+    <magic priority="80">
+      <match type="string" value="HEAD" offset="256"/>
+    </magic>
+  </mime-type>
 </mime-info>

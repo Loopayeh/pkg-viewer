@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""PKG Viewer - PS4 + PS5 (FIH/CNT). Clean dark UI (tkinter) + CLI --info mode."""
+"""PKG Viewer - PS4 + PS5 (FIH/CNT) + Switch (NSP/PFS0, XCI/HFS0). Clean dark UI (tkinter) + CLI --info mode."""
 import io
 import json
 import os
 import struct
 import sys
 
-APP_VERSION = "v1.14.6"  # bump on every release — the updater compares this
+APP_VERSION = "v1.15.0"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -393,6 +393,9 @@ def mkpill(parent, text="", textvariable=None, bg="#2a2a2a", fg="#171717",
 CNT_MAGIC = b"\x7fCNT"
 FIH_MAGIC = b"\x7fFIH"
 PS3_MAGIC = b"\x7fPKG"
+PFS0_MAGIC = b"PFS0"
+HFS0_MAGIC = b"HFS0"
+XCI_MAGIC = b"HEAD"
 
 # PS3 NPDRM (from PyKG / ps3 pkg tools: fixed key, CTR with riv; debug = SHA1-XOR)
 PS3_KEY = bytes.fromhex("2e7b71d7c9c9a14ea3221f188828b8f8")
@@ -611,6 +614,1170 @@ def _param_json_meta(meta):
     return title, extra
 
 
+def _switch_title_from_filename(path):
+    """(title, tid, ver) from Switch naming: Name [TID16][vN]... .nsp/.xci."""
+    import re as _re
+    base = os.path.basename(path)
+    stem, _ = os.path.splitext(base)
+    tid, ver = "", ""
+    m = _re.search(r"\[([0-9A-Fa-f]{16})\]", stem)
+    if m:
+        tid = m.group(1).upper()
+    m = _re.search(r"\[v(\d+)\]", stem, _re.IGNORECASE)
+    if m:
+        ver = m.group(1)
+    title = _re.sub(r"\[[^\]]*\]", "", stem).strip(" -_.")
+    title = _re.sub(r"\s{2,}", " ", title)
+    return title or stem, tid, ver
+
+
+def _parse_cnmt_xml(data):
+    """Minimal *.cnmt.xml -> dict(Id, Version, Type, RequiredSystemVersion,
+    PatchId, contents=[{Type, Id, Size}]). Never raises."""
+    out = {"contents": []}
+    try:
+        import xml.etree.ElementTree as _et
+        root = _et.fromstring(data)
+        def _txt(tag):
+            try:
+                el = root.find(tag)
+                return (el.text or "").strip() if el is not None else ""
+            except Exception:
+                return ""
+        for k in ("Type", "Id", "Version", "RequiredDownloadSystemVersion",
+                  "RequiredSystemVersion", "PatchId", "Digest",
+                  "KeyGenerationMin"):
+            v = _txt(k)
+            if v:
+                out[k] = v
+        for c in root.findall("Content"):
+            try:
+                def _ct(t):
+                    el = c.find(t)
+                    return (el.text or "").strip() if el is not None else ""
+                out["contents"].append({"Type": _ct("Type"), "Id": _ct("Id"),
+                                       "Size": _ct("Size")})
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
+# ---------------- Switch NCA decrypt (prod.keys) -> NACP title + icon ----------------
+# Needs the `cryptography` package (already required for PS3 PKG AES).
+# All helpers never raise: they return None/{} when keys or the package
+# cannot provide decrypted data. No key material is ever stored in results.
+
+_SWITCH_KEYS_CACHE = {"once": False, "keys": None}
+
+NACP_LANGS = ("AmericanEnglish", "BritishEnglish", "Japanese", "French",
+              "German", "LatinAmericanSpanish", "Spanish", "Italian",
+              "Dutch", "CanadianFrench", "Portuguese", "Russian", "Korean",
+              "TraditionalChinese", "SimplifiedChinese", "BrazilianPortuguese")
+
+
+def _find_switch_keys():
+    """Load Switch prod.keys once -> dict or None. Never raises."""
+    try:
+        if _SWITCH_KEYS_CACHE["once"]:
+            return _SWITCH_KEYS_CACHE["keys"]
+        _SWITCH_KEYS_CACHE["once"] = True
+        cands = []
+        try:
+            ev = (os.environ.get("SWITCH_PROD_KEYS")
+                  or os.environ.get("PROD_KEYS") or "")
+            if ev and os.path.isfile(ev):
+                cands.append(ev)
+        except Exception:
+            pass
+        try:
+            here = os.path.dirname(os.path.abspath(__file__))
+            cands.append(os.path.join(here, "prod.keys"))
+            cands.append(os.path.join(os.getcwd(), "prod.keys"))
+        except Exception:
+            pass
+        try:
+            if sys.platform.startswith("win"):
+                base = os.environ.get("APPDATA") or os.path.expanduser("~")
+                cands.append(os.path.join(base, "PKGViewer", "prod.keys"))
+            else:
+                cands.append(os.path.join(os.path.expanduser("~"),
+                                           ".switch", "prod.keys"))
+        except Exception:
+            pass
+        path = next((p for p in cands if p and os.path.isfile(p)), None)
+        if not path:
+            return None
+        raw = {}
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                try:
+                    raw[k.strip()] = bytes.fromhex(v.strip())
+                except Exception:
+                    continue
+        if len(raw.get("header_key", b"")) != 32:
+            return None
+        import re as _re
+        keys = {"header_key": raw["header_key"], "kaek": {},
+                "titlekek": {}}
+        for k, v in raw.items():
+            m = _re.match(r"^key_area_key_(application|ocean|system)_"
+                          r"([0-9a-fA-F]{2})$", k)
+            if m and len(v) == 16:
+                keys["kaek"][(m.group(1), int(m.group(2), 16))] = v
+                continue
+            m = _re.match(r"^titlekek_([0-9a-fA-F]{2})$", k)
+            if m and len(v) == 16:
+                keys["titlekek"][int(m.group(1), 16)] = v
+        if not keys["kaek"]:
+            return None
+        _SWITCH_KEYS_CACHE["keys"] = keys
+        return keys
+    except Exception:
+        return None
+
+
+def _sw_aes_ecb_dec(key, data):
+    from cryptography.hazmat.primitives.ciphers import Cipher as _C
+    from cryptography.hazmat.primitives.ciphers import algorithms as _A
+    from cryptography.hazmat.primitives.ciphers import modes as _M
+    d = _C(_A.AES(key), _M.ECB()).decryptor()
+    return d.update(data) + d.finalize()
+
+
+def _sw_aes_xts_dec(key, tweak, data):
+    from cryptography.hazmat.primitives.ciphers import Cipher as _C
+    from cryptography.hazmat.primitives.ciphers import algorithms as _A
+    from cryptography.hazmat.primitives.ciphers import modes as _M
+    d = _C(_A.AES(key), _M.XTS(tweak)).decryptor()
+    return d.update(data) + d.finalize()
+
+
+def _switch_nca_control_info(nsp_path, nca_abs_off, tik_bytes, keys):
+    """Decrypt a Control NCA -> {title, publisher, display_ver, titles,
+    icon, icon_name} or None. Reads only header + RomFS tables + NACP +
+    one icon (fast). Never raises, never returns key material."""
+    import struct as _st
+    try:
+        if not keys or nca_abs_off < 0:
+            return None
+        with open(nsp_path, "rb") as f:
+            f.seek(nca_abs_off)
+            raw_hdr = f.read(0xC00)
+        if len(raw_hdr) < 0xC00:
+            return None
+        # header: AES-XTS, BE sector tweak (hactool-compatible)
+        full = b"".join(
+            _sw_aes_xts_dec(keys["header_key"], s.to_bytes(16, "big"),
+                            raw_hdr[s * 0x200:(s + 1) * 0x200])
+            for s in range(6))
+        if full[0x200:0x204] not in (b"NCA3", b"NCA2"):
+            return None
+        if full[0x205] != 2:  # not a Control NCA
+            return None
+        crypto = max(full[0x206], full[0x220])
+        if crypto:
+            crypto -= 1
+        rights = full[0x230:0x240]
+        if any(rights):
+            if not tik_bytes or len(tik_bytes) < 0x1CF:
+                return None
+            tk = keys["titlekek"].get(crypto)
+            if tk is None:
+                return None
+            sec_key = _sw_aes_ecb_dec(tk, tik_bytes[0x1BF:0x1CF])
+        else:
+            kaek_ind = full[0x207]
+            kind = {0: "application", 1: "ocean",
+                    2: "system"}.get(kaek_ind, "application")
+            kak = keys["kaek"].get((kind, crypto))
+            if kak is None:
+                return None
+            area = _sw_aes_ecb_dec(kak, full[0x300:0x340])
+            sec_key = area[32:48]
+        from cryptography.hazmat.primitives.ciphers import Cipher as _C
+        from cryptography.hazmat.primitives.ciphers import algorithms as _A
+        from cryptography.hazmat.primitives.ciphers import modes as _M
+
+        def _sec_read(f, secoff, iv_int, rel_off, size):
+            if size <= 0 or size > 16_000_000:
+                return b""
+            lo = rel_off & ~0xF
+            nblocks = ((rel_off - lo) + size + 15) // 16
+            c0 = iv_int + (lo >> 4)
+            e = _C(_A.AES(sec_key), _M.ECB()).encryptor()
+            ks = e.update(b"".join((c0 + i).to_bytes(16, "big")
+                                   for i in range(nblocks))) + e.finalize()
+            f.seek(secoff + lo)
+            ct = f.read(nblocks * 16)
+            if len(ct) < nblocks * 16:
+                return b""
+            pt = bytes(a ^ b for a, b in zip(ct, ks))
+            skip = rel_off - lo
+            return pt[skip:skip + size]
+
+        with open(nsp_path, "rb") as f:
+            for i in range(4):
+                start, _end = _st.unpack_from("<II", full, 0x240 + i * 16)
+                if not start:
+                    continue
+                fsh = full[0x400 + i * 0x200:0x400 + (i + 1) * 0x200]
+                if len(fsh) < 0x200 or fsh[3] != 3 or fsh[4] != 3:
+                    continue  # need RomFS (3) + AES-CTR (3)
+                if fsh[0x8:0xC] != b"IVFC":
+                    continue
+                secoff_rel = start * 0x200
+                secoff = nca_abs_off + secoff_rel
+                sctr = fsh[0x140:0x148]
+                iv_int = int.from_bytes(
+                    bytes(reversed(sctr))
+                    + (secoff_rel >> 4).to_bytes(8, "big"), "big")
+                romfs_rel = _st.unpack_from("<Q", fsh,
+                                            0x8 + 0x10 + 5 * 0x18)[0]
+                if romfs_rel > 2_000_000_000:
+                    continue
+                rh = _sec_read(f, secoff, iv_int, romfs_rel, 0x50)
+                if len(rh) < 0x50:
+                    continue
+                vals = _st.unpack("<10Q", rh)
+                if vals[0] != 0x50:
+                    continue
+                _hs, _dho, _dhs, dmo, dms, _fho, _fhs, fmo, fms, data_off = vals
+                if dms > 1_000_000 or fms > 5_000_000:
+                    continue
+                dirs = _sec_read(f, secoff, iv_int, romfs_rel + dmo, dms)
+                files = _sec_read(f, secoff, iv_int, romfs_rel + fmo, fms)
+                if len(dirs) < 24 or not files:
+                    continue
+                # walk root + one subdir level: [(path, data_off, size)]
+                found = []
+
+                def _files_at(tbl_off):
+                    out, o, seen = [], tbl_off, set()
+                    while (o != 0xFFFFFFFF and o not in seen
+                           and o + 32 <= len(files)):
+                        seen.add(o)
+                        try:
+                            _pa, sib, fo, fs, _h, nl = _st.unpack_from(
+                                "<IIQQII", files, o)
+                        except Exception:
+                            break
+                        if nl > 512 or o + 32 + nl > len(files):
+                            break
+                        try:
+                            nm = files[o + 32:o + 32 + nl].decode("utf-8")
+                        except Exception:
+                            break
+                        if fo + fs < fo:  # overflow guard
+                            break
+                        out.append((nm, fo, fs))
+                        o = sib
+                    return out
+
+                try:
+                    root_file = _st.unpack_from("<I", dirs, 12)[0]
+                except Exception:
+                    continue
+                for nm, fo, fs in _files_at(root_file):
+                    found.append(("", nm, fo, fs))
+                # one subdir level (some titles nest control data)
+                try:
+                    _pa, _sib, child, _fi, _h, _nl = _st.unpack_from(
+                        "<6I", dirs, 0)
+                except Exception:
+                    child = 0xFFFFFFFF
+                seen_d, stack = set(), [child]
+                while stack:
+                    do = stack.pop()
+                    if do == 0xFFFFFFFF or do in seen_d or do + 24 > len(dirs):
+                        continue
+                    seen_d.add(do)
+                    try:
+                        _p, sib, ch, fi, _hh, nll = _st.unpack_from(
+                            "<6I", dirs, do)
+                        dn = dirs[do + 24:do + 24 + nll].decode("utf-8")
+                    except Exception:
+                        continue
+                    for nm, fo, fs in _files_at(fi):
+                        found.append((dn, nm, fo, fs))
+                    if ch != 0xFFFFFFFF:
+                        stack.append(ch)
+                    if sib != 0xFFFFFFFF:
+                        stack.append(sib)
+                low = [(d, n, fo, fs) for d, n, fo, fs in found]
+                nacp_hit = next((x for x in low
+                                 if x[1].lower() == "control.nacp"), None)
+                if nacp_hit is None:
+                    continue
+                _dd, _nn, nacp_off, nacp_size = nacp_hit
+                nacp = _sec_read(f, secoff, iv_int,
+                                 romfs_rel + data_off + nacp_off,
+                                 min(nacp_size, 0x4000))
+                if len(nacp) < 0x3080:
+                    continue
+                titles, pubs = {}, {}
+                for li in range(16):
+                    try:
+                        nm = nacp[li * 0x300:li * 0x300 + 0x200
+                                  ].split(b"\x00")[0].decode("utf-8").strip()
+                        pb = nacp[li * 0x300 + 0x200:li * 0x300 + 0x300
+                                  ].split(b"\x00")[0].decode("utf-8").strip()
+                    except Exception:
+                        continue
+                    if nm:
+                        titles[NACP_LANGS[li]] = nm
+                    if pb:
+                        pubs[NACP_LANGS[li]] = pb
+                if not titles:
+                    continue
+                try:
+                    disp = nacp[0x3060:0x3070].split(b"\x00")[0
+                             ].decode("utf-8").strip()
+                except Exception:
+                    disp = ""
+                icons = [(d, n, fo, fs) for d, n, fo, fs in low
+                         if n.lower().startswith("icon_")
+                         and n.lower().endswith(".dat")
+                         and 1024 <= fs <= 8_000_000]
+                icon_bytes, icon_name = b"", ""
+                for pref in ("icon_AmericanEnglish.dat",
+                             "icon_BritishEnglish.dat",
+                             "icon_Japanese.dat"):
+                    hit = next((x for x in icons if x[1] == pref), None)
+                    if hit is not None:
+                        icons = [hit]
+                        break
+                if icons:
+                    _dd, _nn, ioff, isz = icons[0]
+                    icon_bytes = _sec_read(f, secoff, iv_int,
+                                           romfs_rel + data_off + ioff, isz)
+                    if icon_bytes[:2] != b"\xff\xd8":
+                        icon_bytes = b""
+                    else:
+                        icon_name = icons[0][1]
+                return {"titles": titles, "publisher": pubs,
+                        "display_ver": disp,
+                        "icon": icon_bytes, "icon_name": icon_name}
+        return None
+    except Exception:
+        return None
+
+
+def _switch_decrypt_nca_header(nsp_path, nca_abs_off, keys):
+    """AES-XTS (BE sector tweak) decrypt an NCA header -> 0xC00 bytes or None."""
+    import struct as _st
+    try:
+        if not keys or nca_abs_off is None or nca_abs_off < 0:
+            return None
+        with open(nsp_path, "rb") as f:
+            f.seek(nca_abs_off)
+            raw = f.read(0xC00)
+        if len(raw) < 0xC00:
+            return None
+        full = b"".join(
+            _sw_aes_xts_dec(keys["header_key"], s.to_bytes(16, "big"),
+                            raw[s * 0x200:(s + 1) * 0x200])
+            for s in range(6))
+        if full[0x200:0x204] not in (b"NCA3", b"NCA2"):
+            return None
+        return full
+    except Exception:
+        return None
+
+
+def _switch_nca_section_key(full, tik_bytes, keys):
+    """Section data key for an NCA: titlekey (rights) or key-area [2].
+    Returns bytes or None. Never raises."""
+    try:
+        crypto = max(full[0x206], full[0x220])
+        if crypto:
+            crypto -= 1
+        rights = full[0x230:0x240]
+        if any(rights):
+            if not tik_bytes or len(tik_bytes) < 0x1CF:
+                return None
+            tk = keys["titlekek"].get(crypto)
+            if tk is None:
+                return None
+            return _sw_aes_ecb_dec(tk, tik_bytes[0x1BF:0x1CF])
+        kaek_ind = full[0x207]
+        kind = {0: "application", 1: "ocean",
+                2: "system"}.get(kaek_ind, "application")
+        kak = keys["kaek"].get((kind, crypto))
+        if kak is None:
+            return None
+        return _sw_aes_ecb_dec(kak, full[0x300:0x340])[32:48]
+    except Exception:
+        return None
+
+
+def _switch_ctr_reader(sec_key, secoff_rel):
+    """Range reader for an AES-CTR NCA section.
+
+    read(f, secoff_abs, rel_off, size, sctr) -> bytes (b"" on failure).
+    Counter base = section NCA-relative offset (hactool-compatible).
+    Never raises."""
+
+    def _read(f, secoff_abs, rel_off, size, sctr):
+        try:
+            from cryptography.hazmat.primitives.ciphers import Cipher as _C
+            from cryptography.hazmat.primitives.ciphers import algorithms as _A
+            from cryptography.hazmat.primitives.ciphers import modes as _M
+            if size <= 0 or size > 16_000_000:
+                return b""
+            base = int.from_bytes(
+                bytes(reversed(sctr))
+                + (secoff_rel >> 4).to_bytes(8, "big"), "big")
+            lo = rel_off & ~0xF
+            nblocks = ((rel_off - lo) + size + 15) // 16
+            c0 = base + (lo >> 4)
+            e = _C(_A.AES(sec_key), _M.ECB()).encryptor()
+            ks = e.update(b"".join((c0 + i).to_bytes(16, "big")
+                                   for i in range(nblocks))) + e.finalize()
+            f.seek(secoff_abs + lo)
+            ct = f.read(nblocks * 16)
+            if len(ct) < nblocks * 16:
+                return b""
+            pt = bytes(a ^ b for a, b in zip(ct, ks))
+            skip = rel_off - lo
+            return pt[skip:skip + size]
+        except Exception:
+            return b""
+
+    return _read
+
+
+_SWITCH_NCA_TYPES = {0: "Program", 1: "Meta", 2: "Control", 3: "Manual",
+                     4: "Data", 5: "PublicData"}
+_SWITCH_CNMT_TYPES = {0x01: "System", 0x02: "SystemData",
+                      0x03: "SystemUpdate", 0x80: "Application",
+                      0x81: "Patch", 0x82: "AddOnContent"}
+
+
+def _switch_read_cnmt_bin(nsp_path, meta_abs_off, tik_bytes, keys):
+    """Parse binary CNMT from a Meta (*.cnmt.nca) NCA -> dict or None.
+    {tid, ver, type, sysver, contents: [{nca_id, type}]}. Never raises."""
+    import struct as _st
+    try:
+        full = _switch_decrypt_nca_header(nsp_path, meta_abs_off, keys)
+        if full is None or full[0x205] != 1:
+            return None
+        sec_key = _switch_nca_section_key(full, tik_bytes, keys)
+        if sec_key is None:
+            return None
+        with open(nsp_path, "rb") as f:
+            for i in range(4):
+                start, _end = _st.unpack_from("<II", full, 0x240 + i * 16)
+                if not start:
+                    continue
+                fsh = full[0x400 + i * 0x200:0x400 + (i + 1) * 0x200]
+                if len(fsh) < 0x200 or fsh[3] != 2:
+                    continue  # need PFS0 section
+                enc = fsh[4]
+                if enc not in (1, 3):
+                    continue
+                secoff_rel = start * 0x200
+                secoff = meta_abs_off + secoff_rel
+                poff, psz = _st.unpack_from("<QQ", fsh, 0x8 + 0x38)
+                if poff > 64_000_000 or psz > 64_000_000 or psz < 16:
+                    continue
+
+                def _raw(soff, size):
+                    f.seek(secoff + soff)
+                    return f.read(size)
+
+                if enc == 3:
+                    sctr = fsh[0x140:0x148]
+                    read = _switch_ctr_reader(sec_key, secoff_rel)
+
+                    def _get(soff, size):
+                        return read(f, secoff, soff, size, sctr)
+                else:
+                    def _get(soff, size):
+                        return _raw(soff, size)
+
+                hdr = _get(poff, 16)
+                if len(hdr) < 16 or hdr[:4] != b"PFS0":
+                    continue
+                num, sts = _st.unpack_from("<II", hdr, 4)
+                if not (1 <= num <= 64) or sts > 1_000_000:
+                    continue
+                tab = _get(poff + 16, num * 24)
+                stb = _get(poff + 16 + num * 24, sts)
+                if len(tab) < num * 24 or len(stb) < sts:
+                    continue
+                base = poff + 16 + num * 24 + sts
+                for j in range(num):
+                    try:
+                        off, sz, soff, _p = _st.unpack_from("<QQII", tab,
+                                                           j * 24)
+                    except Exception:
+                        continue
+                    if soff >= len(stb):
+                        continue
+                    en = stb.find(b"\x00", soff)
+                    if en < 0:
+                        continue
+                    try:
+                        nm = stb[soff:en].decode("utf-8", errors="replace")
+                    except Exception:
+                        continue
+                    if not nm.lower().endswith(".cnmt") or sz > 100_000:
+                        continue
+                    data = _get(base + off, min(sz, 0x2000))
+                    if len(data) < 0x20:
+                        continue
+                    tid, ver = _st.unpack_from("<QI", data, 0)
+                    if not tid:
+                        continue
+                    ctype = data[0xC]
+                    toff, ccnt, mcnt = _st.unpack_from("<HHH", data, 0xE)
+                    try:
+                        sysver = _st.unpack_from("<I", data, 0x18)[0]
+                    except Exception:
+                        sysver = 0
+                    if ccnt > 128:
+                        continue
+                    contents = []
+                    for k in range(ccnt):
+                        bo = 0x20 + toff + k * 0x38
+                        if bo + 0x38 > len(data):
+                            # records may extend past first read; fetch more
+                            data = _get(base + off,
+                                        min(sz, bo + mcnt * 0x10 + 0x38))
+                            if bo + 0x38 > len(data):
+                                break
+                        try:
+                            nid = data[bo + 0x20:bo + 0x30].hex()
+                            ctp = data[bo + 0x36]
+                        except Exception:
+                            break
+                        contents.append({"nca_id": nid, "type": ctp})
+                    return {"tid": "%016X" % tid, "ver": str(ver),
+                            "type": _SWITCH_CNMT_TYPES.get(
+                                ctype, "Type %#x" % ctype),
+                            "sysver": str(sysver) if sysver else "",
+                            "contents": contents}
+        return None
+    except Exception:
+        return None
+
+
+def _switch_decode_fw(v):
+    """HOS packed system version (major<<26|minor<<20|micro<<16) -> '16.0.3'.
+
+    Used for NSP RequiredSystemVersion / CNMT required versions.
+    Returns "" on any doubt (caller falls back to the raw number)."""
+    try:
+        n = v if isinstance(v, int) else int(str(v).strip(), 0)
+        if not (0 < n < 0xFFFFFFFF):
+            return ""
+        maj, mno, mic = (n >> 26) & 0x3F, (n >> 20) & 0x3F, (n >> 16) & 0xF
+        if not (1 <= maj <= 40):
+            return ""
+        return f"{maj}.{mno}.{mic}"
+    except Exception:
+        return ""
+
+
+def _switch_nca_detail(nsp_path, nca_abs_off, keys):
+    """Per-NCA facts from its header: {ctype, crypto, rights} or None.
+
+    crypto = master-key revision index (matches prod.keys *_0X suffixes).
+    Needs header_key only for the header itself. Never raises."""
+    try:
+        full = _switch_decrypt_nca_header(nsp_path, nca_abs_off, keys)
+        if full is None:
+            return None
+        crypto = max(full[0x206], full[0x220])
+        if crypto:
+            crypto -= 1
+        return {"ctype": full[0x205], "crypto": crypto,
+                "rights": bool(any(full[0x230:0x240]))}
+    except Exception:
+        return None
+
+
+def _switch_tag_control(e):
+    """Set an entry's codec base to Control, preserving any ' · suffix'."""
+    try:
+        cur = str(e.get("codec") or "")
+        sfx = cur.split(" · ", 1)[1] if " · " in cur else ""
+        e["codec"] = "Control" + (" · " + sfx if sfx else "")
+    except Exception:
+        pass
+
+
+def _parse_pfs0_entries(f, size):
+    """PFS0 at offset 0 -> (entries, strtab, base) or (None, err). Never raises."""
+    try:
+        f.seek(0)
+        hdr = f.read(16)
+        if len(hdr) < 16 or hdr[:4] != PFS0_MAGIC:
+            return None, "not PFS0"
+        import struct as _st
+        num, str_size, _rsv = _st.unpack_from("<III", hdr, 4)
+        if not (1 <= num <= 100000):
+            return None, f"bad file count {num}"
+        if str_size > 20_000_000:
+            return None, "string table too large"
+        raw = f.read(num * 24)
+        if len(raw) < num * 24:
+            return None, "truncated file table"
+        strtab = f.read(str_size)
+        if len(strtab) < str_size:
+            return None, "truncated string table"
+        base = 16 + num * 24 + str_size
+        if base > size:
+            return None, "header beyond EOF"
+        items = []
+        for i in range(num):
+            off, sz, soff, _pad = _st.unpack_from("<QQII", raw, i * 24)
+            if soff >= len(strtab):
+                return None, f"bad name offset #{i}"
+            end = strtab.find(b"\x00", soff)
+            if end < 0:
+                return None, f"unterminated name #{i}"
+            try:
+                name = strtab[soff:end].decode("utf-8", errors="replace")
+            except Exception:
+                name = ""
+            if off + sz > size - base + (1 << 20):
+                # allow slight overrun (padding) but not wild values
+                if off > size:
+                    return None, f"bad data offset #{i}"
+            items.append({"off": off, "size": sz, "name": name})
+        return (items, strtab, base), ""
+    except Exception as e:
+        return None, str(e)
+
+
+def parse_nsp(path):
+    """Nintendo Switch NSP (PFS0): file list + TitleID/version from name and
+    *.cnmt.xml. With prod.keys (PKGViewer folder): official NACP title +
+    icon from the Control NCA. Raw extraction needs no keys. Never raises."""
+    import re as _re
+    try:
+        size = os.path.getsize(path)
+    except OSError as e:
+        return {"error": str(e)}
+    try:
+        with open(path, "rb") as f:
+            parsed, err = _parse_pfs0_entries(f, size)
+            if parsed is None:
+                return {"error": f"not a PFS0/NSP ({err})"}
+            items, _strtab, base = parsed
+            ents = []
+            for i, it in enumerate(items):
+                ents.append({"id": i, "name": it["name"], "size": it["size"],
+                             "off": base + it["off"],
+                             "abs_off": base + it["off"]})
+            # cnmt.xml (plaintext, <100KB): title/version/type source
+            cnmt = {}
+            for e in ents:
+                if e["name"].lower().endswith(".cnmt.xml") and 0 < e["size"] < 200_000:
+                    try:
+                        f.seek(e["abs_off"])
+                        cnmt = _parse_cnmt_xml(f.read(e["size"]))
+                        cnmt["_file"] = e["name"]
+                    except Exception:
+                        cnmt = {}
+                    break
+            nca_type = {}
+            for c in cnmt.get("contents", []):
+                try:
+                    if c.get("Id"):
+                        nca_type[str(c["Id"]).lower()] = c.get("Type", "")
+                except Exception:
+                    continue
+            for e in ents:
+                try:
+                    ln = e["name"].lower()
+                    if ln.endswith(".cnmt.nca"):
+                        _cid = os.path.basename(ln)[:-len(".cnmt.nca")]
+                        _t = nca_type.get(_cid, "")
+                        if _t:
+                            e["codec"] = _t
+                    elif ln.endswith(".nca"):
+                        _cid = os.path.splitext(os.path.basename(ln))[0]
+                        _t = nca_type.get(_cid, "")
+                        if _t:
+                            e["codec"] = _t
+                    elif ln.endswith((".tik", ".cert")):
+                        e["codec"] = "ticket" if ln.endswith(".tik") else "cert"
+                except Exception:
+                    pass
+            fname_title, fname_tid, fname_ver = _switch_title_from_filename(path)
+            # prod.keys + ticket bytes once (titlekey-crypto NCAs need both)
+            _skeys, _tikb = None, None
+            try:
+                _skeys = _find_switch_keys()
+            except Exception:
+                _skeys = None
+            if _skeys is not None:
+                try:
+                    _tik = next((e for e in ents
+                                 if e["name"].lower().endswith(".tik")
+                                 and 0 < e["size"] <= 8192), None)
+                    if _tik is not None:
+                        f.seek(_tik["abs_off"])
+                        _tikb = f.read(_tik["size"])
+                except Exception:
+                    _tikb = None
+            # binary CNMT fallback when *.cnmt.xml is absent (needs keys):
+            # Meta NCA holds "<title>.cnmt" with id/version/type + contents.
+            _cnmt_bin = None
+            if not cnmt.get("Id") and _skeys is not None:
+                try:
+                    _meta = next((e for e in ents
+                                  if e["name"].lower().endswith(".cnmt.nca")),
+                                 None)
+                    if _meta is not None:
+                        _cnmt_bin = _switch_read_cnmt_bin(
+                            path, _meta["abs_off"], _tikb, _skeys)
+                except Exception:
+                    _cnmt_bin = None
+            _hdr_types = {}
+            if _skeys is not None:
+                # Authoritative per-NCA types from NCA headers (cheap: 3KB
+                # XTS each) + crypto facts for the Files tab. CNMT record
+                # type bytes are NOT used (unreliable across titles).
+                for e in ents:
+                    try:
+                        ln = e["name"].lower()
+                        if ln.endswith(".cnmt.nca"):
+                            _cid = os.path.basename(ln)[:-len(".cnmt.nca")]
+                        elif ln.endswith(".nca"):
+                            _cid = os.path.splitext(os.path.basename(ln))[0]
+                        else:
+                            continue
+                        _det = _switch_nca_detail(path, e["abs_off"], _skeys)
+                        if _det is None:
+                            continue
+                        e["nca_detail"] = (
+                            "keygen %d, %s crypto" % (
+                                _det["crypto"],
+                                "titlekey" if _det["rights"] else "standard"))
+                        _sfx = ("tk" if _det["rights"]
+                                else "k%d" % _det["crypto"])
+                        _htn = _SWITCH_NCA_TYPES.get(_det["ctype"], "NCA")
+                        _hdr_types[_cid] = _htn
+                        if not e.get("codec"):
+                            # xml already tagged precise names (LegalInformation
+                            # etc.); headers fill the rest
+                            e["codec"] = _htn
+                        if " · " not in str(e.get("codec")):
+                            e["codec"] = "%s · %s" % (e["codec"], _sfx)
+                    except Exception:
+                        continue
+            tid = ""
+            try:
+                tid = str(cnmt.get("Id", "") or "").strip()
+                if tid.lower().startswith("0x"):
+                    tid = tid[2:].upper()
+                else:
+                    tid = tid.upper()
+            except Exception:
+                tid = ""
+            if not tid and _cnmt_bin:
+                tid = str(_cnmt_bin.get("tid", "") or "").upper()
+            if not tid:
+                tid = fname_tid
+            ver = str(cnmt.get("Version", "") or "").strip()
+            if not ver and _cnmt_bin:
+                ver = str(_cnmt_bin.get("ver", "") or "").strip()
+            if not ver:
+                ver = fname_ver
+            ctype = str(cnmt.get("Type", "") or "").strip()
+            if not ctype and _cnmt_bin:
+                ctype = str(_cnmt_bin.get("type", "") or "").strip()
+            ctype = ctype or "-"
+            sysver = str(cnmt.get("RequiredSystemVersion", "") or "").strip()
+            if not sysver and _cnmt_bin:
+                sysver = str(_cnmt_bin.get("sysver", "") or "").strip()
+            sysver = sysver or "-"
+            if sysver == "0":
+                sysver = "-"
+            _sysrow = _switch_decode_fw(sysver) if sysver != "-" else ""
+            _sysrow = _sysrow or sysver
+            has_tik = any(e["name"].lower().endswith(".tik") for e in ents)
+            has_cert = any(e["name"].lower().endswith(".cert") for e in ents)
+            n_nca = sum(1 for e in ents if e["name"].lower().endswith(".nca"))
+            content_kinds = sorted({c.get("Type", "") for c in cnmt.get("contents", []) if c.get("Type")})
+            if not content_kinds and _hdr_types:
+                try:
+                    content_kinds = sorted(set(_hdr_types.values()))
+                except Exception:
+                    content_kinds = []
+            rows = [("Platform", "Nintendo Switch (NSP/PFS0)"),
+                    ("Title ID", tid or "-"),
+                    ("Version", f"v{ver}" if ver not in ("", "-") else "-"),
+                    ("Type", ctype),
+                    ("Required System", _sysrow),
+                    ("Contents", (", ".join(content_kinds) if content_kinds
+                                   else f"{n_nca} NCA") or "-"),
+                    ("Ticket/Cert", f"{'tik+' if has_tik else ''}{'cert' if has_cert else ''}".strip("+") or "-"),
+                    ("Size", fmt_size(size)),
+                    ("Entries", str(len(ents)))]
+            title = fname_title or os.path.basename(path)
+            meta = {"TitleId": tid, "Version": ver, "Kind": ctype,
+                    "RequiredSystemVersion": sysver, "cnmt_file": cnmt.get("_file", ""),
+                    "cnmt": cnmt, "nca_count": n_nca,
+                    "has_ticket": has_tik, "has_cert": has_cert}
+            if _cnmt_bin:
+                meta["cnmt_bin"] = {"tid": _cnmt_bin.get("tid"),
+                                    "ver": _cnmt_bin.get("ver"),
+                                    "type": _cnmt_bin.get("type"),
+                                    "contents": _cnmt_bin.get("contents")}
+                if not meta["cnmt_file"]:
+                    meta["cnmt_file"] = "(binary CNMT in Meta NCA)"
+            icon_entry = ""
+            # NACP official title + icon via Control NCA (needs prod.keys;
+            # silent fallback to filename info when keys are absent).
+            try:
+                if _skeys is not None:
+                    _ctrl = next((e for e in ents
+                                  if str(e.get("codec") or "").split(" · ")[0] == "Control"
+                                  and e["name"].lower().endswith(".nca")),
+                                 None)
+                    if _ctrl is None:
+                        # header scan: 0xC00 XTS per NCA, cheap even on huge NSPs
+                        # (CNMT record type bytes are not trusted for this)
+                        for e in ents:
+                            try:
+                                if not e["name"].lower().endswith(".nca"):
+                                    continue
+                                _h = _switch_decrypt_nca_header(
+                                    path, e["abs_off"], _skeys)
+                            except Exception:
+                                _h = None
+                            if _h is not None and _h[0x205] == 2:
+                                _ctrl = e
+                                _switch_tag_control(e)
+                                break
+                    if _ctrl is not None:
+                        _nacp = _switch_nca_control_info(
+                            path, _ctrl["abs_off"], _tikb, _skeys)
+                        if _nacp:
+                            _titles = _nacp.get("titles") or {}
+                            _official = (_titles.get("AmericanEnglish")
+                                         or _titles.get("BritishEnglish")
+                                         or next(iter(_titles.values()), ""))
+                            if _official:
+                                title = _official
+                            _pubs = _nacp.get("publisher") or {}
+                            _pub = (_pubs.get("AmericanEnglish")
+                                    or _pubs.get("BritishEnglish")
+                                    or next(iter(_pubs.values()), ""))
+                            if _pub:
+                                rows.insert(2, ("Publisher", _pub))
+                            if _nacp.get("display_ver"):
+                                rows.insert(3, ("Display Version",
+                                               _nacp["display_ver"]))
+                                # human version wins: Version = display
+                                # (1.2.1), raw title version -> own row
+                                try:
+                                    _dv = str(_nacp["display_ver"]).strip()
+                                    _dvv = _dv[1:] if _dv[:1].lower() == "v" else _dv
+                                    for _vi, (_vk, _vv) in enumerate(rows):
+                                        if _vk == "Version":
+                                            rows[_vi] = ("Version", "v" + _dvv)
+                                            try:
+                                                _rawv = int(str(ver).strip())
+                                                if _rawv:
+                                                    rows.insert(_vi + 1, (
+                                                        "Title Version",
+                                                        "%d (%#x)" % (_rawv, _rawv)))
+                                            except Exception:
+                                                pass
+                                            break
+                                    ver = _dvv
+                                except Exception:
+                                    pass
+                            meta["nacp_titles"] = _titles
+                            meta["nacp_display_ver"] = _nacp.get("display_ver", "")
+                            if _nacp.get("icon"):
+                                _inm = "icon.jpg"
+                                ents.append({"id": len(ents), "name": _inm,
+                                             "size": len(_nacp["icon"]),
+                                             "off": -2, "abs_off": -2,
+                                             "cached": bytes(_nacp["icon"]),
+                                             "codec": "JPEG"})
+                                rows[-1] = ("Entries", str(len(ents)))
+                                icon_entry = _inm
+                else:
+                    rows.append(("NACP Title/Icon",
+                                 "needs prod.keys (PKGViewer folder)"))
+            except Exception:
+                pass
+            return {"ok": True, "kind": "nsp", "path": path, "size": size,
+                    "title": title, "rows": rows, "entries": ents,
+                    "meta": meta, "icon_entry": icon_entry,
+                    "patch_tid": tid, "own_ver": ver}
+    except Exception as e:
+        return {"error": f"NSP parse failed: {e}"}
+
+
+def _parse_hfs0_at(f, hfs0_off, size, prefix=""):
+    """HFS0 partition at hfs0_off -> entries [{name, size, abs_off}]. Minimal,
+    validated; [] on any doubt. Never raises."""
+    import struct as _st
+    try:
+        if hfs0_off < 0 or hfs0_off + 16 > size:
+            return []
+        f.seek(hfs0_off)
+        hdr = f.read(16)
+        if len(hdr) < 16 or hdr[:4] != HFS0_MAGIC:
+            return []
+        num, str_size, _rsv = _st.unpack_from("<III", hdr, 4)
+        if not (0 <= num <= 100000) or str_size > 20_000_000:
+            return []
+        raw = f.read(num * 64)
+        if len(raw) < num * 64:
+            return []
+        strtab = f.read(str_size)
+        if len(strtab) < str_size:
+            return []
+        # string table is 00-padded to media-unit boundary; raw data follows
+        data_start = hfs0_off + 16 + num * 64 + len(strtab)
+        out = []
+        for i in range(num):
+            try:
+                off, sz, name_off = _st.unpack_from("<QQI", raw, i * 64)
+            except Exception:
+                continue
+            if name_off >= len(strtab):
+                continue
+            end = strtab.find(b"\x00", name_off)
+            if end < 0:
+                continue
+            try:
+                name = strtab[name_off:end].decode("utf-8", errors="replace")
+            except Exception:
+                continue
+            if not name or off + sz > size:
+                # keep listing even if slightly out of range? no — skip wild
+                if off < 0 or off > size:
+                    continue
+            full = f"{prefix}/{name}" if prefix else name
+            out.append({"_off": off, "_size": sz, "_name": name,
+                        "_hfs0_data": data_start, "_full": full})
+        # resolve absolute offsets
+        res = []
+        for j, e in enumerate(out):
+            res.append({"id": j, "name": e["_full"], "size": e["_size"],
+                        "off": e["_hfs0_data"] + e["_off"],
+                        "abs_off": e["_hfs0_data"] + e["_off"]})
+        return res
+    except Exception:
+        return []
+
+
+def parse_xci(path):
+    """Nintendo Switch XCI (gamecard): root HFS0 -> update/normal/secure/logo
+    partitions, each an HFS0 file list. Bodies (NCA) stay encrypted.
+    Never raises."""
+    import struct as _st
+    try:
+        size = os.path.getsize(path)
+    except OSError as e:
+        return {"error": str(e)}
+    try:
+        with open(path, "rb") as f:
+            f.seek(0)
+            head = f.read(0x200)
+            if len(head) < 0x200 or head[0x100:0x104] != XCI_MAGIC:
+                return {"error": "not an XCI (missing HEAD magic at 0x100)"}
+            try:
+                hfs0_off, hfs0_size = _st.unpack_from("<QQ", head, 0x130)
+            except Exception:
+                hfs0_off, hfs0_size = 0, 0
+            if not hfs0_off or hfs0_off + 16 > size:
+                # some dumps place root HFS0 at fixed 0x10000
+                hfs0_off = 0x10000 if size > 0x10010 else 0
+            root = _parse_hfs0_at(f, hfs0_off, size)
+            parts = [e["name"] for e in root] or []
+            # root entries point to sub-partitions (raw blobs); parse each
+            ents, data_bases = [], {}
+            for r in root:
+                try:
+                    data_bases[r["name"]] = r["abs_off"]
+                except Exception:
+                    continue
+            eid = 0
+            for pname in ("update", "normal", "secure", "logo"):
+                if pname not in data_bases:
+                    continue
+                sub = _parse_hfs0_at(f, data_bases[pname], size, prefix=pname)
+                for s in sub:
+                    s["id"] = eid
+                    eid += 1
+                    # tag NCAs like NSP
+                    try:
+                        if s["name"].lower().endswith(".nca"):
+                            s["codec"] = "NCA"
+                    except Exception:
+                        pass
+                    ents.append(s)
+            if not ents:
+                # header-only view (partitions unreadable): still show something
+                fname_title, fname_tid, fname_ver = _switch_title_from_filename(path)
+                rows = [("Platform", "Nintendo Switch (XCI/Gamecard)"),
+                        ("Title ID", fname_tid or "-"),
+                        ("Version", f"v{fname_ver}" if fname_ver else "-"),
+                        ("Root partitions", ", ".join(parts) or "-"),
+                        ("Size", fmt_size(size)),
+                        ("Note", "partition data unreadable (encrypted/header-only)")]
+                return {"ok": True, "kind": "xci", "path": path, "size": size,
+                        "title": fname_title, "rows": rows, "entries": [],
+                        "meta": {"partitions": parts}, "icon_entry": "",
+                        "patch_tid": fname_tid, "own_ver": fname_ver}
+            fname_title, fname_tid, fname_ver = _switch_title_from_filename(path)
+            try:
+                _ct = head[0x10D] if len(head) > 0x10D else 0
+            except Exception:
+                _ct = 0
+            _cart = {0xFA: "1GB", 0xF8: "2GB", 0xF0: "4GB",
+                     0xE0: "8GB", 0xE1: "16GB", 0xE2: "32GB"}.get(_ct, "")
+            rows = [("Platform", "Nintendo Switch (XCI/Gamecard)"),
+                    ("Title ID", fname_tid or "-"),
+                    ("Version", f"v{fname_ver}" if fname_ver else "-")]
+            if _cart:
+                rows.append(("Cartridge", _cart))
+            rows += [("Partitions", ", ".join(sorted(data_bases.keys())) or "-"),
+                     ("Size", fmt_size(size)),
+                     ("Entries", str(len(ents)))]
+            title = fname_title or os.path.basename(path)
+            meta = {"partitions": sorted(data_bases.keys())}
+            if _cart:
+                meta["cartridge"] = _cart
+            icon_entry = ""
+            # base-title metadata from secure/*.cnmt.nca (binary CNMT) +
+            # official title/icon from the secure Control NCA (needs keys)
+            try:
+                _skeys = _find_switch_keys()
+            except Exception:
+                _skeys = None
+            if _skeys is not None:
+                try:
+                    _secm = [e for e in ents
+                             if e["name"].lower().startswith("secure/")
+                             and e["name"].lower().endswith(".cnmt.nca")]
+                    _base_bin = None
+                    for _me in _secm[:1]:
+                        try:
+                            _base_bin = _switch_read_cnmt_bin(
+                                path, _me["abs_off"], None, _skeys)
+                        except Exception:
+                            _base_bin = None
+                        if _base_bin:
+                            break
+                    if _base_bin:
+                        try:
+                            rows[1] = ("Title ID",
+                                       str(_base_bin.get("tid", "") or "").upper()
+                                       or fname_tid or "-")
+                            rows.insert(3, ("Type", _base_bin.get("type", "-")))
+                            meta["cnmt_bin"] = {
+                                "tid": _base_bin.get("tid"),
+                                "ver": _base_bin.get("ver"),
+                                "type": _base_bin.get("type")}
+                        except Exception:
+                            pass
+                    # per-NCA facts for secure partition (few files, NCA
+                    # headers are authoritative) + Control discovery
+                    _ctrl = None
+                    for e in ents:
+                        try:
+                            if not (e["name"].lower().startswith("secure/")
+                                    and e["name"].lower().endswith(".nca")):
+                                continue
+                            _det = _switch_nca_detail(path, e["abs_off"], _skeys)
+                            if _det is not None:
+                                e["nca_detail"] = (
+                                    "keygen %d, %s crypto" % (
+                                        _det["crypto"],
+                                        "titlekey" if _det["rights"] else "standard"))
+                                _sfx = ("tk" if _det["rights"]
+                                        else "k%d" % _det["crypto"])
+                                _cur = e.get("codec") or ""
+                                _tn = (_SWITCH_NCA_TYPES.get(_det["ctype"], "NCA")
+                                       if _cur in ("", "NCA") else _cur)
+                                if " · " not in str(e.get("codec") or ""):
+                                    e["codec"] = "%s · %s" % (_tn, _sfx)
+                                if _ctrl is None and _det["ctype"] == 2:
+                                    _ctrl = e
+                                    _switch_tag_control(e)
+                        except Exception:
+                            continue
+                    if _ctrl is not None:
+                        try:
+                            _nacp = _switch_nca_control_info(
+                                path, _ctrl["abs_off"], None, _skeys)
+                        except Exception:
+                            _nacp = None
+                        if _nacp:
+                            _titles = _nacp.get("titles") or {}
+                            _official = (_titles.get("AmericanEnglish")
+                                         or _titles.get("BritishEnglish")
+                                         or next(iter(_titles.values()), ""))
+                            if _official:
+                                title = _official
+                            _pubs = _nacp.get("publisher") or {}
+                            _pub = (_pubs.get("AmericanEnglish")
+                                    or _pubs.get("BritishEnglish")
+                                    or next(iter(_pubs.values()), ""))
+                            if _pub:
+                                rows.insert(2, ("Publisher", _pub))
+                            if _nacp.get("display_ver"):
+                                try:
+                                    _dv = str(_nacp["display_ver"]).strip()
+                                    _dvv = (_dv[1:] if _dv[:1].lower() == "v"
+                                             else _dv)
+                                    for _vi, (_vk, _vv) in enumerate(rows):
+                                        if _vk == "Version":
+                                            rows[_vi] = ("Version", "v" + _dvv)
+                                            if _base_bin and _base_bin.get("ver"):
+                                                try:
+                                                    _rv = int(str(_base_bin["ver"]).strip())
+                                                    if _rv:
+                                                        rows.insert(_vi + 1, (
+                                                            "Title Version",
+                                                            "%d (%#x)" % (_rv, _rv)))
+                                                except Exception:
+                                                    pass
+                                            break
+                                    rows.insert(3, ("Display Version", _dv))
+                                except Exception:
+                                    pass
+                            meta["nacp_titles"] = _titles
+                            meta["nacp_display_ver"] = _nacp.get("display_ver", "")
+                            if _nacp.get("icon"):
+                                _inm = "icon.jpg"
+                                ents.append({"id": len(ents), "name": _inm,
+                                             "size": len(_nacp["icon"]),
+                                             "off": -2, "abs_off": -2,
+                                             "cached": bytes(_nacp["icon"]),
+                                             "codec": "JPEG"})
+                                rows[-1] = ("Entries", str(len(ents)))
+                                icon_entry = _inm
+                except Exception:
+                    pass
+            return {"ok": True, "kind": "xci", "path": path, "size": size,
+                    "title": title or os.path.basename(path),
+                    "rows": rows, "entries": ents,
+                    "meta": meta,
+                    "icon_entry": icon_entry, "patch_tid": fname_tid,
+                    "own_ver": fname_ver}
+    except Exception as e:
+        return {"error": f"XCI parse failed: {e}"}
+
+
 def parse_pkg(path):
     if os.path.isdir(path):
         if _ps3_folder_base(path):
@@ -618,12 +1785,21 @@ def parse_pkg(path):
         return parse_app_folder(path)
     size = os.path.getsize(path)
     low = path.lower()
+    if low.endswith(".nsp"):
+        return parse_nsp(path)
+    if low.endswith(".xci"):
+        return parse_xci(path)
     if low.endswith(".ffpfsc"):
         return parse_ffpfsc_image(path)
     if low.endswith(".ffpkg"):
         return parse_ffpkg_image(path)
     with open(path, "rb") as f:
         magic = f.read(4)
+        if magic == PFS0_MAGIC:
+            return parse_nsp(path)
+        f.seek(0x100)
+        if f.read(4) == XCI_MAGIC:
+            return parse_xci(path)
         if magic == PS3_MAGIC:
             return parse_ps3_pkg(path)
         if magic != FIH_MAGIC and magic != CNT_MAGIC:
@@ -2445,6 +3621,21 @@ def curated_meta_lines(kind, meta):
         for k, label in CURATED_JSON:
             if k in meta:
                 lines.append(f"{label} = {friendly_json_value(k, meta[k])}")
+    elif kind in ("nsp", "xci"):
+        # Switch: NACP localized titles + CNMT source (spec grid has the rest)
+        titles = meta.get("nacp_titles") or {}
+        if isinstance(titles, dict) and titles:
+            first = next(iter(titles.values()), "")
+            if first:
+                lines.append(f"Title = {first}")
+            if len(titles) > 1:
+                for lang, name in titles.items():
+                    if name and name != first:
+                        lines.append(f"Title [{lang}] = {name}")
+        if meta.get("nacp_display_ver"):
+            lines.append(f"Display Version = {meta['nacp_display_ver']}")
+        if meta.get("cnmt_file"):
+            lines.append(f"CNMT = {meta['cnmt_file']}")
     else:
         # Show less: short useful subset in fixed order (Show all = full table).
         order = ["TITLE", "TITLE_ID", "CATEGORY", "CONTENT_ID",
@@ -2730,7 +3921,7 @@ def build_clean_name(result, parts=None):
     return sanitize_filename_part(" - ".join(out))
 
 
-BATCH_EXTS = (".pkg", ".ffpkg", ".ffpfsc", ".exfat")
+BATCH_EXTS = (".pkg", ".ffpkg", ".ffpfsc", ".exfat", ".nsp", ".xci")
 
 
 def split_set_siblings(path):
@@ -3200,7 +4391,7 @@ def run_gui(start_path=None):
         root.withdraw()
     except Exception:
         pass
-    root.title("PKG Viewer %s  •  PS3 / PS4 / PS5  •  by Loopayeh" % APP_VERSION)
+    root.title("PKG Viewer %s  •  PS3 / PS4 / PS5 / Switch  •  by Loopayeh" % APP_VERSION)
     root.geometry("880x410")
     root.configure(bg=BG)
     root.minsize(880, 410)
@@ -3479,7 +4670,7 @@ def run_gui(start_path=None):
                      command=lambda: toggle_cover())
     coverbtn.pack(side="right", padx=(0, 8))
     state["coverbtn"] = coverbtn
-    pathvar = tk.StringVar(value="Drop a .pkg / .exfat / .ffpfsc / .ffpkg file or app folder here")
+    pathvar = tk.StringVar(value="Drop a .pkg / .exfat / .ffpfsc / .ffpkg / .nsp / .xci file or app folder here")
     pathlabel = ttk.Label(header, textvariable=pathvar, font=FONT_SMALL, foreground=MUTED)
     pathlabel.pack(side="left", padx=(14, 0))
     state["pathlabel"] = pathlabel
@@ -3918,7 +5109,7 @@ def run_gui(start_path=None):
     tree.column("#0", width=300)
     tree.column("id", width=60)
     tree.column("size", width=110, anchor="e")
-    tree.column("codec", width=80)
+    tree.column("codec", width=120)
     sb = ttk.Scrollbar(tab_entries, orient="vertical", command=tree.yview)
     tree.configure(yscrollcommand=sb.set)
     sb.pack(side="right", fill="y")
@@ -4625,19 +5816,34 @@ def run_gui(start_path=None):
                 _os.path.abspath(__file__)))
             _p = _os.path.join(_base, "assets_about.png")
             if _os.path.exists(_p):
-                _im = _Img.open(_p).convert("L")
-                # crop to the dark mark, drop the white page background
-                _bbox = _im.point(lambda v: 255 if v < 128 else 0).getbbox()
-                if _bbox:
-                    _im = _im.crop(_bbox)
-                # dark mark -> near-white, background -> transparent (dark dialog)
-                _a = _im.point(lambda v: 255 - v)
-                _im = _Img.merge("RGBA", (_Img.new("L", _im.size, 0xf1),
-                                          _Img.new("L", _im.size, 0xf3),
-                                          _Img.new("L", _im.size, 0xf8), _a))
-                _w = 190
-                _h = max(1, round(_im.size[1] * _w / _im.size[0]))
-                _logo = _ImgTk.PhotoImage(_im.resize((_w, _h), _Img.LANCZOS))
+                _im = _Img.open(_p).convert("RGB")
+                try:
+                    _avg = sum(_im.resize((1, 1)).getpixel((0, 0))) // 3
+                except Exception:
+                    _avg = 255
+                if _avg < 128:
+                    # dark-theme logo (black rounded square): show as-is,
+                    # smaller than the old light mark
+                    _im = _Img.open(_p).convert("RGBA")
+                    _w = 120
+                    _h = max(1, round(_im.size[1] * _w / _im.size[0]))
+                    _logo = _ImgTk.PhotoImage(_im.resize((_w, _h),
+                                                         _Img.LANCZOS))
+                else:
+                    _im = _im.convert("L")
+                    # crop to the dark mark, drop the white page background
+                    _bbox = _im.point(lambda v: 255 if v < 128 else 0).getbbox()
+                    if _bbox:
+                        _im = _im.crop(_bbox)
+                    # dark mark -> near-white, background -> transparent
+                    _a = _im.point(lambda v: 255 - v)
+                    _im = _Img.merge("RGBA", (_Img.new("L", _im.size, 0xf1),
+                                              _Img.new("L", _im.size, 0xf3),
+                                              _Img.new("L", _im.size, 0xf8), _a))
+                    _w = 190
+                    _h = max(1, round(_im.size[1] * _w / _im.size[0]))
+                    _logo = _ImgTk.PhotoImage(_im.resize((_w, _h),
+                                                         _Img.LANCZOS))
         except Exception:
             _logo = None
         if _logo is not None:
@@ -4647,7 +5853,7 @@ def run_gui(start_path=None):
                  bg=CARD, fg=TEXT, font=FONT).pack(padx=36, pady=(12, 0))
         tk.Label(_ab, text="by Loopayeh",
                  bg=CARD, fg=MUTED, font=FONT_SMALL).pack(pady=(2, 0))
-        tk.Label(_ab, text="View PS3 / PS4 / PS5 package info and cover art.",
+        tk.Label(_ab, text="View PS3 / PS4 / PS5 / Switch package info and cover art.",
                  bg=CARD, fg=TEXT, font=FONT_SMALL).pack(padx=36,
                                                          pady=(12, 0))
         tk.Label(_ab, text="If you enjoy what I build and want to support my work,\n"
@@ -5438,9 +6644,10 @@ def run_gui(start_path=None):
     def pick():
         # files only — folders come in via drag & drop
         p = filedialog.askopenfilename(title="Select PKG / image file",
-                                       filetypes=[("Game files", "*.pkg *.exfat *.ffpfsc *.ffpkg"),
+                                       filetypes=[("Game files", "*.pkg *.exfat *.ffpfsc *.ffpkg *.nsp *.xci"),
                                                   ("PKG", "*.pkg"),
                                                   ("exFAT image", "*.exfat"),
+                                                  ("Switch", "*.nsp *.xci"),
                                                   ("all", "*.*")])
         if p:
             load(p)
@@ -5448,7 +6655,7 @@ def run_gui(start_path=None):
     def pick_many():
         # files only — folders come in via drag & drop
         ps = filedialog.askopenfilenames(title="Select files for batch rename",
-                                         filetypes=[("Game files", "*.pkg *.exfat *.ffpfsc *.ffpkg"),
+                                         filetypes=[("Game files", "*.pkg *.exfat *.ffpfsc *.ffpkg *.nsp *.xci"),
                                                     ("all", "*.*")])
         if ps:
             show_batch(list(ps))
@@ -6800,7 +8007,8 @@ def run_gui(start_path=None):
         try:
             _ext = os.path.splitext(p)[1].lower()
             _fmt = {".ffpkg": "ffpkg", ".ffpfsc": "ffpfsc",
-                    ".exfat": "exfat", ".pkg": "pkg"}.get(_ext, "")
+                    ".exfat": "exfat", ".pkg": "pkg",
+                    ".nsp": "nsp", ".xci": "xci"}.get(_ext, "")
             _fl = state.get("fmtlabel")
             if _fl is not None:
                 if _fmt and has_pil:
@@ -6852,6 +8060,8 @@ def run_gui(start_path=None):
             _plat_col = "#5fa8ff"
         elif "ps5" in _pl:
             _plat_col = "#f1f3f8"
+        elif "switch" in _pl or "nsp" in _pl or "xci" in _pl:
+            _plat_col = "#e60012"
         else:
             _plat_col = "#6b7280"
         _tl = _type.lower()
@@ -6862,7 +8072,9 @@ def run_gui(start_path=None):
         for i, (bv, val, lb, col) in enumerate(zip(badges, _bvals, _blabs, _bcolors)):
             bv.set(val or "")
             try:
-                lb.config(bg=col, fg="#171717")
+                # white text on Nintendo red, dark text everywhere else
+                _fg = "#f1f3f8" if (i == 0 and col == "#e60012") else "#171717"
+                lb.config(bg=col, fg=_fg)
             except Exception:
                 pass
             # dumps (e.g. PS5 folders) have no Package row: hide the
@@ -6976,13 +8188,13 @@ def run_gui(start_path=None):
         _trophy_reset("Open the Trophies tab to load")
         metatext.delete("1.0", "end")
         refresh_details()
-        # image choices: png entries
+        # image choices: png entries (+ switch jpeg icons)
         pngs = [e["name"] for e in r["entries"]
-                if e["name"].lower().endswith(".png") and e["size"] > 0]
+                if e["name"].lower().endswith((".png", ".jpg", ".jpeg")) and e["size"] > 0]
         state["imgnames"] = pngs
         _fill_imgtab(pngs)
         if pngs:
-            first = "icon0.png" if "icon0.png" in pngs else pngs[0]
+            first = next((n for n in ("icon0.png", "icon.jpg") if n in pngs), pngs[0])
             show_image(first)
         elif r.get("store_cid"):
             state["pil"] = None
@@ -7328,8 +8540,8 @@ def run_gui(start_path=None):
         except Exception as ex:
             statusvar.set(f"Error: {ex}")
             return
-        if data[:8] != b"\x89PNG\r\n\x1a\n":
-            imglabel.config(image="", text="(not a PNG)")
+        if data[:8] != b"\x89PNG\r\n\x1a\n" and data[:2] != b"\xff\xd8":
+            imglabel.config(image="", text="(not an image)")
             statusvar.set("OK")
             return
         if not has_pil:
@@ -7491,6 +8703,6 @@ if __name__ == "__main__":
     elif len(sys.argv) >= 2 and os.path.exists(sys.argv[1]):
         run_gui(sys.argv[1])
     elif len(sys.argv) >= 2 and sys.argv[1] == "--info":
-        print("usage: pkgviewer.py --info <file.pkg>")
+        print("usage: pkgviewer.py --info <file.pkg/.nsp/.xci>")
     else:
         run_gui()

@@ -31,9 +31,9 @@ Architecture: all
 Maintainer: Loopayeh
 Depends: python3, python3-tk, python3-pil, xdg-utils, shared-mime-info, hicolor-icon-theme
 Recommends: python3-cryptography
-Description: View PS3/PS4/PS5 package contents
+Description: View PS3/PS4/PS5/Switch package contents
  Shows cover art, Title ID, region, version and firmware
- for .pkg / .exfat / .ffpfsc / .ffpkg with per-format icons.
+ for .pkg / .exfat / .ffpfsc / .ffpkg / .nsp / .xci with per-format icons.
 EOF
 cat > "$PKG/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
