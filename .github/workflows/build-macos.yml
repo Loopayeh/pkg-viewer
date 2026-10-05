@@ -63,7 +63,7 @@ jobs:
         run: |
           VER="${{ inputs.version }}"
           if [ -z "$VER" ]; then
-            VER="v$(grep -oP 'APP_VERSION = \"v\K[0-9.]+' pkgviewer.py)"
+            VER="v$(python3 -c "import re;print(re.search(r'APP_VERSION = \"v([0-9.]+)\"', open('pkgviewer.py').read()).group(1))")"
           fi
           ditto -c -k --sequesterRsrc --keepParent dist/PKGViewer.app \
             "PKGViewer-macOS-${{ matrix.arch }}-${VER}.zip"
