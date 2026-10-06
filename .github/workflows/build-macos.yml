@@ -17,6 +17,8 @@ jobs:
             arch: arm64
           - runner: macos-15
             arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -58,6 +60,12 @@ jobs:
             --add-data "orbis_full.py:." \
             --collect-submodules PIL \
             pkgviewer.py
+
+      - name: Verify binary arch
+        run: |
+          BIN="dist/PKGViewer.app/Contents/MacOS/PKGViewer"
+          file "$BIN"
+          lipo -archs "$BIN" | grep -q "${{ matrix.arch }}" && echo "arch OK: ${{ matrix.arch }}"
 
       - name: Zip the .app
         run: |
