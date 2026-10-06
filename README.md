@@ -9,7 +9,7 @@ Works with `.pkg` packages, `.exfat` / `.ffpfsc` / `.ffpkg` images, Switch `.nsp
 
 ## Download
 
-Get `PKGViewer-Setup-X.Y.Z.exe` (Windows) or `PKGViewer-macOS-arm64-X.Y.Z.zip` (Mac) from [Releases](../../releases) — no Python needed, no admin needed.
+Get `PKGViewer-Setup-X.Y.Z.exe` (Windows) or `PKGViewer-macOS-arm64-X.Y.Z.zip` (Apple Silicon) / `PKGViewer-macOS-x86_64-X.Y.Z.zip` (Intel) from [Releases](../../releases) — no Python needed, no admin needed.
 
 ## Why the installer
 
