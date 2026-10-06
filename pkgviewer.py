@@ -5888,7 +5888,8 @@ def run_gui(start_path=None):
                command=lambda: _wb.open(
                    "https://coffeebede.com/loopayeh")).pack(side="left", ipadx=10, ipady=4)
         tk.Label(_ab, text="PS5 extract/build via PSVIETHOA FPKG Builder (fpkg-cli)\n"
-                              "engine: Drakmor LibProsperoPkg",
+                              "engine: LibProsperoPkg by Drakmor\n"
+                              "PS4 engine: LibOrbisPkg by maxton (via PkgEditor)",
                  bg=CARD, fg=MUTED, font=FONT_SMALL, justify="center").pack(padx=36,
                                                                            pady=(10, 0))
         mkbtn(_ab, text="Close", style="Accent.TButton", bg=CARD,

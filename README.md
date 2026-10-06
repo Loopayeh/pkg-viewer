@@ -77,6 +77,12 @@ If this tool was useful, you can also support me internationally with USDT (BEP-
 
 [Pay via Trust Wallet](https://link.trustwallet.com/send?coin=20000714&address=0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50&token_id=0x55d398326f99059fF775485246999027B3197955)
 
+## Credits
+
+- PS4 extract/build engine: `LibOrbisPkg` by maxton (via PkgEditor).
+- PS5 extract/build: external `PSVIETHOA FPKG Builder` (`fpkg-cli`) by thanhsondev — powered by `LibProsperoPkg` by Drakmor (first practical PS5 FPKG builder, FPKG-GUI 0.6.x). Open implementation: `SvenGDK/LibProsperoPKG`.
+- PKG Viewer itself (parsing, UI, rename, trophies, Switch support) is original code — no vendored third-party code bundled.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
