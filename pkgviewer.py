@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.15.0"  # bump on every release — the updater compares this
+APP_VERSION = "v1.15.1"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -2841,10 +2841,13 @@ def parse_exfat_image(path):
 
 
 def parse_ffpfsc_image(path):
-    """Compressed PFS (.ffpfsc): open inner exFAT via mkpfs, then FAT walk."""
+    """Compressed PFS (.ffpfsc): inner file via mkpfs (exFAT, or a
+    nested .ffpkg UFS2 image like PPSA20560-app.ffpkg)."""
     size = os.path.getsize(path)
     view, fh, inner = _open_ffpfsc_view(path)
     try:
+        if str(inner or "").lower().endswith(".ffpkg"):
+            return _ffpfsc_nested_ffpkg(view, fh, path, size, inner)
         fs = _Exfat(view)
         try:
             r = _exfat_result(fs, path, size, "PS5 ffpfsc image",
@@ -2869,6 +2872,76 @@ def parse_ffpfsc_image(path):
             except Exception:
                 pass
             e["abs_off"] = -2
+        return r
+    finally:
+        try:
+            fh.close()
+        except Exception:
+            pass
+
+
+def _ffpfsc_nested_ffpkg(view, fh, path, size, inner):
+    """ffpfsc wrapping a .ffpkg (UFS2): pytsk3 over the inner view.
+
+    The inner file can be sparse/huge (191 GB logical); the view maps
+    it without extracting, so nothing is copied. Caller keeps fh open
+    semantics: closed here on every path. Never raises with a raw
+    exception — returns an error dict instead.
+    """
+    try:
+        import pytsk3
+    except ImportError:
+        try:
+            fh.close()
+        except Exception:
+            pass
+        return {"error": "pytsk3 not installed (pip install pytsk3)"
+                " - needed for nested .ffpkg"}
+    try:
+        try:
+            view.seek(0, 2)
+            _isz = view.tell()
+            view.seek(0)
+        except Exception:
+            _isz = size
+        if not _isz or _isz <= 0:
+            return {"error": "empty inner file: %s" % (inner or "?")}
+
+        class _ViewImg(pytsk3.Img_Info):
+            def __init__(self, f, n):
+                self._f = f
+                self._n = n
+                super().__init__(url="", type=pytsk3.TSK_IMG_TYPE_RAW)
+
+            def close(self):
+                pass
+
+            def get_size(self):
+                return self._n
+
+            def read(self, off, ln):
+                self._f.seek(off)
+                return self._f.read(ln)
+
+        img = _ViewImg(view, _isz)
+        try:
+            fs = pytsk3.FS_Info(img)
+        except Exception as e:
+            return {"error": "not a filesystem image: %s" % e}
+        try:
+            r = _ffpkg_read(fs, path, _isz)
+        finally:
+            try:
+                img.close()
+            except Exception:
+                pass
+        if isinstance(r, dict) and r.get("ok"):
+            try:
+                _rows = list(r.get("rows", []))
+                _rows.insert(1, ("Inner file", "%s" % (inner or "?")))
+                r["rows"] = _rows
+            except Exception:
+                pass
         return r
     finally:
         try:
