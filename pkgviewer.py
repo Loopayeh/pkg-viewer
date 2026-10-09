@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.15.1"  # bump on every release — the updater compares this
+APP_VERSION = "v1.15.2"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -392,6 +392,7 @@ def mkpill(parent, text="", textvariable=None, bg="#2a2a2a", fg="#171717",
 
 CNT_MAGIC = b"\x7fCNT"
 FIH_MAGIC = b"\x7fFIH"
+LIH_MAGIC = b"\x7fLIH"
 PS3_MAGIC = b"\x7fPKG"
 PFS0_MAGIC = b"PFS0"
 HFS0_MAGIC = b"HFS0"
@@ -1802,20 +1803,25 @@ def parse_pkg(path):
             return parse_xci(path)
         if magic == PS3_MAGIC:
             return parse_ps3_pkg(path)
-        if magic != FIH_MAGIC and magic != CNT_MAGIC:
+        if magic != FIH_MAGIC and magic != LIH_MAGIC \
+                and magic != CNT_MAGIC:
             f.seek(0)
             if f.read(11)[3:11] == b"EXFAT   ":
                 return parse_exfat_image(path)
         f.seek(0)
-        if magic == FIH_MAGIC:
+        if magic == FIH_MAGIC or magic == LIH_MAGIC:
             hdr = f.read(256)
-            emb = u64le(hdr, 0x58)
+            # FIH stores the CNT container offset at 0x58, LIH (backport
+            # wrapper) at 0x30; both then parse as standard CNT.
+            emb = u64le(hdr, 0x58 if magic == FIH_MAGIC else 0x30)
             signed = hdr[5]
             pfs_off = u64le(hdr, 0x10)
             pfs_size = u64le(hdr, 0x18)
             f.seek(emb)
             chdr = f.read(0x80)
             if chdr[:4] != CNT_MAGIC:
+                if magic == LIH_MAGIC:
+                    return {"error": "LIH container is not CNT"}
                 return parse_ps5_retail_stub(path, size, hdr)
             n = u32be(chdr, 0x10)
             et = u32be(chdr, 0x18)
@@ -1840,6 +1846,14 @@ def parse_pkg(path):
                     ("Size", fmt_size(size)),
                     ("PFS image", f"{fmt_size(pfs_size)} @ {pfs_off:#x}"),
                     ("Entries", str(len(ents)))]
+            if magic == LIH_MAGIC:
+                # LIH is a scene backport wrapper (no retail issuer):
+                # label the container honestly, keep the CNT rows below.
+                rows = [("Platform", "PS5 (LIH backport)"),
+                        ("Package", "Backport (LIH)"),
+                        ("Signature", "debug / fake"),
+                        ("Size", fmt_size(size)),
+                        ("Entries", str(len(ents)))]
             rows += extra
             if not any(k == "Content ID" for k, _ in rows):
                 rows.insert(2, ("Content ID", cid))
@@ -2938,6 +2952,10 @@ def _ffpfsc_nested_ffpkg(view, fh, path, size, inner):
         if isinstance(r, dict) and r.get("ok"):
             try:
                 _rows = list(r.get("rows", []))
+                # outer container wins the label: the file IS ffpfsc,
+                # ffpkg lives only inside (documented in Inner file)
+                _rows = [(k, ("PS5 ffpfsc image" if k == "Platform" else v))
+                         for k, v in _rows]
                 _rows.insert(1, ("Inner file", "%s" % (inner or "?")))
                 r["rows"] = _rows
             except Exception:
