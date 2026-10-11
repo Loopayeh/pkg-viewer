@@ -1788,6 +1788,8 @@ def parse_pkg(path):
             return parse_god_folder(path)
         if _x360_folder_xex(path):
             return parse_x360_folder(path)
+        if _wiiu_tmd_path(path):
+            return parse_wiiu_folder(path)
         return parse_app_folder(path)
     size = os.path.getsize(path)
     low = path.lower()
@@ -3023,6 +3025,180 @@ def _xex_file_range(path, off, ln):
             return f.read(ln)
     except Exception:
         return b""
+
+
+# ---------------- Wii U NUS folders (tmd + 8-hex content files) ----------------
+# Plaintext TMD: sigtype u32, signature, header at the next 64-byte
+# boundary (Nintendo pads the sig area). Header: issuer[64], ids at
+# fixed offsets; content records (id.u32, index.u16, type.u16,
+# size.u64, sha1.20 = 0x30 bytes) live further down — located by
+# scanning for the index-0 record whose size matches a sibling file,
+# since tools insert gaps. Verified: DuckTales Remastered (EUR NUS).
+
+WIIU_TITLE_TYPES = {0x1: "System", 0x100: "Game", 0x101: "System",
+                    0x102: "Update", 0x103: "Demo", 0x104: "DLC"}
+
+
+def _wiiu_tmd_path(path):
+    """TMD file inside a Wii U NUS folder, or ''. Never raises."""
+    try:
+        if not os.path.isdir(path):
+            return ""
+        cands = []
+        try:
+            fns = sorted(os.listdir(path))
+        except OSError:
+            return ""
+        for fn in fns:
+            low = fn.lower()
+            fp = os.path.join(path, fn)
+            if not os.path.isfile(fp):
+                continue
+            if low in ("title.tmd", "tmd") or (
+                    low.startswith("tmd.") and
+                    low[4:].isdigit()):
+                cands.append(fp)
+        return cands[0] if cands else ""
+    except Exception:
+        return ""
+
+
+def _wiiu_parse_tmd(raw):
+    """(info, records). info has title_id/version/type/count. Never raises."""
+    import struct as _st
+    info, recs = {}, []
+    try:
+        if len(raw) < 0x200:
+            return info, recs
+        sigtype = _st.unpack_from(">I", raw, 0)[0]
+        siglen = {0x10000: 0x200, 0x10001: 0x100, 0x10002: 0x3C,
+                  0x10003: 0x40, 0x10004: 0x100}.get(sigtype, 0)
+        if not siglen:
+            return info, recs
+        h = ((4 + siglen + 63) // 64) * 64
+        if h + 0xA4 > len(raw):
+            # unaligned/odd dumps: fall back to the issuer string
+            try:
+                h = raw.index(b"Root-CA")
+            except ValueError:
+                return info, recs
+        if h + 0xA4 > len(raw):
+            return info, recs
+        tid = raw[h + 0x4C:h + 0x54]
+        if len(tid) != 8:
+            return info, recs
+        count = _st.unpack_from(">H", raw, h + 0x9E)[0]
+        if count <= 0 or count > 4096:
+            return info, recs
+        ver = _st.unpack_from(">H", raw, h + 0x9C)[0]
+        typ = _st.unpack_from(">I", raw, h + 0x54)[0]
+        info = {"title_id": tid.hex().upper(), "version": ver,
+                "type": typ, "count": count}
+        # records: scan for index-0..N run (tools insert gaps)
+        max_off = min(len(raw), 4 << 20)
+        off = 0
+        cands = []
+        while off + 0x30 <= max_off:
+            try:
+                cid, idx, ctyp = _st.unpack_from(">IHH", raw, off)
+                size = _st.unpack_from(">Q", raw, off + 8)[0]
+            except Exception:
+                off += 4
+                continue
+            if cid <= 0xFFFFFF and idx < 4096 and size < 1 << 44 and \
+                    ctyp in (0x1, 0x8001, 0x2001, 0x2003, 0x4001,
+                             0x4003, 0xC001, 0xC003):
+                cands.append((off, cid, idx, ctyp, size))
+            off += 4
+        # longest sequential-index run starting at a plausible header
+        best, cur = [], []
+        for c in cands:
+            if cur and c[2] == cur[-1][2] + 1 and \
+                    c[0] == cur[-1][0] + 0x30:
+                cur.append(c)
+            else:
+                if len(cur) > len(best):
+                    best = cur
+                cur = [c]
+        if len(cur) > len(best):
+            best = cur
+        if best and best[0][2] == 0 and len(best) >= min(count, 2):
+            recs = [{"id": "%08X" % c[1], "index": c[2],
+                     "type": c[3], "size": c[4]} for c in best]
+        return info, recs
+    except Exception:
+        return {}, []
+
+
+def parse_wiiu_folder(path):
+    """Wii U NUS dump folder: TMD meta + content files as entries."""
+    tmd = _wiiu_tmd_path(path)
+    if not tmd:
+        return {"error": "no TMD"}
+    try:
+        with open(tmd, "rb") as f:
+            raw = f.read(4 << 20)
+    except OSError as e:
+        return {"error": str(e)}
+    info, recs = _wiiu_parse_tmd(raw)
+    if not info:
+        return {"error": "bad TMD"}
+    sizes = {}
+    for r in recs:
+        sizes[r["id"]] = r["size"]
+    ents, total = [], 0
+    try:
+        for fn in sorted(os.listdir(path)):
+            fp = os.path.join(path, fn)
+            if not os.path.isfile(fp):
+                continue
+            if fp == tmd:
+                continue
+            try:
+                sz = os.path.getsize(fp)
+            except OSError:
+                continue
+            if sz <= 0:
+                continue
+            import re as _re
+            tag = ""
+            if _re.match(r"^[0-9A-Fa-f]{8}$", fn):
+                tag = "content %s" % fn.upper()
+                if fn.upper() in sizes and sizes[fn.upper()] != sz:
+                    tag += " (size differs from TMD)"
+            ents.append({"id": len(ents), "name": fn, "size": sz,
+                         "abs_off": -1, "local_path": fp,
+                         "kind": tag})
+            total += sz
+    except OSError:
+        pass
+    title = _x360_clean_title(path)
+    region = _x360_region_from_name(path)
+    if not region:
+        try:
+            up = os.path.basename(path).upper()
+            if "EUROPE" in up or "(EU)" in up or "[EU]" in up:
+                region = "Europe"
+            elif "JAPAN" in up or "(JP)" in up or "[JP]" in up:
+                region = "Japan"
+            elif "USA" in up or "(US)" in up or "[US]" in up:
+                region = "Americas"
+        except Exception:
+            region = ""
+    ttype = WIIU_TITLE_TYPES.get(info["type"], "type %#x" % info["type"])
+    rows = [("Platform", "Wii U (NUS folder)"),
+            ("Title ID", info["title_id"]),
+            ("Type", ttype),
+            ("Version", "v%d" % info["version"]),
+            ("Contents", "%d in TMD" % info["count"]),
+            ("Region", region or "-"),
+            ("Size", "%s (%d files)" % (fmt_size(total), len(ents)))]
+    return {"ok": True, "kind": "wiiu", "path": path, "size": total,
+            "title": title or info["title_id"],
+            "rows": rows, "entries": ents,
+            "meta": {"title_id": info["title_id"],
+                     "version": info["version"]},
+            "icon_entry": ""}
 
 
 def _split_part_stub(path, size):
@@ -9414,6 +9590,8 @@ def run_gui(start_path=None):
             _plat_col = "#3dd6b0"
         elif "x360" in _pl or "xbox" in _pl:
             _plat_col = "#107C10"
+        elif "wii" in _pl:
+            _plat_col = "#009AC7"
         elif "ps2" in _pl:
             _plat_col = "#3b7dd8"
         elif "ps3" in _pl:
