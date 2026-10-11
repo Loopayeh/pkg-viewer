@@ -10390,21 +10390,28 @@ def run_gui(start_path=None):
         if not r:
             return
         e = next((x for x in r["entries"] if x["name"] == name), None)
+        if not e and name != "cover.jpg":
+            return
         if not e:
-            return
-        statusvar.set(f"Extracting {name}...")
-        root.update_idletasks()
-        try:
-            if e.get("local_path") and os.path.isfile(e["local_path"]):
-                with open(e["local_path"], "rb") as fh:
-                    data = fh.read()
-            elif e.get("cached") is not None:
-                data = e["cached"]
-            else:
-                data = read_entry_bytes(r["path"], e["abs_off"], e["size"])
-        except Exception as ex:
-            statusvar.set(f"Error: {ex}")
-            return
+            # virtual entry: fetched online cover lives in store_bytes
+            data = state.get("store_bytes") or b""
+            if not data:
+                imglabel.config(image="", text="(cover unavailable)")
+                return
+        else:
+            statusvar.set(f"Extracting {name}...")
+            root.update_idletasks()
+            try:
+                if e.get("local_path") and os.path.isfile(e["local_path"]):
+                    with open(e["local_path"], "rb") as fh:
+                        data = fh.read()
+                elif e.get("cached") is not None:
+                    data = e["cached"]
+                else:
+                    data = read_entry_bytes(r["path"], e["abs_off"], e["size"])
+            except Exception as ex:
+                statusvar.set(f"Error: {ex}")
+                return
         if data[:8] != b"\x89PNG\r\n\x1a\n" and data[:2] != b"\xff\xd8":
             imglabel.config(image="", text="(not an image)")
             statusvar.set("OK")
