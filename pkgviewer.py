@@ -6126,7 +6126,7 @@ def run_gui(start_path=None):
         root.withdraw()
     except Exception:
         pass
-    root.title("PKG Viewer %s  •  PS2 / PS3 / PS4 / PS5 / Switch / Xbox 360 / Wii U  •  by Loopayeh" % APP_VERSION)
+    root.title("PKG Viewer %s — PS2/PS3/PS4/PS5/Switch/Xbox360/WiiU" % APP_VERSION)
     root.geometry("880x410")
     root.configure(bg=BG)
     root.minsize(880, 410)
