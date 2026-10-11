@@ -2987,6 +2987,7 @@ def fetch_x360_cover(tid):
         if not (img[:8] == b"\x89PNG\r\n\x1a\n"
                 or img[:2] == b"\xff\xd8"):
             raise ValueError("bad image")
+        img = _x360_front_only(img)
         _X360_COVER_MEM[t] = img
         try:
             d = _covers_dir()
@@ -3000,6 +3001,35 @@ def fetch_x360_cover(tid):
     except Exception:
         _X360_COVER_MEM[t] = b""
         return b""
+
+
+def _x360_front_only(img_bytes):
+    """Crop the front panel from a flat (back+spine+front) cover.
+
+    Portrait art passes through. DVD keep-case flats have a fixed
+    physical geometry (front = right ~48% at aspect ~1.49), which is
+    scale-invariant across scans — so a true flat (aspect 1.35-1.65)
+    is cut at 0.52W. Anything else passes through untouched.
+    Never raises.
+    """
+    try:
+        if not (img_bytes[:8] == b"\x89PNG\r\n\x1a\n"
+                or img_bytes[:2] == b"\xff\xd8"):
+            return img_bytes
+        from PIL import Image as _Im
+        import io as _io
+        im = _Im.open(_io.BytesIO(img_bytes)).convert("RGB")
+        w, h = im.size
+        if w < h or not (1.35 <= w / max(1, h) <= 1.65):
+            return img_bytes
+        cut = int(w * 0.52)
+        front = im.crop((cut, 0, w, h))
+        buf = _io.BytesIO()
+        front.save(buf, "JPEG", quality=92)
+        out = buf.getvalue()
+        return out if len(out) > 4096 else img_bytes
+    except Exception:
+        return img_bytes
 
 
 def _ps3_cover_key(result):
