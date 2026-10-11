@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""PKG Viewer - PS4 + PS5 (FIH/CNT) + Switch (NSP/PFS0, XCI/HFS0). Clean dark UI (tkinter) + CLI --info mode."""
+"""PKG Viewer - PS3 (PKG/folder/ISO) + PS4 + PS5 (FIH/CNT) + Switch (NSP/PFS0, XCI/HFS0). Clean dark UI (tkinter) + CLI --info mode."""
 import io
 import json
 import os
 import struct
 import sys
 
-APP_VERSION = "v1.15.2"  # bump on every release — the updater compares this
+APP_VERSION = "v1.16.0"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -1786,6 +1786,8 @@ def parse_pkg(path):
         return parse_app_folder(path)
     size = os.path.getsize(path)
     low = path.lower()
+    if low.endswith(".iso"):
+        return parse_ps3_iso(path)
     if low.endswith(".nsp"):
         return parse_nsp(path)
     if low.endswith(".xci"):
@@ -1796,6 +1798,8 @@ def parse_pkg(path):
         return parse_ffpkg_image(path)
     with open(path, "rb") as f:
         magic = f.read(4)
+        if magic == b"\x01CD0":
+            return parse_ps3_iso(path)
         if magic == PFS0_MAGIC:
             return parse_nsp(path)
         f.seek(0x100)
@@ -2002,9 +2006,10 @@ def _ps3_decrypt(f, data_off, retail, keymat, pos, size):
     return bytes(out[pre:pre + size])
 
 
-PS3_TID_REGION = {"NPEB": "Europe", "BCES": "Europe", "NPHB": "Asia",
-                  "BCAS": "Asia", "NPJB": "Japan", "BCJS": "Japan",
-                  "NPUB": "Americas", "BCUS": "Americas"}
+PS3_TID_REGION = {"NPEB": "Europe", "BCES": "Europe", "BLES": "Europe",
+                  "NPHB": "Asia", "BCAS": "Asia", "BLAS": "Asia",
+                  "NPJB": "Japan", "BCJS": "Japan", "BLJS": "Japan",
+                  "NPUB": "Americas", "BCUS": "Americas", "BLUS": "Americas"}
 
 
 def _ps3_title_id_from_cid(cid):
@@ -2100,6 +2105,160 @@ def parse_ps3_folder(path):
         pass
     icon = next((e["name"] for e in ents if e["name"].upper() == "ICON0.PNG"), "")
     return {"ok": True, "kind": "ps3", "path": path, "size": total,
+            "title": title or tid,
+            "rows": rows, "entries": ents, "meta": sfo,
+            "icon_entry": icon or "icon0.png"}
+
+
+ISO_SECTOR = 2048
+
+
+def _iso_clean_name(raw):
+    """ISO9660 file/dir identifier -> display name ('PARAM.SFO;1' -> 'PARAM.SFO')."""
+    try:
+        s = bytes(raw).decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+    s = s.split(";")[0]
+    if s.endswith("."):
+        s = s[:-1]
+    return s.strip()
+
+
+def parse_ps3_iso(path):
+    """PS3 disc ISO (ISO9660, 2048-byte sectors): file list + PARAM.SFO meta.
+
+    Walks the Primary Volume Descriptor + directory records directly, so no
+    mount or extra dependency is needed. Files are contiguous extents, so
+    entries use plain abs_off offsets and stream-extract like other kinds.
+    Returns {"error": ...} when the image is not a PS3 disc. Never raises.
+    """
+    import struct as _st
+    try:
+        size = os.path.getsize(path)
+    except OSError as e:
+        return {"error": str(e)}
+    if size < 17 * ISO_SECTOR:
+        return {"error": "too small for ISO"}
+    try:
+        with open(path, "rb") as f:
+            f.seek(16 * ISO_SECTOR)
+            pvd = f.read(ISO_SECTOR)
+            if len(pvd) < ISO_SECTOR or pvd[0] != 1 or pvd[1:6] != b"CD001":
+                return {"error": "not an ISO9660 image"}
+            try:
+                vol = pvd[40:72].decode("ascii", errors="replace").strip()
+            except Exception:
+                vol = ""
+            if len(pvd) < 190 or pvd[156] < 34:
+                return {"error": "bad ISO root record"}
+            root_ext = _st.unpack_from("<I", pvd, 156 + 2)[0]
+            root_size = _st.unpack_from("<I", pvd, 156 + 10)[0]
+            if not root_ext or not root_size or root_size > 64 << 20:
+                return {"error": "bad ISO root directory"}
+            ents = []
+            seen_dirs = set()
+
+            def _walk(ext, sz, prefix, depth):
+                if depth > 16 or not ext or not sz or sz > 64 << 20:
+                    return
+                key = (ext, prefix)
+                if key in seen_dirs:
+                    return
+                seen_dirs.add(key)
+                try:
+                    f.seek(ext * ISO_SECTOR)
+                    data = f.read(sz)
+                except OSError:
+                    return
+                if len(data) < sz:
+                    return
+                off = 0
+                while off < len(data):
+                    if data[off] == 0:
+                        nxt = ((off // ISO_SECTOR) + 1) * ISO_SECTOR
+                        if nxt >= len(data):
+                            break
+                        off = nxt
+                        continue
+                    ll = data[off]
+                    if ll < 33 or off + ll > len(data):
+                        break
+                    rec = data[off:off + ll]
+                    try:
+                        flags = rec[25]
+                        rex = _st.unpack_from("<I", rec, 2)[0]
+                        rsz = _st.unpack_from("<I", rec, 10)[0]
+                        nlen = rec[32]
+                        nm_raw = rec[33:33 + nlen]
+                    except Exception:
+                        break
+                    off += ll
+                    if nm_raw in (b"\x00", b"\x01"):
+                        continue
+                    nm = _iso_clean_name(nm_raw)
+                    if not nm:
+                        continue
+                    full = nm if not prefix else prefix + "/" + nm
+                    if flags & 0x02:
+                        _walk(rex, rsz, full, depth + 1)
+                    else:
+                        if len(ents) >= 200000:
+                            return
+                        ents.append({"id": len(ents), "name": full,
+                                     "size": rsz,
+                                     "abs_off": rex * ISO_SECTOR})
+            _walk(root_ext, root_size, "", 0)
+            if not ents:
+                return {"error": "empty ISO"}
+            ups = {e["name"].upper() for e in ents}
+            if "PS3_GAME/PARAM.SFO" not in ups \
+                    and "PS3_DISC.SFB" not in ups \
+                    and "PS3_GAME" not in ups:
+                return {"error": "not a PS3 disc ISO"}
+            sfo = {}
+            for e in ents:
+                if e["name"].upper() == "PS3_GAME/PARAM.SFO" \
+                        and 0 < e["size"] < 1_000_000:
+                    try:
+                        f.seek(e["abs_off"])
+                        raw = f.read(e["size"])
+                    except OSError:
+                        break
+                    if raw[:4] == b"\x00PSF":
+                        sfo = parse_sfo(raw)
+                    break
+    except Exception as e:
+        return {"error": str(e)}
+    title = sfo.get("TITLE", "") if sfo else ""
+    tid = (sfo.get("TITLE_ID", "") if sfo else "") or vol \
+        or os.path.splitext(os.path.basename(path))[0]
+    ver = (sfo.get("VERSION", "") or sfo.get("APP_VER", "")) if sfo else ""
+    _cat = (sfo.get("CATEGORY", "") if sfo else "") or ""
+    _cat_lab = {"DG": "Disc Game", "HG": "HDD Game"}.get(_cat.strip().upper())
+    _upd = next((e for e in ents
+                 if e["name"].upper().startswith("PS3_UPDATE/") and e["size"] > 0),
+                None)
+    rows = [("Platform", "PS3 ISO (disc)"),
+            ("Title ID", sfo.get("TITLE_ID", "-") if sfo else "-"),
+            ("Region", PS3_TID_REGION.get(
+                ((sfo.get("TITLE_ID", "") if sfo else "") or "")[:4].upper(), "-")),
+            ("Category", f"{_cat_lab} ({_cat.strip()})" if _cat_lab
+             else (_cat.strip() or "-")),
+            ("Version", ver or "-"),
+            ("App Ver", sfo.get("APP_VER", "-") if sfo else "-"),
+            ("Min. System", fmt_fw32(sfo.get("PS3_SYSTEM_VER", "-")) if sfo else "-"),
+            ("Parental Level", str(sfo.get("PARENTAL_LEVEL", "-")) if sfo else "-"),
+            ("Resolution", str(sfo.get("RESOLUTION", "-")) if sfo else "-"),
+            ("Sound Format", str(sfo.get("SOUND_FORMAT", "-")) if sfo else "-"),
+            ("Trophy ID", sfo.get("NP_COMMUNICATION_ID", "-") if sfo else "-"),
+            ("Update", f"{os.path.basename(_upd['name'])} "
+             f"({fmt_size(_upd['size'])})" if _upd else "-"),
+            ("Volume", vol or "-"),
+            ("Size", f"{fmt_size(size)} ({len(ents)} files)")]
+    icon = next((e["name"] for e in ents
+                 if e["name"].upper() == "PS3_GAME/ICON0.PNG"), "")
+    return {"ok": True, "kind": "ps3", "path": path, "size": size,
             "title": title or tid,
             "rows": rows, "entries": ents, "meta": sfo,
             "icon_entry": icon or "icon0.png"}
@@ -3731,7 +3890,8 @@ def curated_meta_lines(kind, meta):
         # Show less: short useful subset in fixed order (Show all = full table).
         order = ["TITLE", "TITLE_ID", "CATEGORY", "CONTENT_ID",
                  "VERSION", "APP_VER", "SYSTEM_VER", "FORMAT",
-                 "PARENTAL_LEVEL"]
+                 "PARENTAL_LEVEL", "RESOLUTION", "SOUND_FORMAT",
+                 "NP_COMMUNICATION_ID", "BOOTABLE"]
         titles = sorted(k for k in meta
                         if k.startswith("TITLE_") and k[6:].isdigit())
         collapsed = False
@@ -3821,11 +3981,13 @@ NAME_PARTS = (("title", "Title"), ("tid", "Title ID"),
 # Canonical spec-grid order for every format: identity first, then
 # versions, then system, then package details. Unknown keys keep
 # their relative order at the end. Matched case-insensitively.
-GRID_ORDER = ["Title ID", "Concept ID",
+GRID_ORDER = ["Title ID", "Concept ID", "Category",
               "Version", "Base Version", "Content Ver", "Master Ver",
-              "App Ver", "Min. System", "SDK", "DRM", "Signature",
-              "Languages", "Built", "Entries", "Files", "PFS image",
-              "Assets", "Inner file", "Part", "Passcode", "Note"]
+              "App Ver", "Min. System", "Parental Level", "Resolution",
+              "Sound Format", "Trophy ID", "Update", "Volume", "SDK", "DRM",
+              "Signature", "Languages", "Built", "Entries", "Files",
+              "PFS image", "Assets", "Inner file", "Part", "Passcode",
+              "Note"]
 
 
 # PS5 engine: PSVIETHOA FPKG Builder CLI (external program, the
@@ -4012,7 +4174,7 @@ def build_clean_name(result, parts=None):
     return sanitize_filename_part(" - ".join(out))
 
 
-BATCH_EXTS = (".pkg", ".ffpkg", ".ffpfsc", ".exfat", ".nsp", ".xci")
+BATCH_EXTS = (".pkg", ".ffpkg", ".ffpfsc", ".exfat", ".nsp", ".xci", ".iso")
 
 
 def split_set_siblings(path):
@@ -4761,7 +4923,7 @@ def run_gui(start_path=None):
                      command=lambda: toggle_cover())
     coverbtn.pack(side="right", padx=(0, 8))
     state["coverbtn"] = coverbtn
-    pathvar = tk.StringVar(value="Drop a .pkg / .exfat / .ffpfsc / .ffpkg / .nsp / .xci file or app folder here")
+    pathvar = tk.StringVar(value="Drop a .pkg / .iso / .exfat / .ffpfsc / .ffpkg / .nsp / .xci file or app folder here")
     pathlabel = ttk.Label(header, textvariable=pathvar, font=FONT_SMALL, foreground=MUTED)
     pathlabel.pack(side="left", padx=(14, 0))
     state["pathlabel"] = pathlabel
@@ -6735,9 +6897,10 @@ def run_gui(start_path=None):
     # logic
     def pick():
         # files only — folders come in via drag & drop
-        p = filedialog.askopenfilename(title="Select PKG / image file",
-                                       filetypes=[("Game files", "*.pkg *.exfat *.ffpfsc *.ffpkg *.nsp *.xci"),
+        p = filedialog.askopenfilename(title="Select PKG / ISO / image file",
+                                       filetypes=[("Game files", "*.pkg *.iso *.exfat *.ffpfsc *.ffpkg *.nsp *.xci"),
                                                   ("PKG", "*.pkg"),
+                                                  ("PS3 ISO", "*.iso"),
                                                   ("exFAT image", "*.exfat"),
                                                   ("Switch", "*.nsp *.xci"),
                                                   ("all", "*.*")])
@@ -6747,7 +6910,7 @@ def run_gui(start_path=None):
     def pick_many():
         # files only — folders come in via drag & drop
         ps = filedialog.askopenfilenames(title="Select files for batch rename",
-                                         filetypes=[("Game files", "*.pkg *.exfat *.ffpfsc *.ffpkg *.nsp *.xci"),
+                                         filetypes=[("Game files", "*.pkg *.iso *.exfat *.ffpfsc *.ffpkg *.nsp *.xci"),
                                                     ("all", "*.*")])
         if ps:
             show_batch(list(ps))
@@ -8099,7 +8262,7 @@ def run_gui(start_path=None):
         try:
             _ext = os.path.splitext(p)[1].lower()
             _fmt = {".ffpkg": "ffpkg", ".ffpfsc": "ffpfsc",
-                    ".exfat": "exfat", ".pkg": "pkg",
+                    ".exfat": "exfat", ".pkg": "pkg", ".iso": "pkg",
                     ".nsp": "nsp", ".xci": "xci"}.get(_ext, "")
             _fl = state.get("fmtlabel")
             if _fl is not None:
@@ -8280,13 +8443,21 @@ def run_gui(start_path=None):
         _trophy_reset("Open the Trophies tab to load")
         metatext.delete("1.0", "end")
         refresh_details()
-        # image choices: png entries (+ switch jpeg icons)
+        # image choices: png entries (+ switch jpeg icons).
+        # PS3 discs/folders bury ~200 game-texture PNGs in USRDIR — the
+        # Image tab only wants the XMB backdrop set (icon + PIC0/1/2).
         pngs = [e["name"] for e in r["entries"]
                 if e["name"].lower().endswith((".png", ".jpg", ".jpeg")) and e["size"] > 0]
+        if r.get("kind") == "ps3":
+            _mains = [n for n in pngs if os.path.basename(n).upper()
+                      in ("ICON0.PNG", "PIC0.PNG", "PIC1.PNG", "PIC2.PNG")]
+            if _mains:
+                pngs = _mains
         state["imgnames"] = pngs
         _fill_imgtab(pngs)
         if pngs:
-            first = next((n for n in ("icon0.png", "icon.jpg") if n in pngs), pngs[0])
+            _bases = {os.path.basename(n).lower(): n for n in pngs}
+            first = _bases.get("icon0.png", _bases.get("icon.jpg", pngs[0]))
             show_image(first)
         elif r.get("store_cid"):
             state["pil"] = None
@@ -8795,6 +8966,6 @@ if __name__ == "__main__":
     elif len(sys.argv) >= 2 and os.path.exists(sys.argv[1]):
         run_gui(sys.argv[1])
     elif len(sys.argv) >= 2 and sys.argv[1] == "--info":
-        print("usage: pkgviewer.py --info <file.pkg/.nsp/.xci>")
+        print("usage: pkgviewer.py --info <file.pkg/.iso/.nsp/.xci>")
     else:
         run_gui()
