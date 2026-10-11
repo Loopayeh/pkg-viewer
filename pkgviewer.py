@@ -2599,6 +2599,89 @@ def download_url_bytes(url, timeout=30):
         return r.read()
 
 
+# PS3 cover art: GameTDB box-front (square-ish 160px), keyed by
+# Title ID without dash (BCUS98111). Region folders: US/EN/JA.
+# Same disk cache as PS2 covers, so art survives offline.
+PS3_COVER_BASE = "https://art.gametdb.com/ps3/cover"
+PS3_COVER_REGION = {"AMERICAS": "US", "EUROPE": "EN", "JAPAN": "JA",
+                    "ASIA": "JA", "KOREA": "KO", "CHINA": "EN"}
+_PS3_COVER_MEM = {}
+
+
+def fetch_ps3_cover(tid, region=""):
+    """Square box-front bytes (JPEG) for a PS3 Title ID, or b"". Never raises."""
+    try:
+        t = str(tid or "").strip().upper()
+        rg = str(region or "").strip().upper()
+    except Exception:
+        return b""
+    if t in _PS3_COVER_MEM:
+        return _PS3_COVER_MEM[t]
+    import re as _re
+    if not _re.match(r"^[A-Z]{4}\d{5}$", t):
+        _PS3_COVER_MEM[t] = b""
+        return b""
+    try:
+        d = _covers_dir()
+        if d:
+            _fp = os.path.join(d, t + ".jpg")
+            try:
+                if os.path.isfile(_fp) and os.path.getsize(_fp) > 1024:
+                    with open(_fp, "rb") as fh:
+                        _raw = fh.read(5_000_000)
+                    if _raw[:2] == b"\xff\xd8":
+                        _PS3_COVER_MEM[t] = _raw
+                        return _raw
+            except Exception:
+                pass
+    except Exception:
+        pass
+    if not _host_up("art.gametdb.com"):
+        return b""
+    _order = [PS3_COVER_REGION.get(rg, ""), "US", "EN", "JA"]
+    _seen = []
+    for _rg in _order:
+        if _rg and _rg not in _seen:
+            _seen.append(_rg)
+    import urllib.request as _ureq
+    for _rg in _seen:
+        try:
+            req = _ureq.Request("%s/%s/%s.jpg" % (PS3_COVER_BASE, _rg, t),
+                                headers={"User-Agent": "Mozilla/5.0"})
+            with _ureq.urlopen(req, timeout=15) as r:
+                raw = r.read(5_000_000)
+            if raw[:2] != b"\xff\xd8":
+                continue
+            _PS3_COVER_MEM[t] = raw
+            try:
+                d = _covers_dir()
+                if d:
+                    with open(os.path.join(d, t + ".jpg"), "wb") as out:
+                        out.write(raw)
+            except Exception:
+                pass
+            return raw
+        except Exception:
+            continue
+    _PS3_COVER_MEM[t] = b""
+    return b""
+
+
+def _ps3_cover_key(result):
+    """(tid, region) for PS3 results with a valid Title ID, else None."""
+    try:
+        if not isinstance(result, dict) or result.get("kind") != "ps3":
+            return None
+        rd = dict(result.get("rows") or [])
+        tid = str(rd.get("Title ID", "") or "").strip().upper()
+        import re as _re
+        if not _re.match(r"^[A-Z]{4}\d{5}$", tid):
+            return None
+        return (tid, str(rd.get("Region", "") or ""))
+    except Exception:
+        return None
+
+
 # PS2 cover art: xlenore/ps2-covers (same repo PCSX2's own Cover
 # Downloader uses). No key needed: covers/default/<SERIAL>.jpg
 # (flat) with covers/3d/<SERIAL>.png fallback. Serial = dash form
@@ -8752,6 +8835,9 @@ def run_gui(start_path=None):
             _bases = {os.path.basename(n).lower(): n for n in pngs}
             first = _bases.get("icon0.png", _bases.get("icon.jpg", pngs[0]))
             show_image(first)
+            _ps3 = _ps3_cover_key(r)
+            if _ps3:
+                fetch_ps3_async(*_ps3)
         elif r.get("store_cid"):
             state["pil"] = None
             _sync_imgtab()
@@ -8764,6 +8850,12 @@ def run_gui(start_path=None):
             _fill_imgtab([])
             imglabel.config(image="", text="Fetching cover...")
             fetch_ps2_async(r["ps2_serial"])
+        elif _ps3_cover_key(r):
+            state["pil"] = None
+            _sync_imgtab()
+            _fill_imgtab([])
+            imglabel.config(image="", text="Fetching cover...")
+            fetch_ps3_async(*_ps3_cover_key(r))
         else:
             state["pil"] = None
             _sync_imgtab()
@@ -9087,6 +9179,51 @@ def run_gui(start_path=None):
             state["imgnames"] = ["cover.jpg"]
             _fill_imgtab(["cover.jpg"])
             statusvar.set("OK - PS2 cover")
+
+    def fetch_ps3_async(tid, region):
+        """Background: PS3 square cover (GameTDB) → display via root.after."""
+        def _work():
+            try:
+                data = fetch_ps3_cover(tid, region) or b""
+            except Exception:
+                data = b""
+            try:
+                root.after(0, lambda: _ps3_cover_done(tid, data))
+            except Exception:
+                pass
+        import threading as _th
+        _th.Thread(target=_work, daemon=True).start()
+
+    def _ps3_cover_done(tid, data):
+        # Square box-front goes FIRST: hero shows it, Image tab lists
+        # cover.jpg before the embedded rectangles (ICON0/PIC0...).
+        r = state.get("result")
+        if not r or r.get("kind") != "ps3":
+            return
+        try:
+            _rd = dict(r.get("rows") or [])
+            if str(_rd.get("Title ID", "") or "").strip().upper() != tid:
+                return
+        except Exception:
+            pass
+        state["store_bytes"] = data if data[:2] == b"\xff\xd8" else b""
+        if not state["store_bytes"]:
+            return  # keep the embedded art, if any
+        if not has_pil:
+            return
+        try:
+            im = Image.open(io.BytesIO(state["store_bytes"]))
+        except Exception:
+            return
+        err = display_pil(im, "cover.jpg")
+        if err:
+            statusvar.set(f"Error: {err}")
+        else:
+            names = ["cover.jpg"] + [n for n in state.get("imgnames", [])
+                                     if n != "cover.jpg"]
+            state["imgnames"] = names
+            _fill_imgtab(names)
+            statusvar.set("OK - PS3 cover")
 
     def fetch_patch_async(tid, own_ver):
         """Background: latest patch version → Details via root.after."""
