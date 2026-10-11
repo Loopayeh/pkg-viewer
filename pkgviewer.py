@@ -361,7 +361,14 @@ class PillLabel(_tk.Label):
             self._face = opts.pop("bg", opts.pop("background", self._face))
             dirty = True
         if "fg" in opts or "foreground" in opts:
-            pass
+            # badge text color must follow (e.g. white on Nintendo red);
+            # plain tk.Label draws text over the pill image in this color.
+            _fg = opts.pop("fg", opts.pop("foreground", None))
+            if _fg is not None:
+                try:
+                    super().configure(fg=_fg)
+                except Exception:
+                    pass
         if opts:
             try:
                 super().configure(**opts)
@@ -3300,7 +3307,11 @@ def parse_wiiu_folder(path):
             "title": title or info["title_id"],
             "rows": rows, "entries": ents,
             "meta": {"title_id": info["title_id"],
-                     "version": info["version"]},
+                     "version": info["version"],
+                     "contents": [
+                         "%s idx=%d type=%#x size=%d" % (
+                             r["id"], r["index"], r["type"], r["size"])
+                         for r in recs]},
             "icon_entry": "", "wiiu_tid": info["title_id"]}
 
 
@@ -9767,7 +9778,7 @@ def run_gui(start_path=None):
         try:
             _ext = os.path.splitext(p)[1].lower()
             _fmt = {".ffpkg": "ffpkg", ".ffpfsc": "ffpfsc",
-                    ".exfat": "exfat", ".pkg": "pkg", ".iso": "pkg",
+                    ".exfat": "exfat", ".pkg": "pkg",
                     ".nsp": "nsp", ".xci": "xci"}.get(_ext, "")
             _fl = state.get("fmtlabel")
             if _fl is not None:
