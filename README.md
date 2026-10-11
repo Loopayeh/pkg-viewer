@@ -1,11 +1,11 @@
-# PKG Viewer — PS3 / PS4 / PS5 / Switch
+# PKG Viewer — PS2 / PS3 / PS4 / PS5 / Switch
 
 ![screenshot](screenshot.png)
 ![trophies](screenshot-trophies.png)
 
 **PKG Viewer** shows what's inside a PlayStation or Switch game file without extracting it: cover art, title, Title ID, region, version, and required firmware. Retail (original) PKGs fully supported — including split multi-part sets.
 
-Works with `.pkg` packages, `.exfat` / `.ffpfsc` / `.ffpkg` images, Switch `.nsp` / `.xci` files, and game folders.
+Works with `.pkg` packages, PS2/PS3 `.iso` disc images, `.exfat` / `.ffpfsc` / `.ffpkg` images, Switch `.nsp` / `.xci` files, and game folders.
 
 ## Download
 
@@ -47,6 +47,7 @@ PKGViewer.bat
 
 ## Supported formats
 
+- **PS2 disc images** (`.iso`) — SYSTEM.CNF serial/version/VMODE, file listing
 - **PS3 packages** (`.pkg`) — retail + debug NPDRM, decrypted listing
 - **PS3 game folders** — NPDRM and PS3_GAME layouts
 - **PS4 / PS5 packages** (`.pkg`) — game, DLC, update, retail + split parts

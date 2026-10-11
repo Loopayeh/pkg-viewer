@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""PKG Viewer - PS3 (PKG/folder/ISO) + PS4 + PS5 (FIH/CNT) + Switch (NSP/PFS0, XCI/HFS0). Clean dark UI (tkinter) + CLI --info mode."""
+"""PKG Viewer - PS2/PS3 (ISO) + PS3 (PKG/folder) + PS4 + PS5 (FIH/CNT) + Switch (NSP/PFS0, XCI/HFS0). Clean dark UI (tkinter) + CLI --info mode."""
 import io
 import json
 import os
 import struct
 import sys
 
-APP_VERSION = "v1.16.0"  # bump on every release — the updater compares this
+APP_VERSION = "v1.17.0"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -1787,7 +1787,7 @@ def parse_pkg(path):
     size = os.path.getsize(path)
     low = path.lower()
     if low.endswith(".iso"):
-        return parse_ps3_iso(path)
+        return parse_disc_iso(path)
     if low.endswith(".nsp"):
         return parse_nsp(path)
     if low.endswith(".xci"):
@@ -1799,7 +1799,7 @@ def parse_pkg(path):
     with open(path, "rb") as f:
         magic = f.read(4)
         if magic == b"\x01CD0":
-            return parse_ps3_iso(path)
+            return parse_disc_iso(path)
         if magic == PFS0_MAGIC:
             return parse_nsp(path)
         f.seek(0x100)
@@ -2262,6 +2262,215 @@ def parse_ps3_iso(path):
             "title": title or tid,
             "rows": rows, "entries": ents, "meta": sfo,
             "icon_entry": icon or "icon0.png"}
+
+
+PS2_SERIAL_REGION = {"U": "Americas", "E": "Europe", "J": "Japan",
+                     "P": "Japan", "A": "Asia", "H": "Asia",
+                     "K": "Korea", "C": "China"}
+
+
+def _ps2_normalize_serial(raw):
+    """'SCUS_973.99' -> 'SCUS-97399'. '' when unparseable. Never raises."""
+    try:
+        import re as _re
+        m = _re.search(r"([A-Za-z]{4})[_-]?(\d{3})[._]?(\d{2})",
+                       str(raw or ""))
+        if not m:
+            return ""
+        return (m.group(1).upper() + "-" + m.group(2) + m.group(3))
+    except Exception:
+        return ""
+
+
+def _ps2_region(serial, vmode=""):
+    """Serial 3rd-letter map (SCUS->Americas, SLES->Europe, SLPS->Japan...).
+
+    Falls back to VMODE (PAL->Europe) when the serial is unknown.
+    """
+    try:
+        s = str(serial or "").strip().upper()
+        if len(s) >= 3:
+            hit = PS2_SERIAL_REGION.get(s[2])
+            if hit:
+                return hit
+        v = str(vmode or "").strip().upper()
+        if "PAL" in v:
+            return "Europe"
+        if "NTSC" in v:
+            return "Americas / Japan (NTSC)"
+    except Exception:
+        pass
+    return "-"
+
+
+def _ps2_title_from_filename(path, vol=""):
+    """PS2 discs embed no title: derive it from the file name.
+
+    'SCUS-97399 God of War.iso' -> 'God of War'. Falls back to the
+    ISO volume label, then the bare stem. Never raises.
+    """
+    try:
+        import re as _re
+        stem = os.path.splitext(os.path.basename(path or ""))[0].strip()
+        t = _re.sub(r"^[A-Za-z]{4}[-_ ]?\d{3}[._]?\d{2}\s*[-_.\s]*",
+                    "", stem).strip(" -_.")
+        if t:
+            return t
+        if vol:
+            return vol
+        return stem
+    except Exception:
+        return vol or ""
+
+
+def parse_ps2_iso(path):
+    """PS2 disc ISO (ISO9660, 2048-byte sectors): file list + SYSTEM.CNF meta.
+
+    Same sector-walk as parse_ps3_iso, no mount needed. Detects via
+    SYSTEM.CNF with a cdrom0:\\ BOOT2 executable entry. Title comes
+    from the file name (discs embed none). Never raises.
+    """
+    import struct as _st
+    try:
+        size = os.path.getsize(path)
+    except OSError as e:
+        return {"error": str(e)}
+    if size < 17 * ISO_SECTOR:
+        return {"error": "too small for ISO"}
+    try:
+        with open(path, "rb") as f:
+            f.seek(16 * ISO_SECTOR)
+            pvd = f.read(ISO_SECTOR)
+            if len(pvd) < ISO_SECTOR or pvd[0] != 1 or pvd[1:6] != b"CD001":
+                return {"error": "not an ISO9660 image"}
+            try:
+                vol = pvd[40:72].decode("ascii", errors="replace").strip()
+            except Exception:
+                vol = ""
+            if len(pvd) < 190 or pvd[156] < 34:
+                return {"error": "bad ISO root record"}
+            root_ext = _st.unpack_from("<I", pvd, 156 + 2)[0]
+            root_size = _st.unpack_from("<I", pvd, 156 + 10)[0]
+            if not root_ext or not root_size or root_size > 64 << 20:
+                return {"error": "bad ISO root directory"}
+            ents = []
+            seen_dirs = set()
+
+            def _walk(ext, sz, prefix, depth):
+                if depth > 16 or not ext or not sz or sz > 64 << 20:
+                    return
+                key = (ext, prefix)
+                if key in seen_dirs:
+                    return
+                seen_dirs.add(key)
+                try:
+                    f.seek(ext * ISO_SECTOR)
+                    data = f.read(sz)
+                except OSError:
+                    return
+                if len(data) < sz:
+                    return
+                off = 0
+                while off < len(data):
+                    if data[off] == 0:
+                        nxt = ((off // ISO_SECTOR) + 1) * ISO_SECTOR
+                        if nxt >= len(data):
+                            break
+                        off = nxt
+                        continue
+                    ll = data[off]
+                    if ll < 33 or off + ll > len(data):
+                        break
+                    rec = data[off:off + ll]
+                    try:
+                        flags = rec[25]
+                        rex = _st.unpack_from("<I", rec, 2)[0]
+                        rsz = _st.unpack_from("<I", rec, 10)[0]
+                        nlen = rec[32]
+                        nm_raw = rec[33:33 + nlen]
+                    except Exception:
+                        break
+                    off += ll
+                    if nm_raw in (b"\x00", b"\x01"):
+                        continue
+                    nm = _iso_clean_name(nm_raw)
+                    if not nm:
+                        continue
+                    full = nm if not prefix else prefix + "/" + nm
+                    if flags & 0x02:
+                        _walk(rex, rsz, full, depth + 1)
+                    else:
+                        if len(ents) >= 200000:
+                            return
+                        ents.append({"id": len(ents), "name": full,
+                                     "size": rsz,
+                                     "abs_off": rex * ISO_SECTOR})
+            _walk(root_ext, root_size, "", 0)
+            if not ents:
+                return {"error": "empty ISO"}
+            ups = {e["name"].upper() for e in ents}
+            if "SYSTEM.CNF" not in ups:
+                return {"error": "not a PS2 disc ISO"}
+            cnf = {}
+            for e in ents:
+                if e["name"].upper() == "SYSTEM.CNF" \
+                        and 0 < e["size"] < 100_000:
+                    try:
+                        f.seek(e["abs_off"])
+                        raw = f.read(e["size"])
+                    except OSError:
+                        break
+                    try:
+                        txt = raw.decode("utf-8", errors="replace")
+                    except Exception:
+                        txt = ""
+                    for line in txt.replace("\r", "\n").split("\n"):
+                        line = line.strip()
+                        if not line or "=" not in line:
+                            continue
+                        k, _, v = line.partition("=")
+                        cnf[k.strip().upper()] = v.strip()
+                    break
+            boot = str(cnf.get("BOOT2", "") or "").strip()
+            if not boot.lower().startswith("cdrom0:"):
+                return {"error": "not a PS2 disc ISO"}
+    except Exception as e:
+        return {"error": str(e)}
+    serial = _ps2_normalize_serial(boot)
+    if not serial:
+        serial = _ps2_normalize_serial(os.path.basename(path))
+    ver = str(cnf.get("VER", "") or "").strip() or "-"
+    vmode = str(cnf.get("VMODE", "") or "").strip() or "-"
+    boot_disp = boot.replace("cdrom0:\\", "").replace("cdrom0:",
+                                                      "").split(";")[0]
+    title = _ps2_title_from_filename(path, vol)
+    tid = serial or os.path.splitext(os.path.basename(path))[0]
+    rows = [("Platform", "PS2 ISO (disc)"),
+            ("Title ID", serial or "-"),
+            ("Region", _ps2_region(serial, vmode)),
+            ("Version", ("v" + ver) if ver not in ("", "-") else "-"),
+            ("VMODE", vmode),
+            ("Boot", boot_disp or "-"),
+            ("Volume", vol or "-"),
+            ("Size", f"{fmt_size(size)} ({len(ents)} files)")]
+    return {"ok": True, "kind": "ps2", "path": path, "size": size,
+            "title": title or tid,
+            "rows": rows, "entries": ents, "meta": cnf,
+            "icon_entry": ""}
+
+
+def parse_disc_iso(path):
+    """PS3 disc ISO first, PS2 disc ISO second. Returns {"error": ...} if neither."""
+    r = parse_ps3_iso(path)
+    if r.get("ok"):
+        return r
+    r2 = parse_ps2_iso(path)
+    if r2.get("ok"):
+        return r2
+    # report the more specific error (PS2 check ran last, PS3 first)
+    if "not a PS" in str(r.get("error", "")) and "not a PS" in str(r2.get("error", "")):
+        return {"error": "not a PS2/PS3 disc ISO"}
+    return r2 if r2.get("error") != "not a PS2 disc ISO" else r
 
 
 def _split_part_stub(path, size):
@@ -3983,7 +4192,8 @@ NAME_PARTS = (("title", "Title"), ("tid", "Title ID"),
 # their relative order at the end. Matched case-insensitively.
 GRID_ORDER = ["Title ID", "Concept ID", "Category",
               "Version", "Base Version", "Content Ver", "Master Ver",
-              "App Ver", "Min. System", "Parental Level", "Resolution",
+              "App Ver", "Min. System", "VMODE", "Boot",
+              "Parental Level", "Resolution",
               "Sound Format", "Trophy ID", "Update", "Volume", "SDK", "DRM",
               "Signature", "Languages", "Built", "Entries", "Files",
               "PFS image", "Assets", "Inner file", "Part", "Passcode",
@@ -8309,6 +8519,8 @@ def run_gui(start_path=None):
             _plat_col = "#f2b84b"
         elif "exfat" in _pl:
             _plat_col = "#3dd6b0"
+        elif "ps2" in _pl:
+            _plat_col = "#3b7dd8"
         elif "ps3" in _pl:
             _plat_col = "#e8a34c"
         elif "ps4" in _pl or _pl.startswith("cnt"):
