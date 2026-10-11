@@ -2710,32 +2710,109 @@ XDVDFS_MAGIC = b"MICROSOFT*XBOX*MEDIA"
 
 
 def _xex_exec_info(get_bytes):
-    """(media_id_hex, title_id_hex) from default.xex bytes. ("","") on failure.
+    """(media, tid, ver, base, disc_num, disc_in) hex/ints from default.xex.
 
-    get_bytes(off, size) -> bytes. Only the header is touched (plaintext).
+    get_bytes(off, size) -> bytes. Only the header is touched
+    (plaintext). ""/0 on failure. Never raises.
     """
     try:
         import struct as _st
         head = get_bytes(0, 0x20)
         if len(head) < 0x18 or head[:4] != b"XEX2":
-            return "", ""
+            return "", "", 0, 0, 0, 0
         n = _st.unpack_from(">I", head, 0x14)[0]
         if n <= 0 or n > 256:
-            return "", ""
+            return "", "", 0, 0, 0, 0
         tab = get_bytes(0x18, n * 8)
         if len(tab) < n * 8:
-            return "", ""
+            return "", "", 0, 0, 0, 0
         for i in range(n):
             hid, hoff = _st.unpack_from(">II", tab, i * 8)
             if hid == 0x40006:
-                ex = get_bytes(hoff, 16)
+                ex = get_bytes(hoff, 20)
                 if len(ex) < 16:
-                    return "", ""
-                media, _v, _b, tid = _st.unpack(">IIII", ex)
-                return ("%08X" % media, "%08X" % tid)
-        return "", ""
+                    return "", "", 0, 0, 0, 0
+                media, ver, base, tid = _st.unpack(">IIII", ex[:16])
+                dn = ex[18] if len(ex) > 18 else 0
+                di = ex[19] if len(ex) > 19 else 0
+                return ("%08X" % media, "%08X" % tid, ver, base,
+                        dn, di)
+        return "", "", 0, 0, 0, 0
     except Exception:
-        return "", ""
+        return "", "", 0, 0, 0, 0
+
+
+def _x360_tu_present_folder(path):
+    """'tu00000001_00000000' style name under $TitleUpdate, or ''. """
+    try:
+        tu = os.path.join(path, "$TitleUpdate")
+        if not os.path.isdir(tu):
+            return ""
+        for tid_dir in sorted(os.listdir(tu)):
+            td = os.path.join(tu, tid_dir)
+            if not os.path.isdir(td):
+                continue
+            for fn in sorted(os.listdir(td)):
+                if fn.lower().startswith("tu") and os.path.isfile(
+                        os.path.join(td, fn)):
+                    return fn
+        return ""
+    except Exception:
+        return ""
+
+
+_X360_TU_MEM = {}
+
+
+def fetch_x360_latest_tu(tid, media=""):
+    """(latest_ver, count) of Title Updates from XboxUnity. ("",0) on failure."""
+    try:
+        t = str(tid or "").strip().upper()
+        m = str(media or "").strip().upper()
+    except Exception:
+        return "", 0
+    key = (t, m)
+    if key in _X360_TU_MEM:
+        return _X360_TU_MEM[key]
+    import re as _re
+    if not _re.match(r"^[0-9A-F]{8}$", t):
+        _X360_TU_MEM[key] = ("", 0)
+        return "", 0
+    if not _proxy_url() and not _host_up("xboxunity.net"):
+        return "", 0
+    try:
+        import json as _json
+        raw = _http_get(XBOXUNITY_BASE + "/TitleUpdateInfo.php?titleid=" + t,
+                        tries=2, headers={
+                            "X-Requested-With": "XMLHttpRequest",
+                            "Referer": "https://xboxunity.net/"})
+        data = _json.loads(raw.decode("utf-8", "replace"))
+        best, count = "", 0
+        if isinstance(data, dict):
+            for grp in data.get("MediaIDS") or []:
+                ups = grp.get("Updates") or []
+                count += len(ups)
+                if m and str(grp.get("MediaID", "")).upper() != m:
+                    continue
+                for u in ups:
+                    v = str(u.get("Version", "") or "")
+                    if v and (not best or int(v) > int(best or 0)):
+                        best = v
+            if not best:
+                # media mismatch: fall back to newest across all media
+                for grp in data.get("MediaIDS") or []:
+                    for u in grp.get("Updates") or []:
+                        v = str(u.get("Version", "") or "")
+                        if v and (not best or int(v) > int(best or 0)):
+                            best = v
+        _X360_TU_MEM[key] = (best, count)
+        return best, count
+    except Exception:
+        try:
+            _X360_TU_MEM[key] = ("", 0)
+        except Exception:
+            pass
+        return "", 0
 
 
 def _x360_clean_title(path):
@@ -2809,6 +2886,20 @@ def _xdvdfs_parse_node(data, off, img_size):
                 "span": (off, off + ((14 + nlen + 3) // 4) * 4)}
     except Exception:
         return None
+
+
+def _x360_ver_disc_rows(ver, base, dn, di):
+    """Version + multidisc rows from XEX execution info. Never raises."""
+    rows = []
+    try:
+        if ver:
+            rows.append(("Version", "v%d" % ver if not base or base == ver
+                         else "v%d (base v%d)" % (ver, base)))
+        if di and int(di) > 1:
+            rows.append(("Disc", "%d/%d" % (dn, di)))
+    except Exception:
+        pass
+    return rows
 
 
 def _xdvdfs_walk_table(f, sector, size, prefix, ents, depth=0):
@@ -2910,10 +3001,10 @@ def parse_x360_iso(path):
             def _rd(off, ln):
                 f.seek(off)
                 return f.read(ln)
-            media, tid = ("", "")
+            media, tid, ver, base, dn, di = ("", "", 0, 0, 0, 0)
             if dxex:
                 base = dxex[1] * 2048
-                media, tid = _xex_exec_info(
+                media, tid, ver, base, dn, di = _xex_exec_info(
                     lambda o, ln: _rd(base + o, ln))
     except Exception as e:
         return {"error": str(e)}
@@ -2921,17 +3012,23 @@ def parse_x360_iso(path):
         return {"error": "empty Xbox 360 ISO"}
     title = _x360_clean_title(path)
     region = _x360_region_from_name(path) or "-"
+    tu = next((n.split("/")[-1] for n, _s, _z in files
+               if n.upper().startswith("$TITLEUPDATE/") and
+               n.split("/")[-1].lower().startswith("tu")), "")
     rows = [("Platform", "Xbox 360 ISO"),
             ("Title ID", tid or "-"),
             ("Media ID", media or "-"),
-            ("Region", region),
-            ("Size", "%s (%d files)" % (fmt_size(size), len(files)))]
+            ("Region", region)]
+    rows += _x360_ver_disc_rows(ver, base, dn, di)
+    rows += [("Update", tu if tu else "-"),
+             ("Size", "%s (%d files)" % (fmt_size(size), len(files)))]
     ents = [{"id": i, "name": n, "size": z, "abs_off": s * 2048}
             for i, (n, s, z) in enumerate(files)]
     return {"ok": True, "kind": "x360", "path": path, "size": size,
             "title": title or tid or os.path.basename(path),
             "rows": rows, "entries": ents,
-            "meta": {"title_id": tid, "media_id": media},
+            "meta": {"title_id": tid, "media_id": media,
+                     "own_ver": ("v%d" % ver) if ver else ""},
             "icon_entry": "", "x360_tid": tid}
 
 
@@ -2957,7 +3054,7 @@ def parse_x360_folder(path):
     try:
         with open(xex, "rb") as fh:
             blob = fh.read()
-        media, tid = _xex_exec_info(
+        media, tid, ver, base, dn, di = _xex_exec_info(
             lambda o, ln: blob[o:o + ln])
     except OSError as e:
         return {"error": str(e)}
@@ -2984,21 +3081,25 @@ def parse_x360_folder(path):
         pass
     title = _x360_clean_title(path)
     region = _x360_region_from_name(path) or "-"
+    tu = _x360_tu_present_folder(path)
     rows = [("Platform", "Xbox 360 folder"),
             ("Title ID", tid or "-"),
             ("Media ID", media or "-"),
-            ("Region", region),
-            ("Size", "%s (%d files)" % (fmt_size(total), len(ents)))]
+            ("Region", region)]
+    rows += _x360_ver_disc_rows(ver, base, dn, di)
+    rows += [("Update", tu if tu else "-"),
+             ("Size", "%s (%d files)" % (fmt_size(total), len(ents)))]
     return {"ok": True, "kind": "x360", "path": path, "size": total,
             "title": title or tid or os.path.basename(path),
             "rows": rows, "entries": ents,
-            "meta": {"title_id": tid, "media_id": media},
+            "meta": {"title_id": tid, "media_id": media,
+                     "own_ver": ("v%d" % ver) if ver else ""},
             "icon_entry": "", "x360_tid": tid}
 
 
 def parse_x360_xex_file(path, size=0):
     """Standalone default.xex: IDs only, no file list."""
-    media, tid = _xex_exec_info(
+    media, tid, ver, base, dn, di = _xex_exec_info(
         lambda o, ln: _xex_file_range(path, o, ln))
     if not tid and not media:
         return {"error": "no XEX execution info"}
@@ -3010,11 +3111,13 @@ def parse_x360_xex_file(path, size=0):
     rows = [("Platform", "Xbox 360 XEX"),
             ("Title ID", tid or "-"),
             ("Media ID", media or "-"),
-            ("Region", _x360_region_from_name(path) or "-"),
-            ("Size", fmt_size(size))]
+            ("Region", _x360_region_from_name(path) or "-")]
+    rows += _x360_ver_disc_rows(ver, base, dn, di)
+    rows += [("Size", fmt_size(size))]
     return {"ok": True, "kind": "x360", "path": path, "size": size,
             "title": title or tid, "rows": rows, "entries": [],
-            "meta": {"title_id": tid, "media_id": media},
+            "meta": {"title_id": tid, "media_id": media,
+                     "own_ver": ("v%d" % ver) if ver else ""},
             "icon_entry": "", "x360_tid": tid}
 
 
@@ -5350,7 +5453,7 @@ NAME_PARTS = (("title", "Title"), ("tid", "Title ID"),
 # their relative order at the end. Matched case-insensitively.
 GRID_ORDER = ["Title ID", "Media ID", "Concept ID", "Category",
               "Version", "Base Version", "Content Ver", "Master Ver",
-              "App Ver", "Min. System", "VMODE", "Boot",
+              "App Ver", "Min. System", "VMODE", "Boot", "Disc",
               "Parental Level", "Resolution",
               "Sound Format", "Trophy ID", "Update", "Volume", "SDK", "DRM",
               "Signature", "Languages", "Built", "Entries", "Files",
@@ -9909,6 +10012,14 @@ def run_gui(start_path=None):
             imglabel.config(image="", text="(no image)")
         if r.get("patch_tid"):
             fetch_patch_async(r["patch_tid"], r.get("own_ver", ""))
+        if r.get("kind") == "x360" and r.get("x360_tid"):
+            try:
+                _mm = r.get("meta") or {}
+                fetch_x360_tu_async(r["x360_tid"],
+                                    _mm.get("media_id", ""),
+                                    _mm.get("own_ver", ""))
+            except Exception:
+                pass
         _set_rename_enabled(True)
         _summ = lman_summary(r.get("kind"), dict(r["rows"]))
         _set_status((_summ + f"  •  {len(r['entries'])} entries") if _summ else
@@ -10350,6 +10461,37 @@ def run_gui(start_path=None):
             state["imgnames"] = names
             _fill_imgtab(names)
             statusvar.set("OK - Xbox cover")
+
+    def fetch_x360_tu_async(tid, media, own_ver):
+        """Background: latest Xbox 360 TU → banner via root.after."""
+        def _work():
+            try:
+                latest, count = fetch_x360_latest_tu(tid, media)
+            except Exception:
+                latest, count = "", 0
+            try:
+                root.after(0, lambda: _x360_tu_done(
+                    tid, own_ver, latest, count))
+            except Exception:
+                pass
+        import threading as _th
+        _th.Thread(target=_work, daemon=True).start()
+
+    def _x360_tu_done(tid, own_ver, latest, count):
+        r = state.get("result")
+        if not r or r.get("x360_tid") != tid:
+            return
+        if not latest:
+            return
+        line1 = f"Latest TU = v{latest} ({count} known)"
+        if own_ver:
+            line1 += (" — up to date"
+                      if own_ver.strip().lower() == ("v" + latest).lower()
+                      else " — behind latest")
+        else:
+            line1 += " — XEX version unknown"
+        r["patch_lines"] = [line1]
+        refresh_details()
 
     def fetch_patch_async(tid, own_ver):
         """Background: latest patch version → Details via root.after."""
