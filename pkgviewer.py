@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.18.0"  # bump on every release — the updater compares this
+APP_VERSION = "v1.19.0"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -6126,7 +6126,7 @@ def run_gui(start_path=None):
         root.withdraw()
     except Exception:
         pass
-    root.title("PKG Viewer %s  •  PS2 / PS3 / PS4 / PS5 / Switch / Xbox 360  •  by Loopayeh" % APP_VERSION)
+    root.title("PKG Viewer %s  •  PS2 / PS3 / PS4 / PS5 / Switch / Xbox 360 / Wii U  •  by Loopayeh" % APP_VERSION)
     root.geometry("880x410")
     root.configure(bg=BG)
     root.minsize(880, 410)
@@ -7588,7 +7588,7 @@ def run_gui(start_path=None):
                  bg=CARD, fg=TEXT, font=FONT).pack(padx=36, pady=(12, 0))
         tk.Label(_ab, text="by Loopayeh",
                  bg=CARD, fg=MUTED, font=FONT_SMALL).pack(pady=(2, 0))
-        tk.Label(_ab, text="View PS2 / PS3 / PS4 / PS5 / Switch / Xbox 360 package info and cover art.",
+        tk.Label(_ab, text="View PS2 / PS3 / PS4 / PS5 / Switch / Xbox 360 / Wii U package info and cover art.",
                  bg=CARD, fg=TEXT, font=FONT_SMALL).pack(padx=36,
                                                          pady=(12, 0))
         tk.Label(_ab, text="If you enjoy what I build and want to support my work,\n"

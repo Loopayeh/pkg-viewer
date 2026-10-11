@@ -1,11 +1,11 @@
-# PKG Viewer — PS2 / PS3 / PS4 / PS5 / Switch / Xbox 360
+# PKG Viewer — PS2 / PS3 / PS4 / PS5 / Switch / Xbox 360 / Wii U
 
 ![screenshot](screenshot.png)
 ![trophies](screenshot-trophies.png)
 
 **PKG Viewer** shows what's inside a PlayStation or Switch game file without extracting it: cover art, title, Title ID, region, version, and required firmware. Retail (original) PKGs fully supported — including split multi-part sets.
 
-Works with `.pkg` packages, PS2/PS3 `.iso` disc images, `.exfat` / `.ffpfsc` / `.ffpkg` images, Switch `.nsp` / `.xci` files, and game folders.
+Works with `.pkg` packages, PS2/PS3 `.iso` disc images, `.exfat` / `.ffpfsc` / `.ffpkg` images, Switch `.nsp` / `.xci` files, Xbox 360 (GOD/STFS/ISO/XEX), Wii U NUS folders, and game folders.
 
 ## Download
 
@@ -23,7 +23,7 @@ Grab `PKGViewer-Setup-X.Y.Z.exe` from [Releases](../../releases) — no admin ne
 
 ## Features
 
-- Cover art preview (icon0.png, pic0.png, …) with Save / Copy to clipboard — online Store cover for encrypted retail PKGs, online PS2 covers (ps2-covers repo, cached offline)
+- Cover art preview (icon0.png, pic0.png, …) with Save / Copy to clipboard — online covers (PlayStation Store, ps2-covers, GameTDB, XboxUnity, Nintendo IDBE), cached offline
 - Spec card: Title ID, Content ID, version, region, Min. System, SDK, DRM
 - Latest patch version per game (PS5/PS4) with PKG-vs-latest compare
 - Files tab: named entries with id + size — single-file Extract with rename, trophy00.trp contents
@@ -49,6 +49,8 @@ PKGViewer.bat
 
 - **PS2 disc images** (`.iso`) — SYSTEM.CNF serial/version/VMODE, file listing
 - **Xbox 360 GOD folders + STFS packages** — title/Media/Title ID, data parts, embedded thumbnail, online XboxUnity covers
+- **Xbox 360 ISO / extracted folders / XEX** — XDVDFS listing, version/disc from XEX, TU check
+- **Wii U NUS folders** — TMD title/version/contents, official Nintendo icons
 - **PS3 packages** (`.pkg`) — retail + debug NPDRM, decrypted listing
 - **PS3 game folders** — NPDRM and PS3_GAME layouts
 - **PS4 / PS5 packages** (`.pkg`) — game, DLC, update, retail + split parts
