@@ -23,7 +23,7 @@ Grab `PKGViewer-Setup-X.Y.Z.exe` from [Releases](../../releases) — no admin ne
 
 ## Features
 
-- Cover art preview (icon0.png, pic0.png, …) with Save / Copy to clipboard — online Store cover for encrypted retail PKGs
+- Cover art preview (icon0.png, pic0.png, …) with Save / Copy to clipboard — online Store cover for encrypted retail PKGs, online PS2 covers (ps2-covers repo, cached offline)
 - Spec card: Title ID, Content ID, version, region, Min. System, SDK, DRM
 - Latest patch version per game (PS5/PS4) with PKG-vs-latest compare
 - Files tab: named entries with id + size — single-file Extract with rename, trophy00.trp contents

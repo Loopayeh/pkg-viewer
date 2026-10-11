@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.17.0"  # bump on every release — the updater compares this
+APP_VERSION = "v1.18.0"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -2456,7 +2456,7 @@ def parse_ps2_iso(path):
     return {"ok": True, "kind": "ps2", "path": path, "size": size,
             "title": title or tid,
             "rows": rows, "entries": ents, "meta": cnf,
-            "icon_entry": ""}
+            "icon_entry": "", "ps2_serial": serial}
 
 
 def parse_disc_iso(path):
@@ -2597,6 +2597,87 @@ def download_url_bytes(url, timeout=30):
     req = _ureq.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with _ureq.urlopen(req, timeout=timeout) as r:
         return r.read()
+
+
+# PS2 cover art: xlenore/ps2-covers (same repo PCSX2's own Cover
+# Downloader uses). No key needed: covers/default/<SERIAL>.jpg
+# (flat) with covers/3d/<SERIAL>.png fallback. Serial = dash form
+# (SCUS-97399). Downloads are cached on disk, so covers survive offline.
+PS2_COVER_BASE = ("https://raw.githubusercontent.com/xlenore/ps2-covers"
+                  "/main/covers")
+_PS2_COVER_MEM = {}
+
+
+def _covers_dir():
+    """On-disk cover cache dir (%APPDATA%/PKGViewer/covers). '' on failure."""
+    try:
+        p = _settings_path()
+        if not p:
+            return ""
+        d = os.path.join(os.path.dirname(p), "covers")
+        os.makedirs(d, exist_ok=True)
+        return d
+    except Exception:
+        return ""
+
+
+def fetch_ps2_cover(serial):
+    """Cover bytes (JPEG/PNG) for a PS2 serial, or b"". Never raises."""
+    try:
+        s = str(serial or "").strip().upper()
+    except Exception:
+        return b""
+    if not s:
+        return b""
+    if s in _PS2_COVER_MEM:
+        return _PS2_COVER_MEM[s]
+    import re as _re
+    if not _re.match(r"^[A-Z]{4}-\d{5}$", s):
+        _PS2_COVER_MEM[s] = b""
+        return b""
+    try:
+        d = _covers_dir()
+        if d:
+            for _ext in (".jpg", ".png"):
+                _fp = os.path.join(d, s + _ext)
+                try:
+                    if os.path.isfile(_fp) and os.path.getsize(_fp) > 1024:
+                        with open(_fp, "rb") as fh:
+                            _raw = fh.read(5_000_000)
+                        if _raw[:8] == b"\x89PNG\r\n\x1a\n" \
+                                or _raw[:2] == b"\xff\xd8":
+                            _PS2_COVER_MEM[s] = _raw
+                            return _raw
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    if not _host_up("raw.githubusercontent.com"):
+        return b""
+    import urllib.request as _ureq
+    for _tail in ("default/%s.jpg" % s, "3d/%s.png" % s):
+        try:
+            req = _ureq.Request(PS2_COVER_BASE + "/" + _tail,
+                                headers={"User-Agent": "Mozilla/5.0"})
+            with _ureq.urlopen(req, timeout=15) as r:
+                raw = r.read(5_000_000)
+            if not (raw[:8] == b"\x89PNG\r\n\x1a\n"
+                    or raw[:2] == b"\xff\xd8"):
+                continue
+            _PS2_COVER_MEM[s] = raw
+            try:
+                d = _covers_dir()
+                if d:
+                    _ext = ".png" if raw[:8] == b"\x89PNG\r\n\x1a\n" else ".jpg"
+                    with open(os.path.join(d, s + _ext), "wb") as out:
+                        out.write(raw)
+            except Exception:
+                pass
+            return raw
+        except Exception:
+            continue
+    _PS2_COVER_MEM[s] = b""
+    return b""
 
 
 _PATCH_CACHE = {}
@@ -8677,6 +8758,12 @@ def run_gui(start_path=None):
             _fill_imgtab([])
             imglabel.config(image="", text="Fetching cover...")
             fetch_store_async(r["store_cid"])
+        elif r.get("ps2_serial"):
+            state["pil"] = None
+            _sync_imgtab()
+            _fill_imgtab([])
+            imglabel.config(image="", text="Fetching cover...")
+            fetch_ps2_async(r["ps2_serial"])
         else:
             state["pil"] = None
             _sync_imgtab()
@@ -8960,6 +9047,46 @@ def run_gui(start_path=None):
             state["imgnames"] = ["cover.jpg"]
             _fill_imgtab(["cover.jpg"])
             statusvar.set("OK - store cover")
+
+    def fetch_ps2_async(serial):
+        """Background: PS2 cover (ps2-covers) → display via root.after."""
+        def _work():
+            try:
+                data = fetch_ps2_cover(serial) or b""
+            except Exception:
+                data = b""
+            try:
+                root.after(0, lambda: _ps2_cover_done(serial, data))
+            except Exception:
+                pass
+        import threading as _th
+        _th.Thread(target=_work, daemon=True).start()
+
+    def _ps2_cover_done(serial, data):
+        r = state.get("result")
+        if not r or r.get("ps2_serial") != serial:
+            return
+        state["store_bytes"] = data if data[:8] == b"\x89PNG\r\n\x1a\n" or \
+            data[:2] == b"\xff\xd8" else b""
+        if not state["store_bytes"]:
+            imglabel.config(image="", text="(cover unavailable)")
+            return
+        if not has_pil:
+            imglabel.config(text="(Pillow not installed)")
+            return
+        try:
+            im = Image.open(io.BytesIO(state["store_bytes"]))
+        except Exception:
+            imglabel.config(image="", text="(bad image)")
+            return
+        err = display_pil(im, "cover.jpg")
+        if err:
+            imglabel.config(text="(bad image)")
+            statusvar.set(f"Error: {err}")
+        else:
+            state["imgnames"] = ["cover.jpg"]
+            _fill_imgtab(["cover.jpg"])
+            statusvar.set("OK - PS2 cover")
 
     def fetch_patch_async(tid, own_ver):
         """Background: latest patch version → Details via root.after."""
