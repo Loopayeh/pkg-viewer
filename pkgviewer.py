@@ -1786,10 +1786,14 @@ def parse_pkg(path):
         _gt, _gc = _god_layout(path)
         if _gc:
             return parse_god_folder(path)
+        if _x360_folder_xex(path):
+            return parse_x360_folder(path)
         return parse_app_folder(path)
     size = os.path.getsize(path)
     low = path.lower()
     if low.endswith(".iso"):
+        if _xdvdfs_is_xiso(path):
+            return parse_x360_iso(path)
         return parse_disc_iso(path)
     if low.endswith(".nsp"):
         return parse_nsp(path)
@@ -1803,6 +1807,8 @@ def parse_pkg(path):
         magic = f.read(4)
         if magic == b"\x01CD0":
             return parse_disc_iso(path)
+        if magic == b"XEX2":
+            return parse_x360_xex_file(path, size)
         if magic in STFS_MAGIC:
             return parse_stfs_file(path, size)
         if magic == PFS0_MAGIC:
@@ -2689,6 +2695,334 @@ def parse_stfs_file(path, size=0):
                      "title_id": tid, "media_id": hdr["media_id"],
                      "name": hdr["name"]},
             "icon_entry": icon, "x360_tid": tid}
+
+
+# ---------------- Xbox 360 ISO (XDVDFS) + extracted (JTAG rip) ----------------
+# XDVDFS volume descriptor lives in sector 32 ("MICROSOFT*XBOX*MEDIA",
+# root table sector/size at +0x14/+0x18 LE). Directory tables are
+# binary trees of (left.u16, right.u16, sector.u32, size.u32,
+# attr.u8, namelen.u8, name); attr 0x10 = dir, 0xFFFF = no child.
+# Title/Media IDs come from default.xex (XEX2 header 0x40006).
+
+XDVDFS_MAGIC = b"MICROSOFT*XBOX*MEDIA"
+
+
+def _xex_exec_info(get_bytes):
+    """(media_id_hex, title_id_hex) from default.xex bytes. ("","") on failure.
+
+    get_bytes(off, size) -> bytes. Only the header is touched (plaintext).
+    """
+    try:
+        import struct as _st
+        head = get_bytes(0, 0x20)
+        if len(head) < 0x18 or head[:4] != b"XEX2":
+            return "", ""
+        n = _st.unpack_from(">I", head, 0x14)[0]
+        if n <= 0 or n > 256:
+            return "", ""
+        tab = get_bytes(0x18, n * 8)
+        if len(tab) < n * 8:
+            return "", ""
+        for i in range(n):
+            hid, hoff = _st.unpack_from(">II", tab, i * 8)
+            if hid == 0x40006:
+                ex = get_bytes(hoff, 16)
+                if len(ex) < 16:
+                    return "", ""
+                media, _v, _b, tid = _st.unpack(">IIII", ex)
+                return ("%08X" % media, "%08X" % tid)
+        return "", ""
+    except Exception:
+        return "", ""
+
+
+def _x360_clean_title(path):
+    """'Minecraft (RF) (JTAGRip).iso' -> 'Minecraft'. Never raises."""
+    try:
+        import re as _re
+        stem = os.path.splitext(os.path.basename(path or ""))[0]
+        stem = _re.sub(r"\[[^\]]*\]", " ", stem)
+        stem = _re.sub(r"\([^)]*\)", " ", stem)
+        stem = _re.sub(r"\s+", " ", stem).strip(" -_.")
+        return stem or os.path.splitext(
+            os.path.basename(path or ""))[0]
+    except Exception:
+        return os.path.basename(path or "")
+
+
+def _x360_region_from_name(path):
+    """Region from filename tags: (RF)/(PAL)/(NTSC-U)... ''. Never raises."""
+    try:
+        import re as _re
+        up = str(path or "").upper()
+        if "REGION FREE" in up or "(RF)" in up or "[RF]" in up:
+            return "Region Free"
+        m = _re.search(r"\((NTSC(?:-[UJ])?|PAL|J|U|E|JPN|USA|EUR)\)", up)
+        if m:
+            return {"NTSC-U": "Americas", "NTSC-J": "Japan",
+                    "NTSC": "Americas / Japan (NTSC)", "PAL": "Europe",
+                    "U": "Americas", "USA": "Americas", "J": "Japan",
+                    "JPN": "Japan", "E": "Europe",
+                    "EUR": "Europe"}.get(m.group(1), "")
+        return ""
+    except Exception:
+        return ""
+
+
+def _xdvdfs_parse_node(data, off, img_size):
+    """One GDF dirent at off -> dict or None. Strict validation.
+
+    Real-world tables (JTAG tools) often carry garbage left/right
+    pointers, so every field is sanity-checked and callers never
+    trust pointers blindly. Never raises.
+    """
+    import struct as _st
+    try:
+        if off < 0 or off + 14 > len(data):
+            return None
+        left, right = _st.unpack_from("<HH", data, off)
+        fsec, fsz = _st.unpack_from("<II", data, off + 4)
+        attr, nlen = data[off + 12], data[off + 13]
+        if nlen == 0 or nlen > 255 or off + 14 + nlen > len(data):
+            return None
+        if attr not in (0x10, 0x20, 0x80, 0xA0, 0x21, 0x11):
+            if not (attr & 0x10 or attr & 0x20 or attr == 0x80):
+                return None
+        try:
+            name = bytes(data[off + 14:off + 14 + nlen]).decode(
+                "utf-8", errors="strict").strip()
+        except Exception:
+            return None
+        if not name or any(ord(c) < 32 or ord(c) == 127 for c in name):
+            return None
+        if fsec == 0 and fsz == 0:
+            return None
+        if fsec * 2048 >= img_size and fsz:
+            return None
+        if fsz > img_size:
+            return None
+        return {"off": off, "left": left, "right": right,
+                "sec": fsec, "size": fsz, "dir": bool(attr & 0x10),
+                "name": name,
+                "span": (off, off + ((14 + nlen + 3) // 4) * 4)}
+    except Exception:
+        return None
+
+
+def _xdvdfs_walk_table(f, sector, size, prefix, ents, depth=0):
+    """Collect (name, sector, size, is_dir) records of one directory.
+
+    Tree pointers first (validated), then a linear sweep catches
+    orphaned entries from tools with broken pointers. Never raises.
+    """
+    if depth > 16 or sector <= 0 or size <= 0 or size > 64 << 20:
+        return
+    try:
+        img_size = os.fstat(f.fileno()).st_size
+    except Exception:
+        img_size = 1 << 60
+    try:
+        f.seek(sector * 2048)
+        data = f.read(size)
+    except OSError:
+        return
+    if len(data) < min(size, 14):
+        return
+    found, seen_off = {}, set()
+
+    def _add(node):
+        if node is None:
+            return
+        for s, e, _n in found.values():
+            if not (node["span"][1] <= s or node["span"][0] >= e):
+                return
+        found[node["off"]] = (node["span"][0], node["span"][1],
+                               node)
+
+    def _visit(off):
+        if off in seen_off or off + 14 > len(data):
+            return
+        seen_off.add(off)
+        node = _xdvdfs_parse_node(data, off, img_size)
+        if node is None:
+            return
+        _add(node)
+        if node["left"] not in (0xFFFF,) and node["left"] != off:
+            _visit(node["left"])
+        if node["right"] not in (0xFFFF,) and node["right"] != off:
+            _visit(node["right"])
+
+    _visit(0)
+    if size <= 4 << 20:
+        # linear sweep: catches orphans from broken-pointer tables.
+        # (Big tables trust the tree; sweeping them would be slow.)
+        off = 0
+        while off + 14 <= len(data):
+            _add(_xdvdfs_parse_node(data, off, img_size))
+            off += 4
+    for off in sorted(found):
+        _, _, node = found[off]
+        full = node["name"] if not prefix else prefix + "/" + node["name"]
+        ents.append((full, node["sec"], node["size"], node["dir"]))
+    for off in sorted(found):
+        _, _, node = found[off]
+        if not node["dir"]:
+            continue
+        full = node["name"] if not prefix else prefix + "/" + node["name"]
+        _xdvdfs_walk_table(f, node["sec"], node["size"], full,
+                           ents, depth + 1)
+
+
+def _xdvdfs_is_xiso(path):
+    """True if sector 32 holds the XDVDFS magic. Never raises."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(32 * 2048)
+            return f.read(20) == XDVDFS_MAGIC
+    except Exception:
+        return False
+
+
+def parse_x360_iso(path):
+    """Xbox 360 disc ISO (XDVDFS): file list + default.xex IDs."""
+    import struct as _st
+    try:
+        size = os.path.getsize(path)
+    except OSError as e:
+        return {"error": str(e)}
+    try:
+        with open(path, "rb") as f:
+            f.seek(32 * 2048)
+            sec = f.read(2048)
+            if len(sec) < 0x1C or sec[:20] != XDVDFS_MAGIC:
+                return {"error": "not an Xbox 360 ISO"}
+            rsec, rsz = _st.unpack_from("<II", sec, 0x14)
+            if not rsec or not rsz or rsz > 64 << 20:
+                return {"error": "bad XDVDFS root"}
+            raw = []
+            _xdvdfs_walk_table(f, rsec, rsz, "", raw)
+            files = [(n, s, z) for n, s, z, d in raw if not d]
+            dxex = next((e for e in files
+                         if e[0].upper() == "DEFAULT.XEX"), None)
+
+            def _rd(off, ln):
+                f.seek(off)
+                return f.read(ln)
+            media, tid = ("", "")
+            if dxex:
+                base = dxex[1] * 2048
+                media, tid = _xex_exec_info(
+                    lambda o, ln: _rd(base + o, ln))
+    except Exception as e:
+        return {"error": str(e)}
+    if not files:
+        return {"error": "empty Xbox 360 ISO"}
+    title = _x360_clean_title(path)
+    region = _x360_region_from_name(path) or "-"
+    rows = [("Platform", "Xbox 360 ISO"),
+            ("Title ID", tid or "-"),
+            ("Media ID", media or "-"),
+            ("Region", region),
+            ("Size", "%s (%d files)" % (fmt_size(size), len(files)))]
+    ents = [{"id": i, "name": n, "size": z, "abs_off": s * 2048}
+            for i, (n, s, z) in enumerate(files)]
+    return {"ok": True, "kind": "x360", "path": path, "size": size,
+            "title": title or tid or os.path.basename(path),
+            "rows": rows, "entries": ents,
+            "meta": {"title_id": tid, "media_id": media},
+            "icon_entry": "", "x360_tid": tid}
+
+
+def _x360_folder_xex(path):
+    """default.xex path inside an extracted Xbox 360 folder, or ''. """
+    try:
+        if not os.path.isdir(path):
+            return ""
+        for fn in sorted(os.listdir(path)):
+            if fn.lower() == "default.xex" and os.path.isfile(
+                    os.path.join(path, fn)):
+                return os.path.join(path, fn)
+        return ""
+    except Exception:
+        return ""
+
+
+def parse_x360_folder(path):
+    """Extracted Xbox 360 folder (JTAG rip): full file list + XEX IDs."""
+    xex = _x360_folder_xex(path)
+    if not xex:
+        return {"error": "no default.xex"}
+    try:
+        with open(xex, "rb") as fh:
+            blob = fh.read()
+        media, tid = _xex_exec_info(
+            lambda o, ln: blob[o:o + ln])
+    except OSError as e:
+        return {"error": str(e)}
+    ents, total = [], 0
+    try:
+        for dp, _dn, fns in os.walk(path):
+            for fn in sorted(fns):
+                fp = os.path.join(dp, fn)
+                try:
+                    sz = os.path.getsize(fp)
+                except OSError:
+                    continue
+                if sz <= 0:
+                    continue
+                rel = os.path.relpath(fp, path).replace(os.sep, "/")
+                ents.append({"id": len(ents), "name": rel, "size": sz,
+                             "abs_off": -1, "local_path": fp})
+                total += sz
+                if len(ents) >= 200000:
+                    break
+            if len(ents) >= 200000:
+                break
+    except OSError:
+        pass
+    title = _x360_clean_title(path)
+    region = _x360_region_from_name(path) or "-"
+    rows = [("Platform", "Xbox 360 folder"),
+            ("Title ID", tid or "-"),
+            ("Media ID", media or "-"),
+            ("Region", region),
+            ("Size", "%s (%d files)" % (fmt_size(total), len(ents)))]
+    return {"ok": True, "kind": "x360", "path": path, "size": total,
+            "title": title or tid or os.path.basename(path),
+            "rows": rows, "entries": ents,
+            "meta": {"title_id": tid, "media_id": media},
+            "icon_entry": "", "x360_tid": tid}
+
+
+def parse_x360_xex_file(path, size=0):
+    """Standalone default.xex: IDs only, no file list."""
+    media, tid = _xex_exec_info(
+        lambda o, ln: _xex_file_range(path, o, ln))
+    if not tid and not media:
+        return {"error": "no XEX execution info"}
+    try:
+        size = size or os.path.getsize(path)
+    except OSError:
+        size = 0
+    title = _x360_clean_title(path)
+    rows = [("Platform", "Xbox 360 XEX"),
+            ("Title ID", tid or "-"),
+            ("Media ID", media or "-"),
+            ("Region", _x360_region_from_name(path) or "-"),
+            ("Size", fmt_size(size))]
+    return {"ok": True, "kind": "x360", "path": path, "size": size,
+            "title": title or tid, "rows": rows, "entries": [],
+            "meta": {"title_id": tid, "media_id": media},
+            "icon_entry": "", "x360_tid": tid}
+
+
+def _xex_file_range(path, off, ln):
+    try:
+        with open(path, "rb") as f:
+            f.seek(off)
+            return f.read(ln)
+    except Exception:
+        return b""
 
 
 def _split_part_stub(path, size):
