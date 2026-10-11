@@ -6126,7 +6126,7 @@ def run_gui(start_path=None):
         root.withdraw()
     except Exception:
         pass
-    root.title("PKG Viewer %s — PS2/PS3/PS4/PS5/Switch/Xbox360/WiiU" % APP_VERSION)
+    root.title("PKG Viewer %s — PS2/PS3/PS4/PS5/Switch/WiiU/Xbox360" % APP_VERSION)
     root.geometry("880x410")
     root.configure(bg=BG)
     root.minsize(880, 410)
@@ -7588,7 +7588,7 @@ def run_gui(start_path=None):
                  bg=CARD, fg=TEXT, font=FONT).pack(padx=36, pady=(12, 0))
         tk.Label(_ab, text="by Loopayeh",
                  bg=CARD, fg=MUTED, font=FONT_SMALL).pack(pady=(2, 0))
-        tk.Label(_ab, text="View PS2 / PS3 / PS4 / PS5 / Switch / Xbox 360 / Wii U package info and cover art.",
+        tk.Label(_ab, text="View PS2 / PS3 / PS4 / PS5 / Switch / Wii U / Xbox 360 package info and cover art.",
                  bg=CARD, fg=TEXT, font=FONT_SMALL).pack(padx=36,
                                                          pady=(12, 0))
         tk.Label(_ab, text="If you enjoy what I build and want to support my work,\n"

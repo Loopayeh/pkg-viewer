@@ -31,7 +31,7 @@ Architecture: all
 Maintainer: Loopayeh
 Depends: python3, python3-tk, python3-pil, xdg-utils, shared-mime-info, hicolor-icon-theme
 Recommends: python3-cryptography
-Description: View PS2/PS3/PS4/PS5/Switch/Xbox 360/Wii U package contents
+Description: View PS2/PS3/PS4/PS5/Switch/Wii U/Xbox 360 package contents
  Shows cover art, Title ID, region, version and firmware
  for .pkg / .iso / .exfat / .ffpfsc / .ffpkg / .nsp / .xci with per-format icons.
 EOF

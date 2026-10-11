@@ -1,4 +1,4 @@
-# PKG Viewer — PS2 / PS3 / PS4 / PS5 / Switch / Xbox 360 / Wii U
+# PKG Viewer — PS2 / PS3 / PS4 / PS5 / Switch / Wii U / Xbox 360
 
 ![screenshot](screenshot.png)
 ![trophies](screenshot-trophies.png)
@@ -48,9 +48,6 @@ PKGViewer.bat
 ## Supported formats
 
 - **PS2 disc images** (`.iso`) — SYSTEM.CNF serial/version/VMODE, file listing
-- **Xbox 360 GOD folders + STFS packages** — title/Media/Title ID, data parts, embedded thumbnail, online XboxUnity covers
-- **Xbox 360 ISO / extracted folders / XEX** — XDVDFS listing, version/disc from XEX, TU check
-- **Wii U NUS folders** — TMD title/version/contents, official Nintendo icons
 - **PS3 packages** (`.pkg`) — retail + debug NPDRM, decrypted listing
 - **PS3 game folders** — NPDRM and PS3_GAME layouts
 - **PS4 / PS5 packages** (`.pkg`) — game, DLC, update, retail + split parts
@@ -60,6 +57,9 @@ PKGViewer.bat
 - **PS5 app folders** — extracted game folder (incl. LIZARD AMPR/LZ4 dumps)
 - **Switch packages** (`.nsp`) — game, update, DLC; official title + icon from Control NCA with `prod.keys` (put it next to the exe or in `%APPDATA%\PKGViewer\`), raw file listing without keys; per-NCA type/key info, readable firmware requirement
 - **Switch gamecard images** (`.xci`) — partition + file listing, cartridge info, title/icon from the secure partition
+- **Wii U NUS folders** — TMD title/version/contents, official Nintendo icons
+- **Xbox 360 GOD folders + STFS packages** — title/Media/Title ID, data parts, embedded thumbnail, online XboxUnity covers
+- **Xbox 360 ISO / extracted folders / XEX** — XDVDFS listing, version/disc from XEX, TU check
 
 ## Build from source
 

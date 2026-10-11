@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=PKG Viewer
-Comment=View PS2/PS3/PS4/PS5/Switch/Xbox 360/Wii U package contents
+Comment=View PS2/PS3/PS4/PS5/Switch/Wii U/Xbox 360 package contents
 Exec=pkgviewer %F
 Icon=pkgviewer
 Terminal=false
