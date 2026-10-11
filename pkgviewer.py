@@ -3198,7 +3198,96 @@ def parse_wiiu_folder(path):
             "rows": rows, "entries": ents,
             "meta": {"title_id": info["title_id"],
                      "version": info["version"]},
-            "icon_entry": ""}
+            "icon_entry": "", "wiiu_tid": info["title_id"]}
+
+
+# Wii U icon art: Nintendo's official IDBE CDN (same icons the eShop
+# used). Encrypted AES-CBC; keys + IV are public homebrew knowledge
+# (Pretendo docs), payload is SHA256-verified, TGA extracted to PNG.
+# 128x128 official art, cached on disk like the other covers.
+IDBE_BASE = "https://idbe-wup.cdn.nintendo.net/icondata"
+IDBE_KEYS = {0: "4ab9a40e146975a84bb1b4f3ecefc47b",
+             1: "90a0bb1e0e864ae87d13a6a03d28c9b8",
+             2: "ffbb57c14e98ec6975b384fcf40786b5",
+             3: "80923799b41f36a6a75fb8b48c95f66f"}
+IDBE_IV = "a46987ae47d82bb4fa8abc0450285fa4"
+_WIIU_ICON_MEM = {}
+
+
+def fetch_wiiu_icon(tid):
+    """Official 128x128 icon PNG for a Wii U Title ID, or b"". Never raises."""
+    try:
+        t = str(tid or "").strip().upper()
+    except Exception:
+        return b""
+    if t in _WIIU_ICON_MEM:
+        return _WIIU_ICON_MEM[t]
+    import re as _re
+    if not _re.match(r"^[0-9A-F]{16}$", t):
+        _WIIU_ICON_MEM[t] = b""
+        return b""
+    try:
+        d = _covers_dir()
+        if d:
+            _fp = os.path.join(d, t + ".png")
+            try:
+                if os.path.isfile(_fp) and os.path.getsize(_fp) > 1024:
+                    with open(_fp, "rb") as fh:
+                        _raw = fh.read(5_000_000)
+                    if _raw[:8] == b"\x89PNG\r\n\x1a\n":
+                        _WIIU_ICON_MEM[t] = _raw
+                        return _raw
+            except Exception:
+                pass
+    except Exception:
+        pass
+    if not HAS_PS3_AES:
+        return b""
+    if not _proxy_url() and not _host_up("idbe-wup.cdn.nintendo.net"):
+        return b""
+    try:
+        import hashlib as _hl
+        sub = "%02X" % ((int(t, 16) >> 8) & 0xFF)
+        raw = _http_get("%s/%s/%s.idbe" % (IDBE_BASE, sub, t),
+                        tries=2, insecure_fallback=True)
+        if len(raw) < 0x2100 or raw[0] != 0 or \
+                raw[1] not in IDBE_KEYS:
+            raise ValueError("bad idbe")
+        from cryptography.hazmat.primitives.ciphers import (
+            Cipher as _Cipher, algorithms as _Algos, modes as _Modes)
+        dec = _Cipher(
+            _Algos.AES(bytes.fromhex(IDBE_KEYS[raw[1]])),
+            _Modes.CBC(bytes.fromhex(IDBE_IV))).decryptor()
+        pt = dec.update(raw[2:]) + dec.finalize()
+        if _hl.sha256(pt[0x20:]).digest() != pt[:0x20]:
+            raise ValueError("sha mismatch")
+        if pt[0x20:0x28].hex().upper() != t:
+            raise ValueError("tid mismatch")
+        tga = pt[0x2050:0x2050 + 0x1002C]
+        if len(tga) != 0x1002C:
+            raise ValueError("no icon")
+        try:
+            from PIL import Image as _Im
+            import io as _io
+            buf = _io.BytesIO()
+            _Im.open(_io.BytesIO(tga)).save(buf, "PNG")
+            png = buf.getvalue()
+        except Exception:
+            raise ValueError("bad tga")
+        if len(png) < 1024:
+            raise ValueError("icon too small")
+        _WIIU_ICON_MEM[t] = png
+        try:
+            d = _covers_dir()
+            if d:
+                with open(os.path.join(d, t + ".png"), "wb") as out:
+                    out.write(png)
+        except Exception:
+            pass
+        return png
+    except Exception:
+        _WIIU_ICON_MEM[t] = b""
+        return b""
 
 
 def _split_part_stub(path, size):
@@ -3305,9 +3394,28 @@ def _proxy_url():
     return ""
 
 
-def _http_get(url, timeout=25, tries=2, headers=None):
-    """GET bytes via proxy when configured (else direct). Raises on failure."""
+def _http_get(url, timeout=25, tries=2, headers=None,
+              insecure_fallback=False):
+    """GET bytes via proxy when configured (else direct). Raises on failure.
+
+    insecure_fallback: on CERTIFICATE_VERIFY_FAILED only, retry once
+    without verification (some CDNs, e.g. Nintendo's IDBE, serve a
+    chain that fails behind intercepting proxies; the payload itself
+    is hash-verified by callers, and images are re-validated).
+    """
     import urllib.request as _ureq
+    import ssl as _ssl
+
+    def _cert_fail(e):
+        seen = 0
+        while e is not None and seen < 4:
+            if isinstance(e, _ssl.SSLError) and \
+                    "CERTIFICATE_VERIFY_FAILED" in str(e):
+                return True
+            e = getattr(e, "reason", None)
+            seen += 1
+        return False
+
     err = None
     hdrs = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -3328,6 +3436,21 @@ def _http_get(url, timeout=25, tries=2, headers=None):
                 return r.read(5_000_000)
         except Exception as e:
             err = e
+            if insecure_fallback and _cert_fail(e):
+                try:
+                    ctx = _ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = _ssl.CERT_NONE
+                    op = _ureq.build_opener(
+                        _ureq.ProxyHandler(
+                            {"http": px, "https": px}) if px
+                        else _ureq.ProxyHandler({}),
+                        _ureq.HTTPSHandler(context=ctx))
+                    req = _ureq.Request(url, headers=hdrs)
+                    with op.open(req, timeout=timeout) as r:
+                        return r.read(5_000_000)
+                except Exception as e2:
+                    err = e2
     raise err
 
 
@@ -9773,6 +9896,12 @@ def run_gui(start_path=None):
             _fill_imgtab([])
             imglabel.config(image="", text="Fetching cover...")
             fetch_x360_async(r["x360_tid"])
+        elif r.get("wiiu_tid"):
+            state["pil"] = None
+            _sync_imgtab()
+            _fill_imgtab([])
+            imglabel.config(image="", text="Fetching icon...")
+            fetch_wiiu_async(r["wiiu_tid"])
         else:
             state["pil"] = None
             _sync_imgtab()
@@ -10096,6 +10225,46 @@ def run_gui(start_path=None):
             state["imgnames"] = ["cover.jpg"]
             _fill_imgtab(["cover.jpg"])
             statusvar.set("OK - PS2 cover")
+
+    def fetch_wiiu_async(tid):
+        """Background: Wii U official icon (IDBE) → display via root.after."""
+        def _work():
+            try:
+                data = fetch_wiiu_icon(tid) or b""
+            except Exception:
+                data = b""
+            try:
+                root.after(0, lambda: _wiiu_icon_done(tid, data))
+            except Exception:
+                pass
+        import threading as _th
+        _th.Thread(target=_work, daemon=True).start()
+
+    def _wiiu_icon_done(tid, data):
+        r = state.get("result")
+        if not r or r.get("wiiu_tid") != tid:
+            return
+        state["store_bytes"] = data if data[:8] == b"\x89PNG\r\n\x1a\n" \
+            else b""
+        if not state["store_bytes"]:
+            imglabel.config(image="", text="(cover unavailable)")
+            return
+        if not has_pil:
+            imglabel.config(text="(Pillow not installed)")
+            return
+        try:
+            im = Image.open(io.BytesIO(state["store_bytes"]))
+        except Exception:
+            imglabel.config(image="", text="(bad image)")
+            return
+        err = display_pil(im, "cover.jpg")
+        if err:
+            imglabel.config(text="(bad image)")
+            statusvar.set(f"Error: {err}")
+        else:
+            state["imgnames"] = ["cover.jpg"]
+            _fill_imgtab(["cover.jpg"])
+            statusvar.set("OK - Wii U icon")
 
     def fetch_ps3_async(tid, region):
         """Background: PS3 square cover (GameTDB) → display via root.after."""
