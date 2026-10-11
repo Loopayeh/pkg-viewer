@@ -9615,9 +9615,8 @@ def run_gui(start_path=None):
         _th.Thread(target=_work, daemon=True).start()
 
     def _x360_cover_done(tid, data):
-        # Embedded square thumbnail stays FIRST (hero); the online flat
-        # cover is appended to the Image tab (Save/Copy work on it).
-        # Only when there is no embedded art does it become the hero.
+        # Online flat cover becomes the hero + first in tab (like PS2/PS3):
+        # the tiny embedded logo stays in the tab behind it.
         r = state.get("result")
         if not r or r.get("x360_tid") != tid:
             return
@@ -9625,20 +9624,21 @@ def run_gui(start_path=None):
                 or data[:2] == b"\xff\xd8"):
             return
         state["store_bytes"] = data
-        names = list(state.get("imgnames", []))
-        if "cover.jpg" not in names:
-            names.append("cover.jpg")
-        state["imgnames"] = names
-        _fill_imgtab(names)
-        if state.get("pil") is None and has_pil:
-            try:
-                im = Image.open(io.BytesIO(data))
-            except Exception:
-                im = None
-            if im is not None and not display_pil(im, "cover.jpg"):
-                statusvar.set("OK - Xbox cover")
-                return
-        statusvar.set("OK - Xbox cover")
+        if not has_pil:
+            return
+        try:
+            im = Image.open(io.BytesIO(data))
+        except Exception:
+            return
+        err = display_pil(im, "cover.jpg")
+        if err:
+            statusvar.set(f"Error: {err}")
+        else:
+            names = ["cover.jpg"] + [n for n in state.get("imgnames", [])
+                                     if n != "cover.jpg"]
+            state["imgnames"] = names
+            _fill_imgtab(names)
+            statusvar.set("OK - Xbox cover")
 
     def fetch_patch_async(tid, own_ver):
         """Background: latest patch version → Details via root.after."""
