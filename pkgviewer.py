@@ -6405,40 +6405,6 @@ def run_gui(start_path=None):
                    command=lambda: toggle_cover())
     coverbtn.pack(side="right", padx=(0, 8))
     state["coverbtn"] = coverbtn
-    def edit_proxy():
-        # HTTP proxy for online covers/patches (e.g. 127.0.0.1:10808).
-        # Empty = direct connection. Saved in settings.
-        try:
-            cur = str((_load_settings() or {}).get("proxy", "") or "")
-        except Exception:
-            cur = ""
-        try:
-            import tkinter.simpledialog as _sd
-            val = _sd.askstring("HTTP proxy",
-                                "HTTP proxy (host:port), empty = direct:",
-                                initialvalue=cur, parent=root)
-        except Exception:
-            return
-        if val is None:
-            return
-        val = val.strip()
-        if val and not val.startswith("http"):
-            val = "http://" + val
-        try:
-            _save_settings({"proxy": val})
-        except Exception:
-            pass
-        try:
-            proxybtn.config(text="Proxy on" if val else "Proxy")
-        except Exception:
-            pass
-        try:
-            statusvar.set("Proxy " + (val if val else "disabled (direct)"))
-        except Exception:
-            pass
-    proxybtn = mkbtn(header, text="Proxy on" if _proxy_url() else "Proxy",
-                     style="Ghost.TButton", command=lambda: edit_proxy())
-    proxybtn.pack(side="right", padx=(0, 8))
     pathvar = tk.StringVar(value="Drop a .pkg / .iso / .exfat / .ffpfsc / .ffpkg / .nsp / .xci file or app folder here")
     pathlabel = ttk.Label(header, textvariable=pathvar, font=FONT_SMALL, foreground=MUTED)
     pathlabel.pack(side="left", padx=(14, 0))
