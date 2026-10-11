@@ -2557,6 +2557,46 @@ def _host_up(host, port=443, timeout=3, cache=60):
         return False
 
 
+def _proxy_url():
+    """Configured HTTP proxy URL, or "". Settings first, env fallback."""
+    try:
+        s = _load_settings() or {}
+        v = str(s.get("proxy", "") or "").strip()
+        if v:
+            return v if v.startswith("http") else "http://" + v
+    except Exception:
+        pass
+    try:
+        for k in ("HTTPS_PROXY", "https_proxy",
+                  "HTTP_PROXY", "http_proxy"):
+            v = str(os.environ.get(k, "") or "").strip()
+            if v:
+                return v
+    except Exception:
+        pass
+    return ""
+
+
+def _http_get(url, timeout=25, tries=2):
+    """GET bytes via proxy when configured (else direct). Raises on failure."""
+    import urllib.request as _ureq
+    err = None
+    for _ in range(max(1, tries)):
+        try:
+            px = _proxy_url()
+            if px:
+                op = _ureq.build_opener(
+                    _ureq.ProxyHandler({"http": px, "https": px}))
+            else:
+                op = _ureq.build_opener(_ureq.ProxyHandler({}))
+            req = _ureq.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with op.open(req, timeout=timeout) as r:
+                return r.read(5_000_000)
+        except Exception as e:
+            err = e
+    raise err
+
+
 def fetch_store_cover(cid):
     """(name, cover_url, release, tagline) from PlayStation Store. Square MASTER art preferred."""
     import re as _re
@@ -2636,20 +2676,17 @@ def fetch_ps3_cover(tid, region=""):
                 pass
     except Exception:
         pass
-    if not _host_up("art.gametdb.com"):
+    if not _proxy_url() and not _host_up("art.gametdb.com"):
         return b""
     _order = [PS3_COVER_REGION.get(rg, ""), "US", "EN", "JA"]
     _seen = []
     for _rg in _order:
         if _rg and _rg not in _seen:
             _seen.append(_rg)
-    import urllib.request as _ureq
     for _rg in _seen:
         try:
-            req = _ureq.Request("%s/%s/%s.jpg" % (PS3_COVER_BASE, _rg, t),
-                                headers={"User-Agent": "Mozilla/5.0"})
-            with _ureq.urlopen(req, timeout=15) as r:
-                raw = r.read(5_000_000)
+            raw = _http_get("%s/%s/%s.jpg" % (PS3_COVER_BASE, _rg, t),
+                            tries=2)
             if raw[:2] != b"\xff\xd8":
                 continue
             _PS3_COVER_MEM[t] = raw
@@ -2735,15 +2772,11 @@ def fetch_ps2_cover(serial):
                     pass
     except Exception:
         pass
-    if not _host_up("raw.githubusercontent.com"):
+    if not _proxy_url() and not _host_up("raw.githubusercontent.com"):
         return b""
-    import urllib.request as _ureq
     for _tail in ("default/%s.jpg" % s, "3d/%s.png" % s):
         try:
-            req = _ureq.Request(PS2_COVER_BASE + "/" + _tail,
-                                headers={"User-Agent": "Mozilla/5.0"})
-            with _ureq.urlopen(req, timeout=15) as r:
-                raw = r.read(5_000_000)
+            raw = _http_get(PS2_COVER_BASE + "/" + _tail, tries=2)
             if not (raw[:8] == b"\x89PNG\r\n\x1a\n"
                     or raw[:2] == b"\xff\xd8"):
                 continue
@@ -5294,9 +5327,43 @@ def run_gui(start_path=None):
         except Exception:
             pass
     coverbtn = mkbtn(header, text="Hide cover", style="Ghost.TButton",
-                     command=lambda: toggle_cover())
+                   command=lambda: toggle_cover())
     coverbtn.pack(side="right", padx=(0, 8))
     state["coverbtn"] = coverbtn
+    def edit_proxy():
+        # HTTP proxy for online covers/patches (e.g. 127.0.0.1:10808).
+        # Empty = direct connection. Saved in settings.
+        try:
+            cur = str((_load_settings() or {}).get("proxy", "") or "")
+        except Exception:
+            cur = ""
+        try:
+            import tkinter.simpledialog as _sd
+            val = _sd.askstring("HTTP proxy",
+                                "HTTP proxy (host:port), empty = direct:",
+                                initialvalue=cur, parent=root)
+        except Exception:
+            return
+        if val is None:
+            return
+        val = val.strip()
+        if val and not val.startswith("http"):
+            val = "http://" + val
+        try:
+            _save_settings({"proxy": val})
+        except Exception:
+            pass
+        try:
+            proxybtn.config(text="Proxy on" if val else "Proxy")
+        except Exception:
+            pass
+        try:
+            statusvar.set("Proxy " + (val if val else "disabled (direct)"))
+        except Exception:
+            pass
+    proxybtn = mkbtn(header, text="Proxy on" if _proxy_url() else "Proxy",
+                     style="Ghost.TButton", command=lambda: edit_proxy())
+    proxybtn.pack(side="right", padx=(0, 8))
     pathvar = tk.StringVar(value="Drop a .pkg / .iso / .exfat / .ffpfsc / .ffpkg / .nsp / .xci file or app folder here")
     pathlabel = ttk.Label(header, textvariable=pathvar, font=FONT_SMALL, foreground=MUTED)
     pathlabel.pack(side="left", padx=(14, 0))
