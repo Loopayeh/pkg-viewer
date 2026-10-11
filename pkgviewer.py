@@ -1783,6 +1783,9 @@ def parse_pkg(path):
     if os.path.isdir(path):
         if _ps3_folder_base(path):
             return parse_ps3_folder(path)
+        _gt, _gc = _god_layout(path)
+        if _gc:
+            return parse_god_folder(path)
         return parse_app_folder(path)
     size = os.path.getsize(path)
     low = path.lower()
@@ -1800,6 +1803,8 @@ def parse_pkg(path):
         magic = f.read(4)
         if magic == b"\x01CD0":
             return parse_disc_iso(path)
+        if magic in STFS_MAGIC:
+            return parse_stfs_file(path, size)
         if magic == PFS0_MAGIC:
             return parse_nsp(path)
         f.seek(0x100)
@@ -2473,6 +2478,219 @@ def parse_disc_iso(path):
     return r2 if r2.get("error") != "not a PS2 disc ISO" else r
 
 
+# ---------------- Xbox 360 STFS / GOD (verified: Forza Horizon 2 GOD) ----------------
+# STFS header is plaintext: magic "CON "/"LIVE"/"PIRS" at 0x0, content
+# type BE-u32 at 0x344, Media ID at 0x354, Title ID at 0x360,
+# UTF-16BE display name at 0x411, 64x64 PNG thumbnail at 0x171A
+# (exact length via PNG chunk walk to IEND). GOD data lives in
+# <hash>.data/DataNNNN parts next to the header file.
+
+STFS_MAGIC = (b"CON ", b"LIVE", b"PIRS")
+
+STFS_CONTENT_TYPES = {0x1: "Saved Game", 0x2: "Marketplace",
+                      0x3: "Publisher", 0x1000: "Xbox 360 Title",
+                      0x7000: "Games on Demand"}
+
+
+def _stfs_thumb(raw, maxlen=5_000_000):
+    """PNG bytes at 0x171A (chunk-walked to IEND), or b"". Never raises."""
+    try:
+        import struct as _st
+        if len(raw) < 0x171A + 8 or raw[0x171A:0x171A + 8] != \
+                b"\x89PNG\r\n\x1a\n":
+            return b""
+        off = 0x171A + 8
+        while off + 8 <= len(raw) and off - 0x171A < maxlen:
+            ln = _st.unpack_from(">I", raw, off)[0]
+            if ln > 10 << 20:
+                return b""
+            typ = raw[off + 4:off + 8]
+            off += 12 + ln
+            if typ == b"IEND":
+                return raw[0x171A:off]
+        return b""
+    except Exception:
+        return b""
+
+
+def parse_stfs_header(path):
+    """STFS fields from a header/package file. {"error":...} if not STFS."""
+    import struct as _st
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(0x20000)
+    except OSError as e:
+        return {"error": str(e)}
+    if len(raw) < 0x1800 or raw[:4] not in STFS_MAGIC:
+        return {"error": "not an STFS package"}
+    try:
+        ctype = _st.unpack_from(">I", raw, 0x344)[0]
+        media = _st.unpack_from(">I", raw, 0x354)[0]
+        tid = _st.unpack_from(">I", raw, 0x360)[0]
+    except Exception as e:
+        return {"error": str(e)}
+    name = ""
+    try:
+        name = raw[0x411:0x411 + 256].decode(
+            "utf-16-be", errors="replace").split(chr(0))[0].strip()
+    except Exception:
+        pass
+    return {"magic": raw[:4].decode("ascii", errors="replace").strip(),
+            "content_type": ctype,
+            "media_id": "%08X" % media, "title_id": "%08X" % tid,
+            "name": name, "thumb": _stfs_thumb(raw)}
+
+
+def _god_layout(path):
+    """(tid_dir, ctype_dir) for a GOD tree, or ("",""). Never raises.
+
+    Accepts the game root ("Forza 2"), the Title-ID dir ("4D530AA4")
+    or the content-type dir ("00007000") itself.
+    """
+    import re as _re
+    try:
+        if not os.path.isdir(path):
+            return "", ""
+        if os.path.basename(path) == "00007000" and \
+                os.path.isdir(os.path.join(path, "..")):
+            return os.path.dirname(path), path
+        c = os.path.join(path, "00007000")
+        if os.path.isdir(c):
+            return path, c
+        try:
+            subs = sorted(os.listdir(path))
+        except OSError:
+            return "", ""
+        for s in subs:
+            if not _re.match(r"^[0-9A-Fa-f]{8}$", s):
+                continue
+            t = os.path.join(path, s)
+            c = os.path.join(t, "00007000")
+            if os.path.isdir(c):
+                return t, c
+        return "", ""
+    except Exception:
+        return "", ""
+
+
+def parse_god_folder(path):
+    """Xbox 360 GOD folder (TitleID/00007000/header + .data parts)."""
+    import re as _re
+    tid_dir, cdir = _god_layout(path)
+    if not cdir:
+        return {"error": "not a GOD folder"}
+    hdr_path, hdr = "", None
+    try:
+        for fn in sorted(os.listdir(cdir)):
+            fp = os.path.join(cdir, fn)
+            if not os.path.isfile(fp):
+                continue
+            if fn.lower().endswith(".data"):
+                continue
+            h = parse_stfs_header(fp)
+            if not h.get("error"):
+                hdr_path, hdr = fp, h
+                break
+    except OSError as e:
+        return {"error": str(e)}
+    if not hdr:
+        return {"error": "no STFS header in GOD folder"}
+    try:
+        folder_tid = os.path.basename(tid_dir).upper()
+        if not _re.match(r"^[0-9A-F]{8}$", folder_tid):
+            folder_tid = ""
+    except Exception:
+        folder_tid = ""
+    tid = hdr["title_id"] or folder_tid
+    data_dir = hdr_path + ".data"
+    ents, total, nparts = [], 0, 0
+    try:
+        if os.path.isdir(data_dir):
+            for fn in sorted(os.listdir(data_dir)):
+                fp = os.path.join(data_dir, fn)
+                if not os.path.isfile(fp):
+                    continue
+                try:
+                    sz = os.path.getsize(fp)
+                except OSError:
+                    continue
+                if sz <= 0:
+                    continue
+                ents.append({"id": len(ents), "name": "data/" + fn,
+                             "size": sz, "abs_off": -1,
+                             "local_path": fp})
+                total += sz
+                nparts += 1
+    except OSError:
+        pass
+    try:
+        hsz = os.path.getsize(hdr_path)
+    except OSError:
+        hsz = 0
+    title = hdr["name"] or os.path.basename(
+        os.path.dirname(tid_dir.rstrip("/\\"))).strip() or tid
+    ctype = STFS_CONTENT_TYPES.get(hdr["content_type"],
+                                   "type %#x" % hdr["content_type"])
+    rows = [("Platform", "Xbox 360 GOD"),
+            ("Title ID", tid or "-"),
+            ("Media ID", hdr["media_id"]),
+            ("Content", "%s (%s)" % (ctype, hdr["magic"])),
+            ("Parts", str(nparts) if nparts else "-"),
+            ("Size", "%s (%d data parts)" % (fmt_size(total + hsz), nparts)
+             if nparts else fmt_size(hsz))]
+    meta = {"magic": hdr["magic"], "content_type": hdr["content_type"],
+            "title_id": tid, "media_id": hdr["media_id"],
+            "name": hdr["name"]}
+    icon = ""
+    if hdr["thumb"]:
+        ents.insert(0, {"id": 0, "name": "thumbnail.png",
+                        "size": len(hdr["thumb"]), "off": -2,
+                        "abs_off": -2, "cached": bytes(hdr["thumb"]),
+                        "codec": "PNG"})
+        for i, e in enumerate(ents):
+            e["id"] = i
+        icon = "thumbnail.png"
+    return {"ok": True, "kind": "x360", "path": path,
+            "size": total + hsz, "title": title or tid,
+            "rows": rows, "entries": ents, "meta": meta,
+            "icon_entry": icon, "x360_tid": tid}
+
+
+def parse_stfs_file(path, size=0):
+    """Standalone STFS package file (GOD header, LIVE/PIRS arcade...)."""
+    hdr = parse_stfs_header(path)
+    if hdr.get("error"):
+        return hdr
+    try:
+        size = size or os.path.getsize(path)
+    except OSError:
+        size = 0
+    tid = hdr["title_id"]
+    title = hdr["name"] or os.path.splitext(
+        os.path.basename(path))[0] or tid
+    ctype = STFS_CONTENT_TYPES.get(hdr["content_type"],
+                                   "type %#x" % hdr["content_type"])
+    rows = [("Platform", "Xbox 360 STFS"),
+            ("Title ID", tid or "-"),
+            ("Media ID", hdr["media_id"]),
+            ("Content", "%s (%s)" % (ctype, hdr["magic"])),
+            ("Size", fmt_size(size))]
+    ents, icon = [], ""
+    if hdr["thumb"]:
+        ents.append({"id": 0, "name": "thumbnail.png",
+                     "size": len(hdr["thumb"]), "off": -2,
+                     "abs_off": -2, "cached": bytes(hdr["thumb"]),
+                     "codec": "PNG"})
+        icon = "thumbnail.png"
+    return {"ok": True, "kind": "x360", "path": path, "size": size,
+            "title": title or tid, "rows": rows, "entries": ents,
+            "meta": {"magic": hdr["magic"],
+                     "content_type": hdr["content_type"],
+                     "title_id": tid, "media_id": hdr["media_id"],
+                     "name": hdr["name"]},
+            "icon_entry": icon, "x360_tid": tid}
+
+
 def _split_part_stub(path, size):
     """Part N>0 of a split set: reuse sibling _0 header to confirm, then stub."""
     import re as _re
@@ -2577,10 +2795,16 @@ def _proxy_url():
     return ""
 
 
-def _http_get(url, timeout=25, tries=2):
+def _http_get(url, timeout=25, tries=2, headers=None):
     """GET bytes via proxy when configured (else direct). Raises on failure."""
     import urllib.request as _ureq
     err = None
+    hdrs = {"User-Agent": "Mozilla/5.0"}
+    try:
+        if headers:
+            hdrs.update(headers)
+    except Exception:
+        pass
     for _ in range(max(1, tries)):
         try:
             px = _proxy_url()
@@ -2589,7 +2813,7 @@ def _http_get(url, timeout=25, tries=2):
                     _ureq.ProxyHandler({"http": px, "https": px}))
             else:
                 op = _ureq.build_opener(_ureq.ProxyHandler({}))
-            req = _ureq.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            req = _ureq.Request(url, headers=hdrs)
             with op.open(req, timeout=timeout) as r:
                 return r.read(5_000_000)
         except Exception as e:
@@ -2702,6 +2926,80 @@ def fetch_ps3_cover(tid, region=""):
             continue
     _PS3_COVER_MEM[t] = b""
     return b""
+
+
+# Xbox 360 cover art: XboxUnity (same source Aurora/PS5X360 use).
+# CoverInfo.php lists covers per TitleID -> best official/highest
+# rated -> Cover.php large (900x600 flat). No key needed.
+XBOXUNITY_BASE = "https://xboxunity.net/Resources/Lib"
+_X360_COVER_MEM = {}
+
+
+def fetch_x360_cover(tid):
+    """Flat box-art bytes (JPEG/PNG) for an Xbox 360 Title ID, or b""."""
+    try:
+        t = str(tid or "").strip().upper()
+    except Exception:
+        return b""
+    if t in _X360_COVER_MEM:
+        return _X360_COVER_MEM[t]
+    import re as _re
+    if not _re.match(r"^[0-9A-F]{8}$", t):
+        _X360_COVER_MEM[t] = b""
+        return b""
+    try:
+        d = _covers_dir()
+        if d:
+            for _ext in (".jpg", ".png"):
+                _fp = os.path.join(d, t + _ext)
+                try:
+                    if os.path.isfile(_fp) and os.path.getsize(_fp) > 1024:
+                        with open(_fp, "rb") as fh:
+                            _raw = fh.read(5_000_000)
+                        if _raw[:8] == b"\x89PNG\r\n\x1a\n" \
+                                or _raw[:2] == b"\xff\xd8":
+                            _X360_COVER_MEM[t] = _raw
+                            return _raw
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    if not _proxy_url() and not _host_up("xboxunity.net"):
+        return b""
+    try:
+        import json as _json
+        _xu = {"X-Requested-With": "XMLHttpRequest",
+               "Referer": "https://xboxunity.net/"}
+        raw = _http_get(XBOXUNITY_BASE + "/CoverInfo.php?titleid=" + t,
+                        tries=2, headers=_xu)
+        covs = (_json.loads(raw.decode("utf-8", "replace")) or {}
+                ).get("Covers", []) or []
+        if not covs:
+            raise ValueError("no covers")
+        covs.sort(key=lambda c: (
+            str(c.get("Official", "")) == "1",
+            float(c.get("Rating") or 0)), reverse=True)
+        cid = str(covs[0].get("CoverID", "") or "")
+        if not cid:
+            raise ValueError("no cover id")
+        img = _http_get(XBOXUNITY_BASE + "/Cover.php?cid=" + cid +
+                        "&size=large", tries=2, headers=_xu)
+        if not (img[:8] == b"\x89PNG\r\n\x1a\n"
+                or img[:2] == b"\xff\xd8"):
+            raise ValueError("bad image")
+        _X360_COVER_MEM[t] = img
+        try:
+            d = _covers_dir()
+            if d:
+                _ext = ".png" if img[:8] == b"\x89PNG\r\n\x1a\n" else ".jpg"
+                with open(os.path.join(d, t + _ext), "wb") as out:
+                    out.write(img)
+        except Exception:
+            pass
+        return img
+    except Exception:
+        _X360_COVER_MEM[t] = b""
+        return b""
 
 
 def _ps3_cover_key(result):
@@ -4387,7 +4685,7 @@ NAME_PARTS = (("title", "Title"), ("tid", "Title ID"),
 # Canonical spec-grid order for every format: identity first, then
 # versions, then system, then package details. Unknown keys keep
 # their relative order at the end. Matched case-insensitively.
-GRID_ORDER = ["Title ID", "Concept ID", "Category",
+GRID_ORDER = ["Title ID", "Media ID", "Concept ID", "Category",
               "Version", "Base Version", "Content Ver", "Master Ver",
               "App Ver", "Min. System", "VMODE", "Boot",
               "Parental Level", "Resolution",
@@ -5051,7 +5349,7 @@ def run_gui(start_path=None):
         root.withdraw()
     except Exception:
         pass
-    root.title("PKG Viewer %s  •  PS3 / PS4 / PS5 / Switch  •  by Loopayeh" % APP_VERSION)
+    root.title("PKG Viewer %s  •  PS2 / PS3 / PS4 / PS5 / Switch / Xbox 360  •  by Loopayeh" % APP_VERSION)
     root.geometry("880x410")
     root.configure(bg=BG)
     root.minsize(880, 410)
@@ -6547,7 +6845,7 @@ def run_gui(start_path=None):
                  bg=CARD, fg=TEXT, font=FONT).pack(padx=36, pady=(12, 0))
         tk.Label(_ab, text="by Loopayeh",
                  bg=CARD, fg=MUTED, font=FONT_SMALL).pack(pady=(2, 0))
-        tk.Label(_ab, text="View PS3 / PS4 / PS5 / Switch package info and cover art.",
+        tk.Label(_ab, text="View PS2 / PS3 / PS4 / PS5 / Switch / Xbox 360 package info and cover art.",
                  bg=CARD, fg=TEXT, font=FONT_SMALL).pack(padx=36,
                                                          pady=(12, 0))
         tk.Label(_ab, text="If you enjoy what I build and want to support my work,\n"
@@ -8750,6 +9048,8 @@ def run_gui(start_path=None):
             _plat_col = "#f2b84b"
         elif "exfat" in _pl:
             _plat_col = "#3dd6b0"
+        elif "x360" in _pl or "xbox" in _pl:
+            _plat_col = "#107C10"
         elif "ps2" in _pl:
             _plat_col = "#3b7dd8"
         elif "ps3" in _pl:
@@ -8905,6 +9205,8 @@ def run_gui(start_path=None):
             _ps3 = _ps3_cover_key(r)
             if _ps3:
                 fetch_ps3_async(*_ps3)
+            elif r.get("x360_tid"):
+                fetch_x360_async(r["x360_tid"])
         elif r.get("store_cid"):
             state["pil"] = None
             _sync_imgtab()
@@ -8923,6 +9225,12 @@ def run_gui(start_path=None):
             _fill_imgtab([])
             imglabel.config(image="", text="Fetching cover...")
             fetch_ps3_async(*_ps3_cover_key(r))
+        elif r.get("x360_tid"):
+            state["pil"] = None
+            _sync_imgtab()
+            _fill_imgtab([])
+            imglabel.config(image="", text="Fetching cover...")
+            fetch_x360_async(r["x360_tid"])
         else:
             state["pil"] = None
             _sync_imgtab()
@@ -9291,6 +9599,46 @@ def run_gui(start_path=None):
             state["imgnames"] = names
             _fill_imgtab(names)
             statusvar.set("OK - PS3 cover")
+
+    def fetch_x360_async(tid):
+        """Background: Xbox 360 flat cover (XboxUnity) → tab via root.after."""
+        def _work():
+            try:
+                data = fetch_x360_cover(tid) or b""
+            except Exception:
+                data = b""
+            try:
+                root.after(0, lambda: _x360_cover_done(tid, data))
+            except Exception:
+                pass
+        import threading as _th
+        _th.Thread(target=_work, daemon=True).start()
+
+    def _x360_cover_done(tid, data):
+        # Embedded square thumbnail stays FIRST (hero); the online flat
+        # cover is appended to the Image tab (Save/Copy work on it).
+        # Only when there is no embedded art does it become the hero.
+        r = state.get("result")
+        if not r or r.get("x360_tid") != tid:
+            return
+        if not (data[:8] == b"\x89PNG\r\n\x1a\n"
+                or data[:2] == b"\xff\xd8"):
+            return
+        state["store_bytes"] = data
+        names = list(state.get("imgnames", []))
+        if "cover.jpg" not in names:
+            names.append("cover.jpg")
+        state["imgnames"] = names
+        _fill_imgtab(names)
+        if state.get("pil") is None and has_pil:
+            try:
+                im = Image.open(io.BytesIO(data))
+            except Exception:
+                im = None
+            if im is not None and not display_pil(im, "cover.jpg"):
+                statusvar.set("OK - Xbox cover")
+                return
+        statusvar.set("OK - Xbox cover")
 
     def fetch_patch_async(tid, own_ver):
         """Background: latest patch version → Details via root.after."""

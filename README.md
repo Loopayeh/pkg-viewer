@@ -1,4 +1,4 @@
-# PKG Viewer — PS2 / PS3 / PS4 / PS5 / Switch
+# PKG Viewer — PS2 / PS3 / PS4 / PS5 / Switch / Xbox 360
 
 ![screenshot](screenshot.png)
 ![trophies](screenshot-trophies.png)
@@ -48,6 +48,7 @@ PKGViewer.bat
 ## Supported formats
 
 - **PS2 disc images** (`.iso`) — SYSTEM.CNF serial/version/VMODE, file listing
+- **Xbox 360 GOD folders + STFS packages** — title/Media/Title ID, data parts, embedded thumbnail, online XboxUnity covers
 - **PS3 packages** (`.pkg`) — retail + debug NPDRM, decrypted listing
 - **PS3 game folders** — NPDRM and PS3_GAME layouts
 - **PS4 / PS5 packages** (`.pkg`) — game, DLC, update, retail + split parts
