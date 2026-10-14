@@ -519,13 +519,16 @@ def fmt_fw32(v):
     except Exception:
         return str(v)
     try:
+        if n == 0:
+            return "-"
         if not (0x01000000 <= n <= 0xFFFFFFFF):
             return str(v)
         hi, lo = (n >> 24) & 0xFF, (n >> 16) & 0xFF
         if (hi >> 4) > 9 or (hi & 0xF) > 9 or \
            (lo >> 4) > 9 or (lo & 0xF) > 9:
             return str(v)  # not BCD -> don't invent a version
-        return f"{hi:02X}.{lo:02X}".lstrip("0") or "0"
+        major = f"{hi:02X}".lstrip("0") or "0"
+        return f"{major}.{lo:02X}"
     except Exception:
         return str(v)
 
@@ -5398,6 +5401,8 @@ def curated_meta_lines(kind, meta):
             v = meta[k]
             if isinstance(v, str) and not v.strip():
                 continue
+            if k in ("SYSTEM_VER", "PS3_SYSTEM_VER"):
+                v = fmt_fw32(v)
             lines.append(f"{k} = {v}")
     return lines
 
@@ -5409,6 +5414,8 @@ def full_meta_lines(meta):
             if k.startswith("_"):
                 continue
             v = meta[k]
+            if k in ("SYSTEM_VER", "PS3_SYSTEM_VER"):
+                v = fmt_fw32(v)
             if isinstance(v, dict):
                 v = json.dumps(v, ensure_ascii=False)[:300]
             lines.append(f"{k} = {str(v)[:200]}")
