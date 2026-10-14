@@ -5480,8 +5480,6 @@ GRID_ORDER = ["Title ID", "Media ID", "Concept ID", "Category",
 
 
 # PS4 engine: LibOrbisPkg via PkgEditor (see orbis_full.py).
-# (PS5 extract/build used to live here via the external fpkg-cli —
-# removed: no more outside-program dependency. PS5 files are view-only.)
 
 
 def _disk_free(path):
