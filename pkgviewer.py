@@ -7577,7 +7577,8 @@ def run_gui(start_path=None):
         mkbtn(_links, text="☕ حمایت تومانی  ↗", style="Ghost.TButton", bg=CARD,
                command=lambda: _wb.open(
                    "https://coffeebede.com/loopayeh")).pack(side="left", ipadx=10, ipady=4)
-        tk.Label(_ab, text="PS4 engine: LibOrbisPkg by maxton (via PkgEditor)",
+        tk.Label(_ab, text="PS4 engine: LibOrbisPkg by maxton (via PkgEditor)\n"
+                              ".ffpfsc reading: mkpfs by PSBrew (GPLv3)",
                  bg=CARD, fg=MUTED, font=FONT_SMALL, justify="center").pack(padx=36,
                                                                            pady=(10, 0))
         mkbtn(_ab, text="Close", style="Accent.TButton", bg=CARD,

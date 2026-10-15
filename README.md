@@ -85,7 +85,7 @@ If this tool was useful, you can also support me internationally with USDT (BEP-
 
 - PS4 extract/build engine: `LibOrbisPkg` by maxton (via PkgEditor). Optional `orbis-pub-gen`/`orbis-pub-chk` (Sony/OpenOrbis SDK tools, user-supplied).
 - PS5 files are view-only (no extract/build, no outside tools).
-- `.ffpfsc` / inner-exFAT reading via `mkpfs` library by PSBrew (RenanGBarreto + contributors incl. rdmrocha, drakmor).
+- `.ffpfsc` / inner-exFAT reading via `mkpfs` library by PSBrew (RenanGBarreto + contributors incl. rdmrocha, drakmor) — GPLv3, bundled.
 - `.ffpkg` (UFS) reading via `pytsk3` (Sleuth Kit bindings).
 - Switch NCA/NACP parsing follows `hactool` (SciresM) layout; decrypt needs user-supplied `prod.keys` (dump it yourself with Lockpick_RCM) — no keys bundled.
 - Patch-version lookup: prosperopatches.com / orbispatches.com.
