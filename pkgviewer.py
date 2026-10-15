@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.19.3"  # bump on every release — the updater compares this
+APP_VERSION = "v1.19.4-pre1"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -499,6 +499,30 @@ def content_region(cid):
         return REGION_NAMES.get(pre, pre or "-")
     except Exception:
         return "-"
+
+
+def _tid_from_cid(cid):
+    """Title ID from a PlayStation Content ID.
+
+    UP0949-CUSA04195_00-BRAWLHALLA111315 -> CUSA04195. Used as a fallback
+    when param.sfo is unreadable (partial/corrupt download) so the Title ID
+    row is still shown. Never raises.
+    """
+    try:
+        return (cid or "").split("-")[1].split("_")[0].strip().upper()
+    except Exception:
+        return ""
+
+
+def _tid_from_filename(path):
+    """Title ID from a file name (CUSA04195_BRAWLHALLA_... -> CUSA04195)."""
+    try:
+        import re as _re
+        m = _re.search(r"(CUSA\d{5})",
+                        os.path.basename(path or ""), _re.IGNORECASE)
+        return m.group(1).upper() if m else ""
+    except Exception:
+        return ""
 
 
 def fmt_fw32(v):
@@ -1936,7 +1960,8 @@ def parse_pkg(path):
                         _built = f"{_m.group(1)}-{_m.group(2)}-{_m.group(3)}"
                 except Exception:
                     pass
-                extra = [("Title ID", sfo.get("TITLE_ID", "")),
+                extra = [("Title ID",
+                           sfo.get("TITLE_ID", "") or _tid_from_cid(_cid4)),
                          ("Content ID", _cid4),
                          ("Region", content_region(_cid4)),
                          ("Type", ps4_pkg_type(_cat4)),
@@ -1970,11 +1995,21 @@ def parse_pkg(path):
             if not any(k == "Content ID" for k, _ in rows):
                 rows.insert(2, ("Content ID",
                                 sfo.get("CONTENT_ID", cid) if sfo else cid))
+            if not any(k == "Title ID" and str(v or "").strip() not in ("", "-")
+                       for k, v in rows):
+                # param.sfo unreadable (partial/corrupt download) or without
+                # TITLE_ID: still show the ID from Content ID / file name so
+                # the Title ID row never silently disappears.
+                _ftid = _tid_from_cid(cid) or _tid_from_filename(path)
+                if _ftid:
+                    rows.insert(2, ("Title ID", _ftid))
+            _ptch = (sfo.get("TITLE_ID", "") if isinstance(sfo, dict) else "") \
+                or _tid_from_cid(cid) or _tid_from_filename(path)
             return {"ok": True, "kind": "ps4", "path": path, "size": size,
                     "title": title or os.path.basename(path),
                     "rows": rows, "entries": ents, "meta": meta or sfo,
                     "icon_entry": "icon0.png",
-                    "patch_tid": sfo.get("TITLE_ID", "") if isinstance(sfo, dict) else "",
+                    "patch_tid": _ptch,
                     "own_ver": _ver4 if sfo and not sfo.get("_error") else "",
                     "body_off": body_off}
         else:
@@ -6474,19 +6509,45 @@ def run_gui(start_path=None):
             return None
         return "break"
     _titletext.bind("<KeyPress>", _titlekey)
+    def _fit_title_height():
+        # Recompute visible lines at the CURRENT widget width. The width
+        # can change after load (window resize, DPI, late geometry), so a
+        # one-time measurement goes stale and wraps extra lines into an
+        # invisible scroll. Never raises; no-op when height is already right
+        # (this guard also stops <Configure> feedback loops).
+        # NOTE: count -displaylines up to "end-1c" counts WRAPS (one short);
+        # up to "end" it counts true display lines (wraps + final newline).
+        try:
+            _titletext.update_idletasks()
+            try:
+                _nl = _titletext.count("1.0", "end", "displaylines")
+                _nl = _nl[0] if isinstance(_nl, tuple) else int(_nl or 1)
+            except Exception:
+                _nl = 1
+            _h = min(4, max(1, _nl))
+            try:
+                _cur = int(_titletext.cget("height"))
+            except Exception:
+                _cur = -1
+            if _cur != _h:
+                _titletext.config(height=_h)
+        except Exception:
+            pass
+    # refit whenever the widget width changes (debounced to idle)
+    _titletext.bind("<Configure>",
+                    lambda _e: _titletext.after_idle(_fit_title_height))
     def _set_title(t):
         try:
             _titletext.delete("1.0", "end")
             _titletext.insert("1.0", t or "—")
-            # auto-height (1-2 lines) so a short title doesn't leave
-            # an empty second line that unseats the PKG badge
-            _titletext.update_idletasks()
+            # auto-height (1-4 lines) so a short title doesn't leave
+            # empty lines below it, while long game names stay fully
+            # visible instead of clipping into an invisible scroll
+            _fit_title_height()
             try:
-                _nl = _titletext.count("1.0", "end-1c", "displaylines")
-                _nl = _nl[0] if isinstance(_nl, tuple) else int(_nl or 1)
+                _titletext.yview_moveto(0.0)
             except Exception:
-                _nl = 1
-            _titletext.config(height=min(2, max(1, _nl)))
+                pass
         except Exception:
             pass
     state["titletext"] = _titletext
@@ -7460,7 +7521,7 @@ def run_gui(start_path=None):
                       command=lambda: toggle_details())
     detailbtn.pack(side="right")
     metatext = tk.Text(tab_meta, bg=CARD, fg=TEXT, font=("Consolas", 8),
-                       wrap="none", borderwidth=0, highlightthickness=0, padx=8, pady=6,
+                       wrap="word", borderwidth=0, highlightthickness=0, padx=8, pady=6,
                         height=8, selectbackground=ACCENT,
                         selectforeground="#171717", insertbackground=TEXT)
     metatext.pack(fill="both", expand=True)
@@ -9091,9 +9152,9 @@ def run_gui(start_path=None):
             kl.config(text=k.upper())
             vl.config(state="normal")
             vl.delete(0, "end")
-            vl.insert(0, str(v)[:60])
+            vl.insert(0, str(v))
             try:
-                vl.config(width=max(20, min(60, len(str(v)[:60]) + 2)))
+                vl.config(width=max(20, min(60, len(str(v)) + 2)))
             except Exception:
                 pass
             vl.config(state="readonly")
