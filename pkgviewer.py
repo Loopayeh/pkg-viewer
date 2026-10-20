@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.19.4-pre1"  # bump on every release — the updater compares this
+APP_VERSION = "v1.19.4-pre2"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -3907,6 +3907,56 @@ def fetch_ps2_cover(serial):
             continue
     _PS2_COVER_MEM[s] = b""
     return b""
+
+
+def ps2_cover_crop(im):
+    """Drop the black "PlayStation 2" header from a PS2 box-front cover.
+
+    The scans in xlenore/ps2-covers are whole box fronts: a ~9-12% black
+    band with the PlayStation 2 wordmark sits on top of the artwork.
+    Cropping it makes the PS2 cover line up with every other platform's
+    cover (PS3/PS4 game art has no console header).
+
+    Only runs when the band is really there - detected by the saturated
+    "PS" logo in the top-right corner - so covers that were already
+    cropped, 3D box art (RGBA) and every non-PS2 image pass through
+    untouched. The crop line comes from the strongest horizontal edge in
+    the top 13%, falling back to a fixed 11% when the artwork behind the
+    band is too dark for an edge to stand out. A solid black strip at the
+    very bottom (some scans have one) is trimmed the same way. Never
+    raises.
+    """
+    try:
+        from PIL import Image, ImageChops
+        w, h = im.size
+        if w < 64 or h < 160 or im.mode not in ("RGB", "L"):
+            return im
+        # PlayStation 2 branding: saturated logo in the top-right corner
+        strip = im.crop((int(w * 0.72), 0, w, int(h * 0.13))).convert("HSV")
+        sat = strip.getchannel("S").point(lambda v: 255 if v > 90 else 0)
+        if sum(1 for px in sat.tobytes() if px) < 120:
+            return im
+        g = im.convert("L")
+        diff = ImageChops.difference(g.crop((0, 1, w, h)),
+                                    g.crop((0, 0, w, h - 1)))
+        edges = list(diff.resize((1, h - 1), Image.BOX).tobytes())
+        lo, hi = int(h * 0.02), int(h * 0.13)
+        y = max(range(lo, hi), key=lambda i: edges[i])
+        if edges[y] < 30 or y < int(h * 0.08):
+            y = int(round(h * 0.11))
+        # bottom: only a strip that is black across the whole width (art
+        # bottoms are never that flat, so logos/ESRB badges stay intact)
+        bot = h
+        solid = list(g.point(lambda v: 255 if v < 25 else 0)
+                     .resize((1, h), Image.BOX).tobytes())
+        n = 0
+        while n < int(h * 0.12) and solid[h - 1 - n] >= 250:
+            n += 1
+        if n >= 8:
+            bot = h - n
+        return im.crop((0, y + 1, w, bot))
+    except Exception:
+        return im
 
 
 _PATCH_CACHE = {}
@@ -9126,6 +9176,26 @@ def run_gui(start_path=None):
         except Exception:
             pass
         cells = []
+        # right-click any spec row -> copy it (this grid is read-only, so
+        # nothing was selectable/copyable before; Details below already was)
+        specctx = tk.Menu(root, tearoff=0, bg=CARD, fg=TEXT,
+                          activebackground=ACCENT, activeforeground="#171717")
+        specpick = {"k": "", "v": ""}
+
+        def _spec_copy(with_label=False):
+            try:
+                _txt = (f"{specpick['k']}: {specpick['v']}" if with_label
+                        else specpick["v"])
+                root.clipboard_clear()
+                root.clipboard_append(_txt)
+                statusvar.set("Copied " + (specpick["k"] or "value"))
+            except Exception as ex:
+                statusvar.set(f"Copy failed: {ex}")
+
+        specctx.add_command(label="Copy value",
+                            command=lambda: _spec_copy(False))
+        specctx.add_command(label="Copy label: value",
+                            command=lambda: _spec_copy(True))
         try:
             for _i in range(0, len(_flat), 2):
                 _row = ttk.Frame(_box, style="Card.TFrame")
@@ -9144,6 +9214,17 @@ def run_gui(start_path=None):
                                   highlightthickness=0,
                                   state="readonly", width=34)
                     _v.pack(anchor="w")
+
+                    def _spec_menu(_ev, _kk=_k, _vv=_v):
+                        try:
+                            specpick["k"] = _kk.cget("text") or ""
+                            specpick["v"] = _vv.get()
+                        except Exception:
+                            pass
+                        specctx.tk_popup(_ev.x_root, _ev.y_root)
+
+                    _k.bind("<Button-3>", _spec_menu)
+                    _v.bind("<Button-3>", _spec_menu)
                     cells.append((_k, _v))
         except Exception:
             pass
@@ -9285,7 +9366,8 @@ def run_gui(start_path=None):
                 _clean.append(_ln)
             lines = _clean
         # dedup: drop detail lines whose key OR value already appears
-        # in the spec grid rows (Title/ID/Version etc. shown twice otherwise)
+        # in the spec grid rows (Title/ID/Version etc. shown twice otherwise).
+        # Show all is the raw dump, so Title/TITLE_ID are kept there.
         _ROWKEYS = {"package", "signature", "type", "title", "title_id",
                     "titleid", "content_id", "contentid", "version",
                     "app_ver", "appver", "system_ver", "systemver",
@@ -9314,6 +9396,11 @@ def run_gui(start_path=None):
                         # matches the grid's Title row
                         _suf = _key[6:].strip() if _key.startswith("title_") else ""
                         if _suf[:1].isdigit():
+                            kept.append(ln)
+                            continue
+                        # raw dump keeps TITLE / TITLE_ID (grid shows both)
+                        if state.get("show_all") and _key in (
+                                "title", "title_id", "titleid"):
                             kept.append(ln)
                             continue
                         if _key in _ROWKEYS:
@@ -9570,6 +9657,16 @@ def run_gui(start_path=None):
         except Exception:
             imglabel.config(image="", text="(bad image)")
             return
+        # strip the PS2 header band; re-encode so Save/Copy match the view
+        _cropped = ps2_cover_crop(im)
+        if _cropped.size != im.size:
+            im = _cropped
+            try:
+                _buf = io.BytesIO()
+                im.convert("RGB").save(_buf, "JPEG", quality=92)
+                state["store_bytes"] = _buf.getvalue()
+            except Exception:
+                pass
         err = display_pil(im, "cover.jpg")
         if err:
             imglabel.config(text="(bad image)")
