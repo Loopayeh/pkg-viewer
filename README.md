@@ -11,6 +11,15 @@ Works with `.pkg` packages, PS2/PS3 `.iso` disc images, `.exfat` / `.ffpfsc` / `
 
 Get `PKGViewer-Setup-X.Y.Z.exe` (Windows) or `PKGViewer-macOS-arm64-X.Y.Z.zip` (Apple Silicon) / `PKGViewer-macOS-x86_64-X.Y.Z.zip` (Intel) from [Releases](../../releases) — no Python needed, no admin needed.
 
+## Windows security warning
+
+The builds are unsigned, so Windows may warn you before running them. This is about the missing publisher signature, not about the file being unsafe.
+
+- **Windows protected your PC** (SmartScreen, "Unknown publisher") — click **More info → Run anyway**.
+- **Smart App Control blocked an app** (Windows 11 with Smart App Control **On**) — this one has no "Run anyway" button and cannot be bypassed by unblocking the file or adding a Defender exclusion. Run [from source](docs/troubleshooting.md#option-1--run-from-source-fastest-keeps-sac-on) instead, or turn Smart App Control off.
+
+Full walkthrough and what does *not* work: [docs/troubleshooting.md](docs/troubleshooting.md).
+
 ## Why the installer
 
 ![file icons](screenshot-icons.png)

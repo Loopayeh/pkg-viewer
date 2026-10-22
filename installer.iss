@@ -1,5 +1,5 @@
 ; PKG Viewer installer — per-user, file icons, no admin needed.
-#define AppVer "1.19.4-pre2"
+#define AppVer "1.19.4"
 
 [Setup]
 AppName=PKG Viewer
@@ -14,6 +14,14 @@ Compression=lzma2/max
 SolidCompression=yes
 UninstallDisplayName=PKG Viewer
 WizardStyle=modern
+; Sign the Setup exe and its uninstaller, otherwise Smart App Control blocks the
+; installer before the (signed) app is ever copied - and the in-app updater,
+; which downloads this Setup, fails silently on those machines.
+; Configure a sign tool in Inno Setup (Tools > Configure Sign Tools) named
+; "signtool" pointing at signtool.exe with your cert args, then uncomment.
+; SignTool=signtool $f
+; SignedUninstaller=yes
+; SignedUninstallerDir=dist
 
 [Files]
 Source: "dist\PKGViewer.exe"; DestDir: "{app}"; Flags: ignoreversion
