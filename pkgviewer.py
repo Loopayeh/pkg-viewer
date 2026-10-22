@@ -5844,6 +5844,7 @@ BATCH_PRESETS = (
     ("Append [Title ID] to original", "{orig} [{tid}]"),
 )
 BATCH_CUSTOM_LABEL = "Custom pattern"
+NAME_TOKENS = ("title", "tid", "cid", "version", "region", "type", "orig")
 
 
 def format_name(result, pattern, orig_base="", parts=None):
@@ -8377,10 +8378,21 @@ def run_gui(start_path=None):
                               relief="flat", highlightthickness=0,
                               font=FONT_SMALL, state="disabled")
         _pat_entry.pack(side="left", padx=(8, 0))
-        tk.Label(dlg, text="tokens: {title}  {tid}  {cid}  {version}  "
-                           "{region}  {type}  {orig}",
-                 bg=BG, fg=MUTED, font=FONT_SMALL).pack(
-                     anchor="w", padx=22, pady=(2, 0))
+        # clickable tokens: insert at the cursor instead of typing them
+        chiprow = tk.Frame(dlg, bg=BG)
+        chiprow.pack(anchor="w", fill="x", padx=20, pady=(3, 0))
+        for _tok in NAME_TOKENS:
+            _chip = tk.Label(chiprow, text="{" + _tok + "}", bg=CARD2,
+                             fg=TEXT, font=FONT_SMALL, padx=5, pady=1,
+                             cursor="hand2")
+            _chip.pack(side="left", padx=(0, 5))
+            _chip.bind("<Button-1>", lambda _e, t=_tok: _insert_token(t))
+            _chip.bind("<Enter>", lambda _e, c=_chip: c.config(bg=CARD))
+            _chip.bind("<Leave>", lambda _e, c=_chip: c.config(bg=CARD2))
+        info_var = tk.StringVar(value="")
+        _info = tk.Label(dlg, textvariable=info_var, bg=BG, fg=MUTED,
+                         font=FONT_SMALL, anchor="w")
+        _info.pack(fill="x", padx=22)
         # name-part ticks (clean-name preset only)
         partframe = tk.Frame(dlg, bg=BG)
         partframe.pack(side="top", fill="x", padx=12, pady=(4, 0))
@@ -8430,7 +8442,8 @@ def run_gui(start_path=None):
         def _active_pattern():
             _lbl = _preset_var.get()
             if _lbl == BATCH_CUSTOM_LABEL:
-                return _pat_var.get().strip() or None
+                # "" means custom-but-empty: no plan, not the clean name
+                return _pat_var.get().strip()
             for _l, _p in BATCH_PRESETS:
                 if _l == _lbl:
                     return _p
@@ -8473,6 +8486,55 @@ def run_gui(start_path=None):
                 pass
             _pat_job["id"] = root.after(450, _on_parts)
 
+        def _insert_token(tok):
+            # chips switch to Custom on first click so they always work
+            try:
+                if _preset_var.get() != BATCH_CUSTOM_LABEL:
+                    _preset_var.set(BATCH_CUSTOM_LABEL)
+                    _pat_var.set("")
+                _pat_entry.config(state="normal")
+                _pat_entry.focus_set()
+                _pat_entry.insert("insert", "{%s}" % tok)
+                _sync_parts()
+                _pat_typed()
+            except Exception:
+                pass
+
+        def _update_info(_pat):
+            # example name / warning line under the pattern
+            try:
+                if _preset_var.get() != BATCH_CUSTOM_LABEL:
+                    info_var.set("")
+                    return
+                _txt = _pat_var.get().strip()
+                if not _txt:
+                    info_var.set("Type a pattern or click a token — "
+                                 "e.g. {title} - {tid}")
+                    _info.config(fg=MUTED)
+                    return
+                import re as _re
+                _bad = [t for t in _re.findall(r"\{([A-Za-z]+)\}", _txt)
+                        if t.lower() not in NAME_TOKENS]
+                if _bad:
+                    info_var.set("unknown token: " +
+                                 ", ".join("{" + t + "}" for t in _bad))
+                    _info.config(fg="#e17b7b")
+                    return
+                _first = next((it for it in plan
+                               if it.get("status") == "ok"
+                               and it.get("new_files")), None)
+                if _first:
+                    info_var.set("e.g. " +
+                                 os.path.basename(_first["new_files"][0]))
+                    _info.config(fg=MUTED)
+                else:
+                    _skip = next((it for it in plan if it.get("reason")), None)
+                    info_var.set(_skip["reason"] if _skip
+                                 else "Nothing to rename with this pattern")
+                    _info.config(fg="#e9b36a")
+            except Exception:
+                pass
+
         _preset_box.bind("<<ComboboxSelected>>", _on_preset)
         _pat_entry.bind("<KeyRelease>", _pat_typed)
         _sync_parts()
@@ -8480,6 +8542,13 @@ def run_gui(start_path=None):
         def _on_parts():
             _pat = _active_pattern()
             _sync_parts()
+            if _pat == "":
+                # custom selected but empty: never fall back to clean names
+                plan[:] = []
+                _rebuild_rows()
+                _fill_rows()
+                _update_info(_pat)
+                return
             _inc = ({k: _pvars[k].get() for k, _ in NAME_PARTS}
                     if _pat is None else None)
             try:
@@ -8493,6 +8562,7 @@ def run_gui(start_path=None):
                 pass
             _rebuild_rows()
             _fill_rows()
+            _update_info(_pat)
 
         _rebuild_rows()
 
