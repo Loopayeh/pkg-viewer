@@ -35,7 +35,7 @@ Grab `PKGViewer-Setup-X.Y.Z.exe` from [Releases](../../releases) — no admin ne
 - Cover art preview (icon0.png, pic0.png, …) with Save / Copy to clipboard — online covers (PlayStation Store, ps2-covers, GameTDB, XboxUnity, Nintendo IDBE), cached offline
 - Spec card: Title ID, Content ID, version, region, Min. System, SDK, DRM
 - Latest patch version per game (PS5/PS4) with PKG-vs-latest compare
-- Files tab: named entries with id + size — single-file Extract with rename, trophy00.trp contents
+- Files tab: folder tree built from entry paths (PS3 discs/folders, ISOs), sized per folder — single-file Extract with rename, trophy00.trp contents
 - Trophies tab: decrypted trophy list (name, grade, hidden) with icons, banner art, Save icons export
 - OFC (Official) / FPKG (Fake) detection + badges for PS4 and PS5 (incl. split parts)
 - Details tab: curated param.sfo / param.json, Show all for the full dump
@@ -44,7 +44,8 @@ Grab `PKGViewer-Setup-X.Y.Z.exe` from [Releases](../../releases) — no admin ne
 - AMPR / LZ4 asset containers (LIZARD dumps): listed with size in the spec card + Files tab
 - Copy/paste works in every text field, on any keyboard layout
 - Self-updating: silent check at startup, header button lights up on new release
-- CLI mode: `pkgviewer.py --info file.pkg` (also `.nsp` / `.xci`) — batch: `pkgviewer.py --batch-rename folder [--recursive] [--apply]` (dry run without `--apply`) — revert: `pkgviewer.py --revert batch_rename_*.log [--apply]`
+- Batch rename patterns: `{title} {tid} {cid} {version} {region} {type} {orig}` presets (Title ID only, Content ID, append `[Title ID]` to the original name) or a custom pattern, with live preview
+- CLI mode: `pkgviewer.py --info file.pkg` (also `.nsp` / `.xci`) — batch: `pkgviewer.py --batch-rename folder [--recursive] [--apply] [--name-pattern "{orig} [{tid}]"]` (dry run without `--apply`) — revert: `pkgviewer.py --revert batch_rename_*.log [--apply]`
 
 ## Usage
 

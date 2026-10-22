@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.19.5"  # bump on every release — the updater compares this
+APP_VERSION = "v1.20.0"  # bump on every release — the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -5289,6 +5289,120 @@ def fmt_size(n):
     return f"{n} B"
 
 
+def build_entry_tree(entries):
+    """Flat entry names -> folder tree for the Files tab.
+
+    Names may carry a path ("PS3_GAME/USRDIR/EBOOT.BIN"); names without
+    one stay at the root. A name ending in "/" is a folder with no file.
+    Files that repeat a folder name stay next to it (both are visible).
+    Node: {name, path, kids {part: node}, files [...], size, count}.
+    """
+    root = {"name": "", "path": "", "kids": {}, "files": [],
+            "size": 0, "count": 0}
+    for idx, e in enumerate(entries or []):
+        name = str((e or {}).get("name") or "").strip()
+        if not name:
+            continue
+        norm = name.replace("\\", "/")
+        is_dir = norm.endswith("/")
+        parts = [p for p in norm.split("/") if p not in ("", ".", "..")]
+        if not parts:
+            continue
+        size = int(e.get("size") or 0)
+        node = root
+        # folders: every component but the last one + an explicit "dir/" name
+        for part in parts[:-1]:
+            kid = node["kids"].get(part)
+            if kid is None:
+                kid = {"name": part,
+                       "path": (node["path"] + "/" + part).lstrip("/"),
+                       "kids": {}, "files": [], "size": 0, "count": 0}
+                node["kids"][part] = kid
+            node = kid
+            if not is_dir:  # folders are not files: keep counts honest
+                node["size"] += size
+                node["count"] += 1
+        leaf = parts[-1]
+        if is_dir:
+            if leaf not in node["kids"]:
+                node["kids"][leaf] = {
+                    "name": leaf,
+                    "path": (node["path"] + "/" + leaf).lstrip("/"),
+                    "kids": {}, "files": [], "size": 0, "count": 0}
+            continue
+        node["files"].append({"name": leaf, "idx": idx, "size": size,
+                              "codec": (e or {}).get("codec", "")})
+    return root
+
+
+TRP_INLINE_MAX = 300_000_000
+
+
+def populate_entry_tree(tree, result, trp_children=None, open_depth=1):
+    """Render result["entries"] as folders in the Files Treeview.
+
+    Files keep the historical iid "e<idx>" (extract and trophy lookup
+    depend on it); folders get "d<n>". Folders above open_depth start
+    collapsed. trp_children is filled exactly like the flat listing did.
+    Returns {dir_iid: path}. Never raises for odd entry names.
+    """
+    entries = list((result or {}).get("entries") or [])
+    trp_children = trp_children if trp_children is not None else {}
+    root = build_entry_tree(entries)
+    dirs = {}
+    seq = [0]
+
+    def _add_trp(idx, e, parent):
+        try:
+            if not (e.get("name") or "").lower().endswith((".trp", ".ucp")):
+                return
+            if not (0 < (e.get("size") or 0) < TRP_INLINE_MAX):
+                return
+            data = None
+            if e.get("cached") is not None:
+                data = bytes(e["cached"])
+            elif e.get("local_path") and os.path.isfile(e["local_path"]):
+                with open(e["local_path"], "rb") as fh:
+                    data = fh.read(TRP_INLINE_MAX)
+            elif e.get("abs_off") is not None:
+                data = read_entry_bytes((result or {}).get("path"),
+                                        e["abs_off"], e["size"],
+                                        limit=TRP_INLINE_MAX)
+            is_ucp = (e.get("name") or "").lower().endswith(".ucp")
+            inner = ((parse_ucp(data) if is_ucp else parse_trp(data))
+                     if data else [])
+        except Exception:
+            return
+        for j, it in enumerate(inner):
+            iid = "e%dc%d" % (idx, j)
+            trp_children[iid] = (idx, it)
+            tree.insert(parent, "end", iid=iid, text="↳ " + it["name"],
+                        values=("", fmt_size(it["size"]), "trp"))
+
+    def _render(node, parent, depth):
+        for kid in sorted(node["kids"].values(),
+                          key=lambda n: n["name"].lower()):
+            seq[0] += 1
+            iid = "d%d" % seq[0]
+            dirs[iid] = kid["path"]
+            n = kid["count"]
+            tree.insert(parent, "end", iid=iid, text=kid["name"],
+                        values=("", fmt_size(kid["size"]),
+                                "1 file" if n == 1 else "%d files" % n),
+                        open=depth < open_depth)
+            _render(kid, iid, depth + 1)
+        for f in sorted(node["files"], key=lambda x: x["name"].lower()):
+            idx = f["idx"]
+            e = entries[idx]
+            tree.insert(parent, "end", iid="e%d" % idx, text=f["name"],
+                        values=(e.get("id", ""), fmt_size(f["size"]),
+                                f.get("codec", "") or ""))
+            _add_trp(idx, e, "e%d" % idx)
+
+    _render(root, "", 0)
+    return dirs
+
+
 def sanitize_pkg_path(name):
     """Entry name -> safe relative path (keeps subdirs, kills .. / drive)."""
     parts = []
@@ -5722,6 +5836,68 @@ def build_clean_name(result, parts=None):
     return sanitize_filename_part(" - ".join(out))
 
 
+# Batch-dialog presets: label -> pattern (None = the clean-name ticks).
+BATCH_PRESETS = (
+    ("Clean name (Title - Title ID - vVersion - Region)", None),
+    ("Title ID only", "{tid}"),
+    ("Content ID", "{cid}"),
+    ("Append [Title ID] to original", "{orig} [{tid}]"),
+)
+BATCH_CUSTOM_LABEL = "Custom pattern"
+
+
+def format_name(result, pattern, orig_base="", parts=None):
+    """Render a rename pattern from parsed file info.
+
+    Tokens: {title} {tid} {cid} {version} {region} {type} {orig}
+    ({version} is the bare number "1.06", {orig} the current name without
+    its extension). Empty tokens are dropped with their separators, so a
+    missing Title ID never leaves "Title -  - v1.06" behind.
+    Returns (base_name, missing_token_labels); "" when nothing is left.
+    """
+    import re as _re
+    if not pattern:
+        return build_clean_name(result, parts=parts), []
+    try:
+        rd = dict(result.get("rows") or [])
+    except Exception:
+        rd = {}
+    title = str(result.get("title") or "").strip()
+    tid = str(rd.get("Title ID", "") or "").strip()
+    cid = str(rd.get("Content ID", "") or "").strip()
+    ver = str(rd.get("Version", "") or rd.get("Content Ver", "") or "").strip()
+    if ver[:1].lower() == "v":
+        ver = ver[1:]
+    ver = normalize_version(ver)
+    region = str(rd.get("Region", "") or "").strip()
+    region = REGION_SHORT.get(region, region)
+    ptype = str(rd.get("Type", "") or "").strip()
+    if ptype.lower() not in ("update", "dlc"):
+        ptype = ""
+    vals = {
+        "title": title,
+        "tid": "" if tid == "-" else tid,
+        "cid": "" if cid == "-" else cid,
+        "version": ver if ver and ver != "-" else "",
+        "region": "" if region == "-" else region,
+        "type": ptype,
+        "orig": str(orig_base or "").strip(),
+    }
+    low = pattern.lower()
+    missing = [k.upper() for k, v in vals.items()
+               if not v and ("{" + k + "}") in low]
+    name = _re.sub(r"\{([a-zA-Z]+)\}",
+                   lambda m: vals.get(m.group(1).lower(), m.group(0)),
+                   pattern)
+    # empty token + its separators would leave "[]", " - - v", etc.
+    name = _re.sub(r"[\[\(\{]\s*[\]\)\}]", "", name)
+    name = _re.sub(r"(?:\s*-\s*){2,}", " - ", name)
+    name = _re.sub(r"^\s*-\s*|[-\s]+$", "", name)
+    name = _re.sub(r"^\s*-\s*", "", name)
+    name = _re.sub(r"\s{2,}", " ", name).strip(" -_.")
+    return sanitize_filename_part(name), missing
+
+
 BATCH_EXTS = (".pkg", ".ffpkg", ".ffpfsc", ".exfat", ".nsp", ".xci", ".iso")
 
 
@@ -5784,12 +5960,14 @@ def collect_batch_files(inputs, recursive=False):
     return out
 
 
-def preview_batch(files, include=None):
+def preview_batch(files, include=None, pattern=None):
     """Build a rename plan for files. Split sets stay together (one entry).
 
     Each item: {files, new_files, new_base, status, reason}.
     status: 'ok' | 'skip'. Never renames anything.
     include: optional name-component ticks, passed to build_clean_name.
+    pattern: optional format_name() pattern (e.g. "{orig} [{tid}]");
+             None keeps the historical clean-name behaviour.
     """
     import re as _re
     plan, seen_sets, seen_targets = [], set(), set()
@@ -5814,9 +5992,20 @@ def preview_batch(files, include=None):
             item["reason"] = r.get("error", "unrecognized file")
             plan.append(item)
             continue
-        base = build_clean_name(r, parts=include)
+        orig_base = ""
+        try:
+            orig_base = os.path.splitext(os.path.basename(parts[0]))[0]
+            if len(parts) > 1:
+                orig_base = _re.sub(r"_\d+$", "", orig_base)
+        except Exception:
+            orig_base = ""
+        if pattern:
+            base, _missing = format_name(r, pattern, orig_base=orig_base)
+        else:
+            base, _missing = build_clean_name(r, parts=include), []
         if not base:
-            item["reason"] = "not enough info for a name"
+            item["reason"] = (("missing " + ", ".join(_missing))
+                              if _missing else "not enough info for a name")
             plan.append(item)
             continue
         item["new_base"] = base
@@ -5847,7 +6036,8 @@ def preview_batch(files, include=None):
             seen_targets.add(os.path.normcase(os.path.abspath(new)))
         if all(os.path.normcase(o) == os.path.normcase(n)
                for o, n in zip(item["files"], item["new_files"])):
-            item["reason"] = "name unchanged"
+            item["reason"] = (("missing " + ", ".join(_missing))
+                              if _missing else "name unchanged")
             plan.append(item)
             continue
         item["status"] = "ok"
@@ -5952,7 +6142,7 @@ def apply_revert(pairs, only_existing=True):
     return reverted, skipped
 
 
-def print_batch(inputs, recursive=False, apply=False):
+def print_batch(inputs, recursive=False, apply=False, pattern=None):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
@@ -5961,7 +6151,7 @@ def print_batch(inputs, recursive=False, apply=False):
     if not files:
         print("No game files found.")
         return
-    plan = preview_batch(files)
+    plan = preview_batch(files, pattern=pattern)
     n_ok = sum(1 for i in plan if i["status"] == "ok")
     for item in plan:
         if item["new_files"]:
@@ -6969,6 +7159,9 @@ def run_gui(start_path=None):
             except Exception as ex:
                 statusvar.set(f"Extract failed: {ex}")
             return
+        if not (_iid[:1] == "e" and _iid[1:].isdigit()):
+            statusvar.set("Select a file (a folder is selected)")
+            return
         try:
             e = r["entries"][int(_iid[1:])]
         except Exception:
@@ -7033,23 +7226,45 @@ def run_gui(start_path=None):
                         command=lambda: extract_single())
     filectx.add_command(label="View trophies",
                         command=lambda: show_trophies())
-    tree.bind("<Button-3>",
-              lambda ev: (tree.selection_set(tree.identify_row(ev.y)),
-                          filectx.tk_popup(ev.x_root, ev.y_root))
-              if tree.identify_row(ev.y) else None)
+    dirctx = tk.Menu(root, tearoff=0, bg=CARD, fg=TEXT,
+                     activebackground=ACCENT, activeforeground="#171717")
+
+    def _dir_set_open(open_it):
+        try:
+            sel = tree.selection()
+            if sel and sel[0][:1] == "d":
+                tree.item(sel[0], open=bool(open_it))
+        except Exception:
+            pass
+
+    dirctx.add_command(label="Expand", command=lambda: _dir_set_open(True))
+    dirctx.add_command(label="Collapse", command=lambda: _dir_set_open(False))
+
+    def _tree_menu(ev):
+        _iid = tree.identify_row(ev.y)
+        if not _iid:
+            return
+        tree.selection_set(_iid)
+        (_dirctx if _iid[:1] == "d" else filectx).tk_popup(ev.x_root, ev.y_root)
+
+    tree.bind("<Button-3>", _tree_menu)
     tree.bind("<Double-Button-1>", lambda ev: _tree_activate())
 
     def _tree_activate():
-        # double-click a .trp pack -> trophy list; anything else -> extract
+        # double-click a folder -> expand/collapse; a .trp pack -> trophy
+        # list; anything else -> extract
         try:
             sel = tree.selection()
-            if sel:
+            if sel and sel[0][:1] == "d":
                 _iid = sel[0]
-                if _iid.startswith("e") and "c" not in _iid:
-                    _e = state.get("result", {}).get("entries", [])[int(_iid[1:])]
-                    if (_e.get("name") or "").lower().endswith((".trp", ".ucp")):
-                        show_trophies()
-                        return
+                tree.item(_iid, open=not bool(tree.item(_iid, "open")))
+                return
+            if sel and sel[0][:1] == "e" and sel[0][1:].isdigit():
+                _iid = sel[0]
+                _e = state.get("result", {}).get("entries", [])[int(_iid[1:])]
+                if (_e.get("name") or "").lower().endswith((".trp", ".ucp")):
+                    show_trophies()
+                    return
         except Exception:
             pass
         extract_single()
@@ -8127,9 +8342,9 @@ def run_gui(start_path=None):
         dlg.configure(bg=BG)
         dlg.transient(root)
         dlg.grab_set()
-        dlg.geometry("840x540")
-        _center_on_root(dlg, 840, 540)
-        dlg.minsize(680, 420)
+        dlg.geometry("860x600")
+        _center_on_root(dlg, 860, 600)
+        dlg.minsize(700, 480)
         try:
             dlg.resizable(True, True)
         except Exception:
@@ -8142,20 +8357,47 @@ def run_gui(start_path=None):
         _msg = tk.Label(dlg, textvariable=msgvar, bg=BG, fg=MUTED,
                         font=FONT_SMALL, anchor="w")
         _msg.pack(side="bottom", fill="x", padx=14)
-        # name-part ticks: rebuild the plan with picked components
+        # name pattern: presets (Title ID, Content ID, append to original)
+        # or a custom token pattern — see format_name()
+        patrow = tk.Frame(dlg, bg=BG)
+        patrow.pack(side="top", fill="x", padx=12, pady=(12, 0))
+        tk.Label(patrow, text="Name:", bg=BG, fg=MUTED,
+                 font=FONT_SMALL).pack(side="left")
+        _preset_var = tk.StringVar(value=BATCH_PRESETS[0][0])
+        _pat_var = tk.StringVar(value="")
+        _preset_box = ttk.Combobox(
+            patrow, textvariable=_preset_var, state="readonly",
+            values=[_p[0] for _p in BATCH_PRESETS] + [BATCH_CUSTOM_LABEL],
+            width=44, font=FONT_SMALL)
+        _preset_box.pack(side="left", padx=(8, 0))
+        _pat_entry = tk.Entry(patrow, textvariable=_pat_var, width=28,
+                              bg=CARD, fg=TEXT, insertbackground=TEXT,
+                              disabledbackground=CARD,
+                              disabledforeground=MUTED,
+                              relief="flat", highlightthickness=0,
+                              font=FONT_SMALL, state="disabled")
+        _pat_entry.pack(side="left", padx=(8, 0))
+        tk.Label(dlg, text="tokens: {title}  {tid}  {cid}  {version}  "
+                           "{region}  {type}  {orig}",
+                 bg=BG, fg=MUTED, font=FONT_SMALL).pack(
+                     anchor="w", padx=22, pady=(2, 0))
+        # name-part ticks (clean-name preset only)
         partframe = tk.Frame(dlg, bg=BG)
-        partframe.pack(side="top", fill="x", padx=12, pady=(12, 0))
+        partframe.pack(side="top", fill="x", padx=12, pady=(4, 0))
         tk.Label(partframe, text="Include:", bg=BG, fg=MUTED,
                  font=FONT_SMALL).pack(side="left")
         _pvars = {}
+        _pchecks = []
         for _k, _lbl in NAME_PARTS:
             _v = tk.BooleanVar(value=True)
             _pvars[_k] = _v
-            tk.Checkbutton(partframe, text=_lbl, variable=_v, bg=BG,
-                           fg=TEXT, selectcolor=CARD2, activebackground=BG,
-                           activeforeground=TEXT, font=FONT_SMALL,
-                           command=lambda: _on_parts()).pack(side="left",
-                                                             padx=(8, 0))
+            _chk = tk.Checkbutton(partframe, text=_lbl, variable=_v, bg=BG,
+                                  fg=TEXT, selectcolor=CARD2,
+                                  activebackground=BG, activeforeground=TEXT,
+                                  font=FONT_SMALL,
+                                  command=lambda: _on_parts())
+            _chk.pack(side="left", padx=(8, 0))
+            _pchecks.append(_chk)
         cols = ("use", "old", "new", "status")
         tv = ttk.Treeview(dlg, columns=cols, show="headings", height=14)
         tv.heading("use", text="✓")
@@ -8185,10 +8427,63 @@ def run_gui(start_path=None):
                 if item["status"] == "ok":
                     checked.add(idx)
 
-        def _on_parts():
-            _inc = {k: _pvars[k].get() for k, _ in NAME_PARTS}
+        def _active_pattern():
+            _lbl = _preset_var.get()
+            if _lbl == BATCH_CUSTOM_LABEL:
+                return _pat_var.get().strip() or None
+            for _l, _p in BATCH_PRESETS:
+                if _l == _lbl:
+                    return _p
+            return None
+
+        def _sync_parts():
+            _clean = _active_pattern() is None
+            for _c in _pchecks:
+                try:
+                    _c.config(state="normal" if _clean else "disabled")
+                except Exception:
+                    pass
+
+        _pat_job = {"id": None}
+
+        def _on_preset(_ev=None):
+            _custom = _preset_var.get() == BATCH_CUSTOM_LABEL
             try:
-                plan[:] = preview_batch(files, include=_inc)
+                if not _custom:
+                    _pat_var.set(_active_pattern() or "")
+                elif not _pat_var.get().strip():
+                    _pat_var.set("{title} - {tid}")
+                _pat_entry.config(state="normal" if _custom else "disabled")
+            except Exception:
+                pass
+            if _custom:
+                try:
+                    _pat_entry.focus_set()
+                except Exception:
+                    pass
+            _sync_parts()
+            _on_parts()
+
+        def _pat_typed(_ev=None):
+            # parsing every file is not free - wait for a pause while typing
+            try:
+                if _pat_job["id"]:
+                    root.after_cancel(_pat_job["id"])
+            except Exception:
+                pass
+            _pat_job["id"] = root.after(450, _on_parts)
+
+        _preset_box.bind("<<ComboboxSelected>>", _on_preset)
+        _pat_entry.bind("<KeyRelease>", _pat_typed)
+        _sync_parts()
+
+        def _on_parts():
+            _pat = _active_pattern()
+            _sync_parts()
+            _inc = ({k: _pvars[k].get() for k, _ in NAME_PARTS}
+                    if _pat is None else None)
+            try:
+                plan[:] = preview_batch(files, include=_inc, pattern=_pat)
             except Exception as ex:
                 msgvar.set(f"Error: {ex}")
                 return
@@ -9241,35 +9536,10 @@ def run_gui(start_path=None):
             vl.config(state="readonly")
         tree.delete(*tree.get_children())
         state["trp_children"] = {}
-        for idx, e in enumerate(r["entries"]):
-            if not e["name"]:
-                continue
-            tree.insert("", "end", iid=f"e{idx}", text=e["name"],
-                        values=(e["id"], fmt_size(e["size"]), e.get("codec", "")))
-            # trophy pack: expand inner TRP/UCP files as tree children
-            if e["name"].lower().endswith((".trp", ".ucp")) and 0 < e["size"] < 300_000_000:
-                try:
-                    _td = None
-                    if e.get("cached") is not None:
-                        _td = bytes(e["cached"])
-                    elif e.get("local_path") and os.path.isfile(
-                            e["local_path"]):
-                        with open(e["local_path"], "rb") as _fh:
-                            _td = _fh.read(300_000_000)
-                    elif e.get("abs_off") is not None:
-                        _td = read_entry_bytes(r["path"], e["abs_off"],
-                                               e["size"], limit=300_000_000)
-                    _is_ucp = e["name"].lower().endswith(".ucp")
-                    _inner = ((parse_ucp(_td) if _is_ucp else parse_trp(_td))
-                              if _td else [])
-                except Exception:
-                    _inner = []
-                for j, _in in enumerate(_inner):
-                    _iid = f"e{idx}c{j}"
-                    state["trp_children"][_iid] = (idx, _in)
-                    tree.insert(f"e{idx}", "end", iid=_iid,
-                                text="↳ " + _in["name"],
-                                values=("", fmt_size(_in["size"]), "trp"))
+        # entries with paths (PS3 disc/folders, ISOs) become folders;
+        # flat entries stay at the root, exactly like the old listing
+        state["tree_dirs"] = populate_entry_tree(
+            tree, r, state["trp_children"], open_depth=1)
         # Trophies tab: lazy — loads only when the tab is opened
         # (no trophy work during file load)
         state["trophy_path"] = None
@@ -10018,12 +10288,23 @@ if __name__ == "__main__":
         _args = sys.argv[2:]
         _apply = "--apply" in _args
         _rec = "--recursive" in _args
-        _inputs = [a for a in _args if not a.startswith("--")]
+        _pattern = None
+        _inputs = []
+        _i = 0
+        while _i < len(_args):
+            if _args[_i] == "--name-pattern" and _i + 1 < len(_args):
+                _pattern = _args[_i + 1]
+                _i += 2
+                continue
+            if not _args[_i].startswith("--"):
+                _inputs.append(_args[_i])
+            _i += 1
         if not _inputs:
             print("usage: pkgviewer.py --batch-rename <file|folder> [...] "
-                  "[--recursive] [--apply]")
+                  "[--recursive] [--apply] [--name-pattern \"{tid}\"]")
         else:
-            print_batch(_inputs, recursive=_rec, apply=_apply)
+            print_batch(_inputs, recursive=_rec, apply=_apply,
+                        pattern=_pattern)
     elif len(sys.argv) >= 3 and sys.argv[1] == "--revert":
         _args = sys.argv[2:]
         _apply = "--apply" in _args
