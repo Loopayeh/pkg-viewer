@@ -22,12 +22,18 @@ import urllib.request as _ureq
 
 
 def parse_version(s):
-    """'v1.6.1' -> (1, 6, 1). Non-numeric parts count as 0."""
+    """'v1.6.1' -> (1, 6, 1, 1); '1.19.4-pre2' -> (1, 19, 4, 0, 2).
+
+    The element after the release numbers marks a final release (1) above
+    its pre-releases (0 + pre number), so 1.19.4 > 1.19.4-pre2 > 1.19.4-pre1.
+    Non-numeric parts count as 0.
+    """
     s = (s or "").strip()
     if s[:1].lower() == "v":
         s = s[1:]
+    core, dash, pre = s.partition("-")
     out = []
-    for p in s.split("."):
+    for p in core.split("."):
         d = ""
         for ch in p:
             if ch.isdigit():
@@ -35,7 +41,22 @@ def parse_version(s):
             else:
                 break
         out.append(int(d) if d else 0)
-    return tuple(out) or (0,)
+    if dash:
+        nums = []
+        d = ""
+        for ch in pre:
+            if ch.isdigit():
+                d += ch
+            elif d:
+                nums.append(int(d))
+                d = ""
+        if d:
+            nums.append(int(d))
+        out.append(0)
+        out.extend(nums or [0])
+    else:
+        out.append(1)
+    return tuple(out) or (1,)
 
 
 def is_newer(latest_tag, current):
