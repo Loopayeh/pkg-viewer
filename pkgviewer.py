@@ -56,10 +56,12 @@ def _save_settings(patch):
 try:
     import tkinter as _tk
     from tkinter import font as _tkfont
+    from tkinter import ttk as _ttk
     _TK_OK = True
 except ImportError:
     _tk = None
     _tkfont = None
+    _ttk = None
     _TK_OK = False
 try:
     from PIL import Image as _PILImage, ImageDraw as _PILDraw, ImageTk as _PILImageTk
@@ -5836,15 +5838,103 @@ def build_clean_name(result, parts=None):
     return sanitize_filename_part(" - ".join(out))
 
 
-# Batch-dialog presets: label -> pattern (None = the clean-name ticks).
+# Rename presets: (id, label, pattern). pattern None = the clean-name ticks.
 BATCH_PRESETS = (
-    ("Clean name (Title - Title ID - vVersion - Region)", None),
-    ("Title ID only", "{tid}"),
-    ("Content ID", "{cid}"),
-    ("Append [Title ID] to original", "{orig} [{tid}]"),
+    ("clean", "Clean name (Title - Title ID - vVersion - Region)", None),
+    ("tid", "Title ID only", "{tid}"),
+    ("cid", "Content ID", "{cid}"),
+    ("append", "Append [Title ID] to original", "{orig} [{tid}]"),
 )
 BATCH_CUSTOM_LABEL = "Custom pattern"
 NAME_TOKENS = ("title", "tid", "cid", "version", "region", "type", "orig")
+
+
+def preset_labels():
+    return [p[1] for p in BATCH_PRESETS] + [BATCH_CUSTOM_LABEL]
+
+
+def preset_id_for_label(label):
+    if label == BATCH_CUSTOM_LABEL:
+        return "custom"
+    for pid, lab, _pat in BATCH_PRESETS:
+        if lab == label:
+            return pid
+    return "clean"
+
+
+def preset_label_for_id(pid):
+    if pid == "custom":
+        return BATCH_CUSTOM_LABEL
+    for _pid, lab, _pat in BATCH_PRESETS:
+        if _pid == pid:
+            return lab
+    return BATCH_PRESETS[0][1]
+
+
+def preset_pattern(pid):
+    for _pid, _lab, pat in BATCH_PRESETS:
+        if _pid == pid:
+            return pat
+    return None
+
+
+def pattern_for_preset(pid, custom_text=""):
+    """Preset id + custom text -> pattern (None clean, "" custom-empty)."""
+    if pid == "custom":
+        return str(custom_text or "").strip()
+    return preset_pattern(pid)
+
+
+def suggest_base_name(result, pattern, include=None, path=""):
+    """Base name (no extension) for one result under a pattern/preset."""
+    if pattern:
+        try:
+            orig = os.path.splitext(os.path.basename(path))[0]
+        except Exception:
+            orig = ""
+        return format_name(result, pattern, orig_base=orig)
+    return build_clean_name(result, parts=include), []
+
+
+def load_rename_prefs():
+    """Saved rename choices: ({part: bool}, preset_id, custom pattern)."""
+    inc = {k: True for k, _ in NAME_PARTS}
+    pid, pat = "clean", ""
+    try:
+        s = _load_settings() or {}
+        saved = s.get("rename_include")
+        if isinstance(saved, dict):
+            for k in inc:
+                if isinstance(saved.get(k), bool):
+                    inc[k] = saved[k]
+        _pid = str(s.get("rename_preset") or "clean")
+        if _pid == "custom" or any(_pid == _p[0] for _p in BATCH_PRESETS):
+            pid = _pid
+        _pat = s.get("rename_pattern")
+        if isinstance(_pat, str):
+            pat = _pat
+        if pid == "custom" and not pat.strip():
+            pid = "clean"  # empty custom = not a usable choice
+    except Exception:
+        pass
+    return inc, pid, pat
+
+
+def save_rename_prefs(include=None, preset=None, pattern=None):
+    """Persist only the values given (settings.json merge). Never raises."""
+    patch = {}
+    try:
+        if include is not None:
+            patch["rename_include"] = {k: bool(include.get(k, True))
+                                       for k, _ in NAME_PARTS}
+        if preset is not None:
+            patch["rename_preset"] = str(preset)
+        if pattern is not None:
+            patch["rename_pattern"] = str(pattern)
+        if patch:
+            _save_settings(patch)
+    except Exception:
+        pass
 
 
 def format_name(result, pattern, orig_base="", parts=None):
@@ -6258,6 +6348,189 @@ FONT_BIG = ("Segoe UI", 18, "bold")
 FONT_MID = ("Segoe UI", 11, "bold")
 FONT_SMALL = ("Segoe UI", 9)
 FONT_BADGE = ("Segoe UI", 9, "bold")
+
+
+if _TK_OK:
+    class NamePatternBar(_tk.Frame):
+        """Preset + token pattern + include ticks for the rename dialogs.
+
+        Shared by the single rename and the batch dialog so both behave the
+        same. The last choice is saved in settings.json: the preset, the
+        custom pattern and the Title / Title ID / Version / Region ticks.
+        """
+
+        def __init__(self, parent, on_change=None, with_include=True):
+            _tk.Frame.__init__(self, parent, bg=BG)
+            inc, pid, pat = load_rename_prefs()
+            self._on_change = on_change
+            self._job = None
+            self._custom_text = str(pat or "").strip()
+            self._checks = []
+            self._inc_vars = {}
+
+            row = _tk.Frame(self, bg=BG)
+            row.pack(fill="x")
+            _tk.Label(row, text="Name:", bg=BG, fg=MUTED,
+                      font=FONT_SMALL).pack(side="left")
+            self._preset_var = _tk.StringVar(value=preset_label_for_id(pid))
+            self._preset_box = _ttk.Combobox(
+                row, textvariable=self._preset_var, state="readonly",
+                values=preset_labels(), width=38, font=FONT_SMALL)
+            self._preset_box.pack(side="left", padx=(8, 0))
+            self._pat_var = _tk.StringVar(
+                value=(self._custom_text if pid == "custom"
+                       else (preset_pattern(pid) or "")))
+            self._pat_entry = _tk.Entry(
+                row, textvariable=self._pat_var, width=24, bg=CARD, fg=TEXT,
+                insertbackground=TEXT, disabledbackground=CARD,
+                disabledforeground=MUTED, relief="flat",
+                highlightthickness=0, font=FONT_SMALL)
+            self._pat_entry.pack(side="left", padx=(8, 0))
+
+            chiprow = _tk.Frame(self, bg=BG)
+            chiprow.pack(fill="x", pady=(3, 0))
+            for tok in NAME_TOKENS:
+                chip = _tk.Label(chiprow, text="{" + tok + "}", bg=CARD2,
+                                 fg=TEXT, font=FONT_SMALL, padx=5, pady=1,
+                                 cursor="hand2")
+                chip.pack(side="left", padx=(0, 5))
+                chip.bind("<Button-1>",
+                          lambda _e, t=tok: self._insert_token(t))
+                chip.bind("<Enter>", lambda _e, c=chip: c.config(bg=CARD))
+                chip.bind("<Leave>", lambda _e, c=chip: c.config(bg=CARD2))
+
+            self._hint_var = _tk.StringVar(value="")
+            self._hint = _tk.Label(self, textvariable=self._hint_var, bg=BG,
+                                   fg=MUTED, font=FONT_SMALL, anchor="w",
+                                   justify="left")
+            self._hint.pack(fill="x", pady=(2, 0))
+
+            if with_include:
+                part = _tk.Frame(self, bg=BG)
+                part.pack(fill="x", pady=(4, 0))
+                _tk.Label(part, text="Include:", bg=BG, fg=MUTED,
+                          font=FONT_SMALL).pack(side="left")
+                for key, lbl in NAME_PARTS:
+                    var = _tk.BooleanVar(value=bool(inc.get(key, True)))
+                    self._inc_vars[key] = var
+                    chk = _tk.Checkbutton(
+                        part, text=lbl, variable=var, bg=BG, fg=TEXT,
+                        selectcolor=CARD2, activebackground=BG,
+                        activeforeground=TEXT, font=FONT_SMALL,
+                        command=self._on_check)
+                    chk.pack(side="left", padx=(8, 0))
+                    self._checks.append(chk)
+
+            self._preset_box.bind("<<ComboboxSelected>>", self._on_preset)
+            self._pat_entry.bind("<KeyRelease>", self._on_typed)
+            self._sync_states()
+
+        # -- public --
+        def preset_id(self):
+            return preset_id_for_label(self._preset_var.get())
+
+        def pattern(self):
+            pid = self.preset_id()
+            if pid == "custom":
+                return self._pat_var.get().strip()
+            return preset_pattern(pid)
+
+        def include(self):
+            return {k: v.get() for k, v in self._inc_vars.items()}
+
+        def unknown_tokens(self):
+            import re as _re
+            _pat = self.pattern() or ""
+            return [t for t in _re.findall(r"\{([A-Za-z]+)\}", _pat)
+                    if t.lower() not in NAME_TOKENS]
+
+        def set_hint(self, text="", color=None):
+            try:
+                self._hint_var.set(text or "")
+                self._hint.config(fg=color or MUTED)
+            except Exception:
+                pass
+
+        # -- events --
+        def _sync_states(self):
+            pid = self.preset_id()
+            try:
+                self._pat_entry.config(
+                    state="normal" if pid == "custom" else "disabled")
+            except Exception:
+                pass
+            for chk in self._checks:
+                try:
+                    chk.config(state="normal" if pid == "clean"
+                               else "disabled")
+                except Exception:
+                    pass
+
+        def _emit(self):
+            if self._on_change:
+                try:
+                    self._on_change()
+                except Exception:
+                    pass
+
+        def _on_preset(self, _ev=None):
+            pid = self.preset_id()
+            if pid == "custom":
+                if not self._custom_text.strip():
+                    self._custom_text = "{title} - {tid}"
+                self._pat_var.set(self._custom_text)
+            else:
+                self._pat_var.set(preset_pattern(pid) or "")
+            self._sync_states()
+            if pid == "custom":
+                save_rename_prefs(preset=pid, pattern=self._custom_text)
+            else:
+                save_rename_prefs(preset=pid)
+            if pid == "custom":
+                try:
+                    self._pat_entry.focus_set()
+                    self._pat_entry.icursor("end")
+                except Exception:
+                    pass
+            self._emit()
+
+        def _on_check(self):
+            save_rename_prefs(include=self.include())
+            self._emit()
+
+        def _insert_token(self, tok):
+            # chips switch to Custom on first click so they always work
+            try:
+                if self.preset_id() != "custom":
+                    self._preset_var.set(BATCH_CUSTOM_LABEL)
+                    self._custom_text = ""
+                    self._pat_var.set("")
+                    self._sync_states()
+                self._pat_entry.focus_set()
+                self._pat_entry.insert("insert", "{%s}" % tok)
+                self._custom_text = self._pat_var.get()
+                save_rename_prefs(preset="custom",
+                                  pattern=self._custom_text)
+                self._emit()
+            except Exception:
+                pass
+
+        def _on_typed(self, _ev=None):
+            self._custom_text = self._pat_var.get()
+            # typing is cheap; rebuilding the preview is not
+            try:
+                if self._job:
+                    self.after_cancel(self._job)
+            except Exception:
+                pass
+            self._job = self.after(400, self._commit_typed)
+
+        def _commit_typed(self):
+            self._job = None
+            save_rename_prefs(pattern=self._custom_text)
+            self._emit()
+else:
+    NamePatternBar = None
 
 
 def _global_ctrl_keys(event, root, statusvar):
@@ -8205,13 +8478,13 @@ def run_gui(start_path=None):
         if not old_path or not os.path.exists(old_path):
             statusvar.set("Original file not found")
             return
-        base = build_clean_name(r)
-        if not base:
-            statusvar.set("Not enough info to build a name")
-            return
         is_dir = os.path.isdir(old_path)
-        _root, ext = os.path.splitext(os.path.basename(old_path)) if not is_dir else ("", "")
-        suggested = base + ext
+        _root, ext = (os.path.splitext(os.path.basename(old_path))
+                      if not is_dir else ("", ""))
+        # the saved preset/pattern also drives the first suggestion
+        _inc0, _pid0, _cpat0 = load_rename_prefs()
+        _pat0 = pattern_for_preset(_pid0, _cpat0)
+        _base, _miss0 = suggest_base_name(r, _pat0, _inc0, old_path)
         dlg = tk.Toplevel(root)
         dlg.title("Rename file")
         dlg.configure(bg=BG)
@@ -8221,43 +8494,44 @@ def run_gui(start_path=None):
         tk.Label(dlg, text="Old name:", bg=BG, fg=MUTED,
                  font=FONT_SMALL, anchor="w").pack(fill="x", padx=14, pady=(12, 0))
         tk.Label(dlg, text=os.path.basename(old_path), bg=BG, fg=TEXT,
-                 font=FONT, anchor="w", wraplength=420,
+                 font=FONT, anchor="w", wraplength=440,
                  justify="left").pack(fill="x", padx=14)
         tk.Label(dlg, text="New name:", bg=BG, fg=MUTED,
                  font=FONT_SMALL, anchor="w").pack(fill="x", padx=14, pady=(10, 0))
-        namevar = tk.StringVar(value=suggested)
+        namevar = tk.StringVar(
+            value=((_base + ext) if _base else os.path.basename(old_path)))
         entry = tk.Entry(dlg, textvariable=namevar, bg=CARD2, fg=TEXT,
                          font=FONT_MID, width=52, insertbackground=TEXT)
         entry.pack(fill="x", padx=14, pady=(2, 4))
-        # name-part ticks: pick which components build the name
-        partframe = tk.Frame(dlg, bg=BG)
-        partframe.pack(fill="x", padx=14, pady=(2, 0))
-        tk.Label(partframe, text="Include:", bg=BG, fg=MUTED,
-                 font=FONT_SMALL).pack(side="left")
-        _pvars = {}
-
-        def _parts_now():
-            return {k: _pvars[k].get() for k, _ in NAME_PARTS}
 
         def _refresh_name(*_a):
-            _b = build_clean_name(r, parts=_parts_now())
+            _pat = bar.pattern()
+            _bad = bar.unknown_tokens()
+            if _bad:
+                bar.set_hint("unknown token: " +
+                             ", ".join("{%s}" % t for t in _bad), "#e17b7b")
+                return
+            if bar.preset_id() == "custom" and _pat == "":
+                bar.set_hint("Type a pattern or click a token — "
+                             "e.g. {title} - {tid}")
+                return
+            _b, _miss = suggest_base_name(r, _pat, bar.include(), old_path)
             if _b:
-                namevar.set(_b + ext)
+                namevar.set((_b + ("" if is_dir else ext)).strip())
+                bar.set_hint("")
             else:
-                msgvar.set("Tick at least one part")
-        for _k, _lbl in NAME_PARTS:
-            _v = tk.BooleanVar(value=True)
-            _pvars[_k] = _v
-            tk.Checkbutton(partframe, text=_lbl, variable=_v, bg=BG,
-                           fg=TEXT, selectcolor=CARD2, activebackground=BG,
-                           activeforeground=TEXT, font=FONT_SMALL,
-                           command=_refresh_name).pack(side="left",
-                                                       padx=(8, 0))
-        entry.focus_set()
-        entry.select_range(0, "end")
+                bar.set_hint(("missing " + ", ".join(_miss)) if _miss
+                             else "not enough info for this pattern",
+                             "#e9b36a")
+
+        bar = NamePatternBar(dlg, on_change=_refresh_name)
+        bar.pack(fill="x", padx=14, pady=(2, 0))
+        bar.set_hint(("missing " + ", ".join(_miss0)) if _miss0 else "")
         msgvar = tk.StringVar(value="")
         tk.Label(dlg, textvariable=msgvar, bg=BG, fg="#e17b7b",
                  font=FONT_SMALL, anchor="w").pack(fill="x", padx=14)
+        entry.focus_set()
+        entry.select_range(0, "end")
 
         def _do_copy():
             try:
@@ -8331,10 +8605,17 @@ def run_gui(start_path=None):
         if len(files) == 1 and len(split_set_siblings(files[0])) == 1:
             load(files[0])
             return
+        # saved preset/pattern (and ticks) also drive the first plan
+        _inc0, _pid0, _cpat0 = load_rename_prefs()
+        _pat0 = pattern_for_preset(_pid0, _cpat0)
+        if _pat0 == "":
+            _pat0 = None
         try:
             statusvar.set(f"Scanning {len(files)} files...")
             root.update_idletasks()
-            plan = preview_batch(files)
+            plan = preview_batch(files,
+                                 include=(_inc0 if _pat0 is None else None),
+                                 pattern=_pat0)
         except Exception as ex:
             statusvar.set(f"Error: {ex}")
             return
@@ -8358,58 +8639,9 @@ def run_gui(start_path=None):
         _msg = tk.Label(dlg, textvariable=msgvar, bg=BG, fg=MUTED,
                         font=FONT_SMALL, anchor="w")
         _msg.pack(side="bottom", fill="x", padx=14)
-        # name pattern: presets (Title ID, Content ID, append to original)
-        # or a custom token pattern — see format_name()
-        patrow = tk.Frame(dlg, bg=BG)
-        patrow.pack(side="top", fill="x", padx=12, pady=(12, 0))
-        tk.Label(patrow, text="Name:", bg=BG, fg=MUTED,
-                 font=FONT_SMALL).pack(side="left")
-        _preset_var = tk.StringVar(value=BATCH_PRESETS[0][0])
-        _pat_var = tk.StringVar(value="")
-        _preset_box = ttk.Combobox(
-            patrow, textvariable=_preset_var, state="readonly",
-            values=[_p[0] for _p in BATCH_PRESETS] + [BATCH_CUSTOM_LABEL],
-            width=44, font=FONT_SMALL)
-        _preset_box.pack(side="left", padx=(8, 0))
-        _pat_entry = tk.Entry(patrow, textvariable=_pat_var, width=28,
-                              bg=CARD, fg=TEXT, insertbackground=TEXT,
-                              disabledbackground=CARD,
-                              disabledforeground=MUTED,
-                              relief="flat", highlightthickness=0,
-                              font=FONT_SMALL, state="disabled")
-        _pat_entry.pack(side="left", padx=(8, 0))
-        # clickable tokens: insert at the cursor instead of typing them
-        chiprow = tk.Frame(dlg, bg=BG)
-        chiprow.pack(anchor="w", fill="x", padx=20, pady=(3, 0))
-        for _tok in NAME_TOKENS:
-            _chip = tk.Label(chiprow, text="{" + _tok + "}", bg=CARD2,
-                             fg=TEXT, font=FONT_SMALL, padx=5, pady=1,
-                             cursor="hand2")
-            _chip.pack(side="left", padx=(0, 5))
-            _chip.bind("<Button-1>", lambda _e, t=_tok: _insert_token(t))
-            _chip.bind("<Enter>", lambda _e, c=_chip: c.config(bg=CARD))
-            _chip.bind("<Leave>", lambda _e, c=_chip: c.config(bg=CARD2))
-        info_var = tk.StringVar(value="")
-        _info = tk.Label(dlg, textvariable=info_var, bg=BG, fg=MUTED,
-                         font=FONT_SMALL, anchor="w")
-        _info.pack(fill="x", padx=22)
-        # name-part ticks (clean-name preset only)
-        partframe = tk.Frame(dlg, bg=BG)
-        partframe.pack(side="top", fill="x", padx=12, pady=(4, 0))
-        tk.Label(partframe, text="Include:", bg=BG, fg=MUTED,
-                 font=FONT_SMALL).pack(side="left")
-        _pvars = {}
-        _pchecks = []
-        for _k, _lbl in NAME_PARTS:
-            _v = tk.BooleanVar(value=True)
-            _pvars[_k] = _v
-            _chk = tk.Checkbutton(partframe, text=_lbl, variable=_v, bg=BG,
-                                  fg=TEXT, selectcolor=CARD2,
-                                  activebackground=BG, activeforeground=TEXT,
-                                  font=FONT_SMALL,
-                                  command=lambda: _on_parts())
-            _chk.pack(side="left", padx=(8, 0))
-            _pchecks.append(_chk)
+        # name preset / custom token pattern / include ticks (shared widget)
+        bar = NamePatternBar(dlg, on_change=lambda: _on_parts())
+        bar.pack(side="top", fill="x", padx=12, pady=(12, 0))
         cols = ("use", "old", "new", "status")
         tv = ttk.Treeview(dlg, columns=cols, show="headings", height=14)
         tv.heading("use", text="✓")
@@ -8439,118 +8671,46 @@ def run_gui(start_path=None):
                 if item["status"] == "ok":
                     checked.add(idx)
 
-        def _active_pattern():
-            _lbl = _preset_var.get()
-            if _lbl == BATCH_CUSTOM_LABEL:
-                # "" means custom-but-empty: no plan, not the clean name
-                return _pat_var.get().strip()
-            for _l, _p in BATCH_PRESETS:
-                if _l == _lbl:
-                    return _p
-            return None
-
-        def _sync_parts():
-            _clean = _active_pattern() is None
-            for _c in _pchecks:
-                try:
-                    _c.config(state="normal" if _clean else "disabled")
-                except Exception:
-                    pass
-
-        _pat_job = {"id": None}
-
-        def _on_preset(_ev=None):
-            _custom = _preset_var.get() == BATCH_CUSTOM_LABEL
+        def _hint_from_plan():
+            # example name / warning line under the pattern (custom only)
             try:
-                if not _custom:
-                    _pat_var.set(_active_pattern() or "")
-                elif not _pat_var.get().strip():
-                    _pat_var.set("{title} - {tid}")
-                _pat_entry.config(state="normal" if _custom else "disabled")
-            except Exception:
-                pass
-            if _custom:
-                try:
-                    _pat_entry.focus_set()
-                except Exception:
-                    pass
-            _sync_parts()
-            _on_parts()
-
-        def _pat_typed(_ev=None):
-            # parsing every file is not free - wait for a pause while typing
-            try:
-                if _pat_job["id"]:
-                    root.after_cancel(_pat_job["id"])
-            except Exception:
-                pass
-            _pat_job["id"] = root.after(450, _on_parts)
-
-        def _insert_token(tok):
-            # chips switch to Custom on first click so they always work
-            try:
-                if _preset_var.get() != BATCH_CUSTOM_LABEL:
-                    _preset_var.set(BATCH_CUSTOM_LABEL)
-                    _pat_var.set("")
-                _pat_entry.config(state="normal")
-                _pat_entry.focus_set()
-                _pat_entry.insert("insert", "{%s}" % tok)
-                _sync_parts()
-                _pat_typed()
-            except Exception:
-                pass
-
-        def _update_info(_pat):
-            # example name / warning line under the pattern
-            try:
-                if _preset_var.get() != BATCH_CUSTOM_LABEL:
-                    info_var.set("")
+                if bar.preset_id() != "custom":
+                    bar.set_hint("")
                     return
-                _txt = _pat_var.get().strip()
-                if not _txt:
-                    info_var.set("Type a pattern or click a token — "
-                                 "e.g. {title} - {tid}")
-                    _info.config(fg=MUTED)
-                    return
-                import re as _re
-                _bad = [t for t in _re.findall(r"\{([A-Za-z]+)\}", _txt)
-                        if t.lower() not in NAME_TOKENS]
+                _bad = bar.unknown_tokens()
                 if _bad:
-                    info_var.set("unknown token: " +
-                                 ", ".join("{" + t + "}" for t in _bad))
-                    _info.config(fg="#e17b7b")
+                    bar.set_hint("unknown token: " +
+                                 ", ".join("{%s}" % t for t in _bad),
+                                 "#e17b7b")
+                    return
+                if bar.pattern() == "":
+                    bar.set_hint("Type a pattern or click a token — "
+                                 "e.g. {title} - {tid}")
                     return
                 _first = next((it for it in plan
                                if it.get("status") == "ok"
                                and it.get("new_files")), None)
                 if _first:
-                    info_var.set("e.g. " +
+                    bar.set_hint("e.g. " +
                                  os.path.basename(_first["new_files"][0]))
-                    _info.config(fg=MUTED)
                 else:
                     _skip = next((it for it in plan if it.get("reason")), None)
-                    info_var.set(_skip["reason"] if _skip
-                                 else "Nothing to rename with this pattern")
-                    _info.config(fg="#e9b36a")
+                    bar.set_hint(_skip["reason"] if _skip
+                                 else "Nothing to rename with this pattern",
+                                 "#e9b36a")
             except Exception:
                 pass
 
-        _preset_box.bind("<<ComboboxSelected>>", _on_preset)
-        _pat_entry.bind("<KeyRelease>", _pat_typed)
-        _sync_parts()
-
         def _on_parts():
-            _pat = _active_pattern()
-            _sync_parts()
-            if _pat == "":
+            _pat = bar.pattern()
+            if _pat == "" and bar.preset_id() == "custom":
                 # custom selected but empty: never fall back to clean names
                 plan[:] = []
                 _rebuild_rows()
                 _fill_rows()
-                _update_info(_pat)
+                _hint_from_plan()
                 return
-            _inc = ({k: _pvars[k].get() for k, _ in NAME_PARTS}
-                    if _pat is None else None)
+            _inc = bar.include() if _pat is None else None
             try:
                 plan[:] = preview_batch(files, include=_inc, pattern=_pat)
             except Exception as ex:
@@ -8562,7 +8722,7 @@ def run_gui(start_path=None):
                 pass
             _rebuild_rows()
             _fill_rows()
-            _update_info(_pat)
+            _hint_from_plan()
 
         _rebuild_rows()
 
@@ -8584,6 +8744,7 @@ def run_gui(start_path=None):
                                   _status_text(idx)))
 
         _fill_rows()
+        _hint_from_plan()
 
         def _toggle(_e=None):
             sel = tv.selection()

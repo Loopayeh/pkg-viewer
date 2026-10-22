@@ -44,7 +44,7 @@ Grab `PKGViewer-Setup-X.Y.Z.exe` from [Releases](../../releases) — no admin ne
 - AMPR / LZ4 asset containers (LIZARD dumps): listed with size in the spec card + Files tab
 - Copy/paste works in every text field, on any keyboard layout
 - Self-updating: silent check at startup, header button lights up on new release
-- Batch rename patterns: `{title} {tid} {cid} {version} {region} {type} {orig}` presets (Title ID only, Content ID, append `[Title ID]` to the original name) or a custom pattern, with live preview
+- Rename patterns in both dialogs: `{title} {tid} {cid} {version} {region} {type} {orig}` presets (Title ID only, Content ID, append `[Title ID]` to the original name) or a custom pattern with live preview — the last preset, pattern and Title/Title ID/Version/Region ticks are remembered
 - CLI mode: `pkgviewer.py --info file.pkg` (also `.nsp` / `.xci`) — batch: `pkgviewer.py --batch-rename folder [--recursive] [--apply] [--name-pattern "{orig} [{tid}]"]` (dry run without `--apply`) — revert: `pkgviewer.py --revert batch_rename_*.log [--apply]`
 
 ## Usage
