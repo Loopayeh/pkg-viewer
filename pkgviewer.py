@@ -7009,12 +7009,58 @@ def run_gui(start_path=None):
                          insertbackground=TEXT)
     _titletext.pack(side="left", anchor="w", fill="x", expand=True)
     _titletext.insert("1.0", "—")
+
+    def _title_value():
+        try:
+            v = _titletext.get("1.0", "end-1c").strip()
+        except Exception:
+            v = ""
+        return "" if v in ("", "—", "-") else v
+
+    def _copy_title(whole=False):
+        # Ctrl+C / right-click: copy the selected part, or the whole game
+        # name when there is no selection
+        try:
+            txt = ""
+            if not whole:
+                try:
+                    txt = _titletext.get("sel.first", "sel.last")
+                except Exception:
+                    txt = ""
+            if not txt.strip():
+                txt = _title_value()
+            if not txt:
+                return "break"
+            root.clipboard_clear()
+            root.clipboard_append(txt)
+            statusvar.set("Title copied")
+        except Exception as ex:
+            try:
+                statusvar.set(f"Copy failed: {ex}")
+            except Exception:
+                pass
+        return "break"
+
+    def _select_title():
+        try:
+            _titletext.tag_add("sel", "1.0", "end-1c")
+            _titletext.mark_set("insert", "1.0")
+        except Exception:
+            pass
+        return "break"
+
     def _titlekey(ev):
-        # read-only: arrows pass, ctrl+C/A pass, everything else blocked
+        # read-only: arrows pass, Ctrl+C / Ctrl+A handled here, everything
+        # else blocked. keycode-based so Persian/Arabic layouts (where the
+        # C keysym differs) still copy.
         try:
             if (ev.state & 0x4) != 0:
-                if (ev.keysym or "").lower() in ("c", "a"):
-                    return None
+                kc = getattr(ev, "keycode", 0)
+                ks = (ev.keysym or "").lower()
+                if kc == 67 or ks == "c":
+                    return _copy_title()
+                if kc == 65 or ks == "a":
+                    return _select_title()
                 return "break"
         except Exception:
             pass
@@ -7023,6 +7069,30 @@ def run_gui(start_path=None):
             return None
         return "break"
     _titletext.bind("<KeyPress>", _titlekey)
+    # right-click menu on the title (the widget is read-only, so there was
+    # nothing to click before; selection still works with the mouse)
+    _titlectx = tk.Menu(root, tearoff=0, bg=CARD, fg=TEXT,
+                        activebackground=ACCENT, activeforeground="#171717")
+    _titlectx.add_command(label="Copy", command=_copy_title)
+    _titlectx.add_command(label="Copy whole title",
+                          command=lambda: _copy_title(whole=True))
+    _titlectx.add_command(label="Select all", command=_select_title)
+
+    def _titlemenu(ev):
+        try:
+            _titletext.focus_set()
+        except Exception:
+            pass
+        try:
+            _titlectx.tk_popup(ev.x_root, ev.y_root)
+        finally:
+            try:
+                _titlectx.grab_release()
+            except Exception:
+                pass
+        return "break"
+    _titletext.bind("<Button-3>", _titlemenu)
+    _titletext.bind("<Control-Button-1>", _titlemenu)  # mac right-click
     def _fit_title_height():
         # Recompute visible lines at the CURRENT widget width. The width
         # can change after load (window resize, DPI, late geometry), so a
