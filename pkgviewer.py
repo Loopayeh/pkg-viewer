@@ -580,6 +580,54 @@ def ps4_pkg_type(cat):
     return lab if lab else str(cat)
 
 
+def _sdk_fw_text(raw):
+    """SDK version from a PS4 param.sfo value -> '5.05' ('' when unknown).
+
+    SDK_VER is a 32-bit BCD fw int (0x05050000); PUBTOOLINFO carries the
+    same number as bare hex (sdk_ver=05050000), so base 16 is needed there
+    (int("05050000", 0) would reject the leading zero).
+    """
+    try:
+        if isinstance(raw, int):
+            return fmt_fw32(raw)
+        s = str(raw or "").strip()
+        if not s or s == "-":
+            return ""
+        if s.lower().startswith("0x"):
+            return fmt_fw32(int(s, 16))
+        if s.isdigit() and len(s) <= 8:
+            return fmt_fw32(int(s, 16))
+        return ""
+    except Exception:
+        return ""
+
+
+def ps4_sdk_version(sfo):
+    """PS4 SDK version: SDK_VER field, else PUBTOOLINFO sdk_ver=...
+
+    Backported PKGs are rebuilt with an older SDK, so this is the row that
+    gives a backport away; it used to be visible only in the raw dump.
+    """
+    if not isinstance(sfo, dict):
+        return ""
+    for key in ("SDK_VER", "SDK_VERSION"):
+        if key in sfo:
+            v = _sdk_fw_text(sfo.get(key))
+            if v and v != "-":
+                return v
+    try:
+        import re as _re
+        m = _re.search(r"sdk_ver\s*=\s*([0-9A-Fa-f]+)",
+                       str(sfo.get("PUBTOOLINFO", "") or ""))
+        if m:
+            v = _sdk_fw_text(m.group(1))
+            if v and v != "-":
+                return v
+    except Exception:
+        pass
+    return ""
+
+
 def cnt_package_type(hdr):
     """FPKG vs retail for PS4 CNT: bit 31 of pkg_type @0x04 (big-endian).
 
@@ -1971,8 +2019,11 @@ def parse_pkg(path):
                 # patch PKGs: also show the base game version it applies to
                 if str(_cat4).lower() == "gp" and sfo.get("VERSION"):
                     extra.append(("Base Version", sfo.get("VERSION", "")))
-                extra += [("Min. System", fmt_fw32(sfo.get("SYSTEM_VER", "-"))),
-                          ("Languages", str(_langs) if _langs else "-"),
+                extra += [("Min. System", fmt_fw32(sfo.get("SYSTEM_VER", "-")))]
+                _sdk4 = ps4_sdk_version(sfo)
+                if _sdk4:
+                    extra.append(("SDK", _sdk4))
+                extra += [("Languages", str(_langs) if _langs else "-"),
                           ("Built", _built)]
                 # FPKG hint: which passcode full-extract needs
                 try:
