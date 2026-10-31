@@ -276,8 +276,15 @@ def mkbtn(parent, text="", textvariable=None, style="Accent.TButton",
                              style=style, command=command, bg=bg, font=font,
                              **kw)
     from tkinter import ttk as _ttk
-    return _ttk.Button(parent, text=text, textvariable=textvariable,
-                       style=style, command=command, **kw)
+    # RoundedButton-only options (kind=...) must not reach ttk.Button:
+    # Tk raises TclError("unknown option -kind") and run_gui dies at the
+    # first mini button (startup crash without python3-pil, Debian 13).
+    btn = _ttk.Button(parent)
+    supported = set(btn.keys())
+    safe = {k: v for k, v in kw.items() if k in supported}
+    btn.configure(text=text, textvariable=textvariable,
+                  style=style, command=command, **safe)
+    return btn
 
 
 class PillLabel(_tk.Label):
