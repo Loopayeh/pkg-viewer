@@ -784,44 +784,49 @@ NACP_LANGS = ("AmericanEnglish", "BritishEnglish", "Japanese", "French",
               "TraditionalChinese", "SimplifiedChinese", "BrazilianPortuguese")
 
 
-def _find_switch_keys():
-    """Load Switch prod.keys once -> dict or None. Never raises."""
+def _switch_keys_target():
+    """Where a picked prod.keys is stored: the app's own data folder."""
     try:
-        if _SWITCH_KEYS_CACHE["once"]:
-            return _SWITCH_KEYS_CACHE["keys"]
-        _SWITCH_KEYS_CACHE["once"] = True
-        cands = []
-        try:
-            ev = (os.environ.get("SWITCH_PROD_KEYS")
-                  or os.environ.get("PROD_KEYS") or "")
-            if ev and os.path.isfile(ev):
-                cands.append(ev)
-        except Exception:
-            pass
-        try:
-            here = os.path.dirname(os.path.abspath(__file__))
-            cands.append(os.path.join(here, "prod.keys"))
-            if getattr(sys, "frozen", False):
-                # Onefile builds run from a temp _MEIxxxx folder, so the
-                # exe's own folder (where users were told to drop the keys)
-                # is not "here" at all.
-                cands.append(os.path.join(os.path.dirname(sys.executable),
-                                          "prod.keys"))
-            cands.append(os.path.join(os.getcwd(), "prod.keys"))
-        except Exception:
-            pass
-        try:
-            if sys.platform.startswith("win"):
-                base = os.environ.get("APPDATA") or os.path.expanduser("~")
-                cands.append(os.path.join(base, "PKGViewer", "prod.keys"))
-            else:
-                cands.append(os.path.join(os.path.expanduser("~"),
-                                           ".switch", "prod.keys"))
-        except Exception:
-            pass
-        path = next((p for p in cands if p and os.path.isfile(p)), None)
-        if not path:
-            return None
+        if sys.platform.startswith("win"):
+            base = os.environ.get("APPDATA") or os.path.expanduser("~")
+            return os.path.join(base, "PKGViewer", "prod.keys")
+        return os.path.join(os.path.expanduser("~"), ".switch", "prod.keys")
+    except Exception:
+        return ""
+
+
+def _switch_keys_candidates():
+    """Every place prod.keys is looked for, best first."""
+    cands = []
+    try:
+        ev = (os.environ.get("SWITCH_PROD_KEYS")
+              or os.environ.get("PROD_KEYS") or "")
+        if ev and os.path.isfile(ev):
+            cands.append(ev)
+    except Exception:
+        pass
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        cands.append(os.path.join(here, "prod.keys"))
+        if getattr(sys, "frozen", False):
+            # Onefile builds run from a temp _MEIxxxx folder, so the exe's
+            # own folder (where users were told to drop the keys) is not
+            # "here" at all.
+            cands.append(os.path.join(os.path.dirname(sys.executable),
+                                      "prod.keys"))
+        cands.append(os.path.join(os.getcwd(), "prod.keys"))
+    except Exception:
+        pass
+    try:
+        cands.append(_switch_keys_target())
+    except Exception:
+        pass
+    return [c for c in cands if c]
+
+
+def _switch_keys_parse(path):
+    """Parse a prod.keys file -> {header_key, kaek, titlekek} or None."""
+    try:
         raw = {}
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
@@ -849,8 +854,57 @@ def _find_switch_keys():
                 keys["titlekek"][int(m.group(1), 16)] = v
         if not keys["kaek"]:
             return None
-        _SWITCH_KEYS_CACHE["keys"] = keys
         return keys
+    except Exception:
+        return None
+
+
+def install_switch_keys(src):
+    """Copy a user-picked prod.keys into the app's data folder and use it.
+
+    Returns (True, target_path) or (False, reason). Never raises.
+    """
+    try:
+        if not src or not os.path.isfile(src):
+            return False, "That file does not exist."
+        if not _switch_keys_parse(src):
+            return False, ("That is not a usable prod.keys file.\n\n"
+                           "It needs at least:\n"
+                           "  header_key = <64 hex digits>\n"
+                           "  key_area_key_application_XX = <32 hex digits>\n\n"
+                           "Dump it from your own console with Lockpick_RCM.")
+        dst = _switch_keys_target()
+        if not dst:
+            return False, "Could not find a folder to store the keys in."
+        try:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+        except Exception:
+            pass
+        if os.path.abspath(src) != os.path.abspath(dst):
+            import shutil
+            shutil.copyfile(src, dst)
+        _SWITCH_KEYS_CACHE["once"] = False
+        _SWITCH_KEYS_CACHE["keys"] = None
+        if not _find_switch_keys():
+            return False, "The keys were copied but could not be re-read."
+        return True, dst
+    except Exception as e:
+        return False, str(e)
+
+
+def _find_switch_keys():
+    """Load Switch prod.keys once -> dict or None. Never raises."""
+    try:
+        if _SWITCH_KEYS_CACHE["once"]:
+            return _SWITCH_KEYS_CACHE["keys"]
+        _SWITCH_KEYS_CACHE["once"] = True
+        for p in _switch_keys_candidates():
+            if os.path.isfile(p):
+                keys = _switch_keys_parse(p)
+                if keys:
+                    _SWITCH_KEYS_CACHE["keys"] = keys
+                    return keys
+        return None
     except Exception:
         return None
 
@@ -1625,7 +1679,7 @@ def parse_nsp(path):
                                 icon_entry = _inm
                 else:
                     rows.append(("NACP Title/Icon",
-                                 "online cover (prod.keys adds the built-in one)"))
+                                 "online - drop prod.keys here for the built-in"))
                     # placeholders, replaced by the async metadata fetch with
                     # the em dash (an em dash survives the empty-value filter)
                     rows.append(("Publisher", "\u2014"))
@@ -6954,6 +7008,41 @@ def run_gui(start_path=None):
         undobtn.config(state="disabled")
     except Exception:
         pass
+    def _add_prod_keys(src=None):
+        """Install a user-picked Switch prod.keys (Tools menu or drag & drop)."""
+        from tkinter import filedialog as _fd
+        from tkinter import messagebox as _mb
+        if not src:
+            try:
+                src = _fd.askopenfilename(
+                    title="Select your Switch prod.keys (from Lockpick_RCM)",
+                    filetypes=[("prod.keys", "prod.keys"),
+                               ("Key files", "*.keys *.txt"),
+                               ("All files", "*.*")])
+            except Exception:
+                src = ""
+        if not src:
+            return
+        ok, info = install_switch_keys(src)
+        if not ok:
+            _mb.showerror("Switch keys", info)
+            return
+        statusvar.set("Switch keys installed - reading them from %s" % info)
+        try:
+            _mb.showinfo(
+                "Switch keys",
+                "prod.keys installed:\n%s\n\n"
+                "Switch packages now use the built-in title, publisher, "
+                "version and icon from the file itself.\n\n"
+                "The file is your own key dump and stays on this machine."
+                % info)
+        except Exception:
+            pass
+        _r = state.get("result") or {}
+        if (_r.get("kind") in ("nsp", "xci")
+                and os.path.isfile(_r.get("path") or "")):
+            load(_r["path"])
+
     def _open_tools_menu():
         # Top "Tools" dropdown: actions registered later (extract/build...).
         import tkinter as _tk2
@@ -6988,6 +7077,9 @@ def run_gui(start_path=None):
         else:
             m.add_command(label="(no tools for this file type)",
                           command=lambda: statusvar.set("Extract/Build is PS4 only"))
+        m.add_separator()
+        m.add_command(label="Add Switch prod.keys...",
+                      command=lambda: _add_prod_keys())
         try:
             x, y = toolsbtn.winfo_rootx(), toolsbtn.winfo_rooty() + toolsbtn.winfo_height() + 4
             m.tk_popup(x, y)
@@ -10791,6 +10883,14 @@ def run_gui(start_path=None):
             else:
                 paths = [data]
             paths = [p for p in paths if p and os.path.exists(p)]
+            # a dropped prod.keys is installed instead of being opened
+            _kk = next((p for p in paths
+                        if os.path.basename(p).lower() in
+                        ("prod.keys", "prod_keys.txt", "keys.txt", "keys.dat")),
+                       None)
+            if _kk:
+                _add_prod_keys(_kk)
+                return
             if paths:
                 try:
                     try:
