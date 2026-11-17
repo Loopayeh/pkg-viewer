@@ -7582,8 +7582,12 @@ def run_gui(start_path=None):
           command=_copy_cid).pack(side="left", padx=(6, 8))
     state["cidrow"] = cidrow
     # Switch without prod.keys: the icon/title come from the online DB.
-    # Shown only for that case (see load()); the button is the one-click fix.
-    keysbanner = tk.Frame(tab_specs, bg=CARD2, highlightthickness=1,
+    # The holder keeps the slot in the layout; the banner inside it is
+    # packed only for that case (see load()), so it never disturbs the
+    # other formats (cidrow itself is hidden for non-PKG files).
+    keysholder = ttk.Frame(tab_specs, style="Card.TFrame")
+    keysholder.pack(fill="x")
+    keysbanner = tk.Frame(keysholder, bg=CARD2, highlightthickness=1,
                           highlightbackground=ACCENT)
     tk.Label(keysbanner, bg=CARD2, fg=ACCENT, anchor="w", justify="left",
              font=(FONT[0], 9, "bold"), wraplength=560,
@@ -10206,7 +10210,7 @@ def run_gui(start_path=None):
             _needs_keys = (r.get("kind") in ("nsp", "xci")
                            and _find_switch_keys() is None)
             if _needs_keys:
-                keysbanner.pack(fill="x", pady=(0, 3), before=cidrow)
+                keysbanner.pack(fill="x", pady=(0, 3))
             else:
                 keysbanner.pack_forget()
             if (_needs_keys and not state.get("keys_asked")
