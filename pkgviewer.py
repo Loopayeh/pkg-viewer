@@ -1626,6 +1626,10 @@ def parse_nsp(path):
                 else:
                     rows.append(("NACP Title/Icon",
                                  "online cover (prod.keys adds the built-in one)"))
+                    # placeholders, replaced by the async metadata fetch with
+                    # the em dash (an em dash survives the empty-value filter)
+                    rows.append(("Publisher", "\u2014"))
+                    rows.append(("Release", "\u2014"))
             except Exception:
                 pass
             return {"ok": True, "kind": "nsp", "path": path, "size": size,
@@ -3850,6 +3854,57 @@ def fetch_switch_cover(tid):
             continue
     _SW_COVER_MEM[t] = b""
     return b""
+
+
+# Title metadata (name/publisher/release) for a Switch Title ID from the
+# same database. Cached as <TID>.json next to the covers, so the Info tab
+# is complete without prod.keys and still complete offline afterwards.
+_SW_META_MEM = {}
+
+
+def fetch_switch_meta(tid):
+    """Metadata dict for a Switch Title ID, or {}. Never raises."""
+    try:
+        t = str(tid or "").strip().upper()
+    except Exception:
+        return {}
+    if t in _SW_META_MEM:
+        return _SW_META_MEM[t]
+    import re as _re
+    if not _re.match(r"^[0-9A-F]{16}$", t):
+        _SW_META_MEM[t] = {}
+        return {}
+    try:
+        d = _covers_dir()
+        if d:
+            _fp = os.path.join(d, t + ".json")
+            if os.path.isfile(_fp):
+                with open(_fp, "r", encoding="utf-8", errors="replace") as fh:
+                    meta = json.load(fh)
+                if isinstance(meta, dict):
+                    _SW_META_MEM[t] = meta
+                    return meta
+    except Exception:
+        pass
+    if not _proxy_url() and not _host_up("api.nlib.cc"):
+        return {}
+    try:
+        raw = _http_get("%s/%s" % (SWITCH_COVER_BASE, t), tries=2)
+        meta = json.loads(raw.decode("utf-8", errors="replace"))
+        if not isinstance(meta, dict) or not meta:
+            return {}
+        _SW_META_MEM[t] = meta
+        try:
+            d = _covers_dir()
+            if d:
+                with open(os.path.join(d, t + ".json"), "w",
+                          encoding="utf-8") as out:
+                    json.dump(meta, out)
+        except Exception:
+            pass
+        return meta
+    except Exception:
+        return {}
 
 
 # Xbox 360 cover art: XboxUnity (same source Aurora/PS5X360 use).
@@ -10517,26 +10572,72 @@ def run_gui(start_path=None):
             _fill_imgtab(names)
             statusvar.set("OK - Xbox cover")
 
+    def _spec_update(key, value):
+        """Rewrite one spec-card row (and its visible cell) after a fill-in."""
+        r = state.get("result")
+        if not r:
+            return
+        _rows = r.get("rows") or []
+        for _i, (_k, _v) in enumerate(_rows):
+            if str(_k).strip().upper() == key.upper():
+                _rows[_i] = (_k, value)
+                break
+        else:
+            return
+        for kl, vl in state.get("spec_cells") or []:
+            try:
+                if (kl.cget("text") or "").strip().upper() != key.upper():
+                    continue
+                vl.config(state="normal")
+                vl.delete(0, "end")
+                vl.insert(0, str(value))
+                vl.config(state="readonly")
+                break
+            except Exception:
+                continue
+        try:
+            refresh_details()
+        except Exception:
+            pass
+
     def fetch_sw_async(tid):
-        """Background: Switch eShop icon (Title ID) → tab via root.after."""
+        """Background: Switch icon + title metadata → tab via root.after."""
         def _work():
             try:
                 data = fetch_switch_cover(tid) or b""
             except Exception:
                 data = b""
             try:
-                root.after(0, lambda: _sw_cover_done(tid, data))
+                meta = fetch_switch_meta(tid) or {}
+            except Exception:
+                meta = {}
+            try:
+                root.after(0, lambda: _sw_cover_done(tid, data, meta))
             except Exception:
                 pass
         import threading as _th
         _th.Thread(target=_work, daemon=True).start()
 
-    def _sw_cover_done(tid, data):
+    def _sw_cover_done(tid, data, meta=None):
         r = state.get("result")
         if not r or r.get("kind") not in ("nsp", "xci"):
             return
         if (r.get("patch_tid") or "") != tid:
             return
+        meta = meta if isinstance(meta, dict) else {}
+        _name = str(meta.get("name") or "").strip()
+        if _name and _name != r.get("title"):
+            try:
+                _set_title(_name)
+                r["title"] = _name
+            except Exception:
+                pass
+        _pub = str(meta.get("publisher") or "").strip()
+        if _pub:
+            _spec_update("Publisher", _pub)
+        _rel = str(meta.get("releaseDate") or "").strip()
+        if _rel:
+            _spec_update("Release", _rel)
         if data[:2] != b"\xff\xd8":
             return
         state["store_bytes"] = data
