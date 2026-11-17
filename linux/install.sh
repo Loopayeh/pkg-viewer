@@ -77,7 +77,7 @@ fi
 for sz in 16 32 48 64 128 256; do
   dst="${HOME}/.local/share/icons/hicolor/${sz}x${sz}"
   mkdir -p "${dst}/mimetypes" "${dst}/apps"
-  for f in pkg exfat ffpfsc ffpkg; do
+  for f in pkg exfat ffpfsc ffpkg nsp xci; do
     cp "${SRC}/icons/hicolor/${sz}x${sz}/mimetypes/application-x-pkgviewer-${f}.png" \
        "${dst}/mimetypes/" 2>/dev/null || true
   done
