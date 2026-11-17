@@ -463,6 +463,20 @@ def entry_name(nt, off):
     return nt[off:end].decode("ascii", errors="replace")
 
 
+# Package entries that carry a real payload but are missing from the name
+# table, so they had no name at all and the Files tab dropped them (issue
+# #14: PS5 nptitle.dat is entry id 0x0402 with no name-table entry).
+PKG_ENTRY_FALLBACK_NAMES = {
+    0x0402: "nptitle.dat",
+}
+
+
+def entry_name_fallback(nt, e):
+    """Name-table name for an entry, else the known name for its id."""
+    nm = entry_name(nt, e.get("name_off") or 0) if nt else ""
+    return nm or PKG_ENTRY_FALLBACK_NAMES.get(e.get("id"), "")
+
+
 def parse_sfo(data):
     out = {}
     try:
@@ -1930,7 +1944,7 @@ def parse_pkg(path):
             ents = parse_cnt_entries(f, emb, n, et)
             nt = read_name_table(f, emb, ents)
             for e in ents:
-                e["name"] = entry_name(nt, e["name_off"]) if nt else ""
+                e["name"] = entry_name_fallback(nt, e)
                 e["abs_off"] = emb + e["off"]
             pj = next((e for e in ents if e["name"] == "param.json" or e["id"] == 8192), None)
             meta, title, extra = {}, "", []
@@ -1973,7 +1987,7 @@ def parse_pkg(path):
             ents = parse_cnt_entries(f, 0, n, et)
             nt = read_name_table(f, 0, ents)
             for e in ents:
-                e["name"] = entry_name(nt, e["name_off"]) if nt else ""
+                e["name"] = entry_name_fallback(nt, e)
                 e["abs_off"] = e["off"]
             sfo_entry = next((e for e in ents if e["id"] == 4096 or e["name"] == "param.sfo"), None)
             sfo = {}
