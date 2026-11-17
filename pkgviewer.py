@@ -7089,8 +7089,8 @@ def run_gui(start_path=None):
                     "This Switch package keeps its icon and official title "
                     "inside an encrypted file, so they need prod.keys.\n\n"
                     "Add your prod.keys now?\n\n"
-                    "You can also drag prod.keys onto the window at any time. "
-                    "Without it, the icon and title are fetched online."):
+                    "You can also drag the prod.keys file onto this window "
+                    "at any time - drop it anywhere in the app."):
                 _save_settings({"switch_keys_quiet": True})
                 return
         except Exception:
@@ -7589,14 +7589,16 @@ def run_gui(start_path=None):
     keysholder.pack(fill="x")
     keysbanner = tk.Frame(keysholder, bg=CARD2, highlightthickness=1,
                           highlightbackground=ACCENT)
-    tk.Label(keysbanner, bg=CARD2, fg=ACCENT, anchor="w", justify="left",
-             font=(FONT[0], 9, "bold"), wraplength=560,
-             text="Switch package without prod.keys: the icon and the "
-                  "official title come from the online database."
-             ).pack(side="left", padx=(8, 8), pady=5)
+    # button first so it always gets its space, then the text fills the rest
     mkbtn(keysbanner, text="Add prod.keys...", style="Accent.TButton",
           command=lambda: _add_prod_keys()).pack(side="right",
-                                                 padx=(0, 8), pady=5)
+                                                 padx=(0, 8), pady=6)
+    tk.Label(keysbanner, bg=CARD2, fg=ACCENT, anchor="w", justify="left",
+             font=(FONT[0], 9, "bold"), wraplength=560,
+             text="No prod.keys yet - drag prod.keys onto this window, "
+                  "or click \"Add prod.keys...\". The icon and the official "
+                  "title then come from the file itself."
+             ).pack(side="left", fill="x", expand=True, padx=(8, 8), pady=6)
     # Specs tab: the classic 2-column grid (PACKAGE/SIGNATURE/...)
     # for whoever wants the fine details at a glance
     specbox = ttk.Frame(tab_specs, style="Card.TFrame", padding=(6, 2, 6, 2))
