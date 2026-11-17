@@ -859,6 +859,27 @@ def _switch_keys_parse(path):
         return None
 
 
+def _looks_like_keys(path):
+    """True for a file that holds Switch keys — by name, then by content.
+
+    Content wins so any dump name works (console.keys, keys.ini, a renamed
+    copy from a guide), not just the canonical prod.keys.
+    """
+    try:
+        if not path or not os.path.isfile(path):
+            return False
+        nm = os.path.basename(path).lower()
+        if nm in ("prod.keys", "prod_keys.txt", "keys.txt", "keys.dat"):
+            return True
+        if nm.endswith((".keys", ".key")):
+            return True
+        if os.path.getsize(path) > 2_000_000:
+            return False
+        return _switch_keys_parse(path) is not None
+    except Exception:
+        return False
+
+
 def install_switch_keys(src):
     """Copy a user-picked prod.keys into the app's data folder and use it.
 
@@ -903,6 +924,18 @@ def _find_switch_keys():
                 keys = _switch_keys_parse(p)
                 if keys:
                     _SWITCH_KEYS_CACHE["keys"] = keys
+                    # Keep a copy outside the program folder: replacing the
+                    # exe (portable) or updating the app must not lose the
+                    # keys, whatever path they were found in first.
+                    try:
+                        dst = _switch_keys_target()
+                        if (dst and os.path.abspath(p) != os.path.abspath(dst)
+                                and not os.path.isfile(dst)):
+                            os.makedirs(os.path.dirname(dst), exist_ok=True)
+                            import shutil
+                            shutil.copyfile(p, dst)
+                    except Exception:
+                        pass
                     return keys
         return None
     except Exception:
@@ -7034,7 +7067,9 @@ def run_gui(start_path=None):
                 "prod.keys installed:\n%s\n\n"
                 "Switch packages now use the built-in title, publisher, "
                 "version and icon from the file itself.\n\n"
-                "The file is your own key dump and stays on this machine."
+                "It is kept in your %%APPDATA%% folder, outside the program "
+                "folder, so updating or reinstalling PKG Viewer keeps it.\n\n"
+                "The file is your own key dump and never leaves this machine."
                 % info)
         except Exception:
             pass
@@ -7078,8 +7113,10 @@ def run_gui(start_path=None):
             m.add_command(label="(no tools for this file type)",
                           command=lambda: statusvar.set("Extract/Build is PS4 only"))
         m.add_separator()
-        m.add_command(label="Add Switch prod.keys...",
-                      command=lambda: _add_prod_keys())
+        m.add_command(
+            label="Switch prod.keys: %s" % ("installed" if _find_switch_keys()
+                                            else "add..."),
+            command=lambda: _add_prod_keys())
         try:
             x, y = toolsbtn.winfo_rootx(), toolsbtn.winfo_rooty() + toolsbtn.winfo_height() + 4
             m.tk_popup(x, y)
@@ -10883,14 +10920,14 @@ def run_gui(start_path=None):
             else:
                 paths = [data]
             paths = [p for p in paths if p and os.path.exists(p)]
-            # a dropped prod.keys is installed instead of being opened
-            _kk = next((p for p in paths
-                        if os.path.basename(p).lower() in
-                        ("prod.keys", "prod_keys.txt", "keys.txt", "keys.dat")),
-                       None)
+            # A dropped prod.keys is installed instead of being opened.
+            # Matched by name and by content, so any dump name works.
+            _kk = next((p for p in paths if _looks_like_keys(p)), None)
             if _kk:
                 _add_prod_keys(_kk)
-                return
+                paths = [p for p in paths if p != _kk]
+                if not paths:
+                    return
             if paths:
                 try:
                     try:
