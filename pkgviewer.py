@@ -793,6 +793,12 @@ def _find_switch_keys():
         try:
             here = os.path.dirname(os.path.abspath(__file__))
             cands.append(os.path.join(here, "prod.keys"))
+            if getattr(sys, "frozen", False):
+                # Onefile builds run from a temp _MEIxxxx folder, so the
+                # exe's own folder (where users were told to drop the keys)
+                # is not "here" at all.
+                cands.append(os.path.join(os.path.dirname(sys.executable),
+                                          "prod.keys"))
             cands.append(os.path.join(os.getcwd(), "prod.keys"))
         except Exception:
             pass
@@ -1611,7 +1617,7 @@ def parse_nsp(path):
                                 icon_entry = _inm
                 else:
                     rows.append(("NACP Title/Icon",
-                                 "needs prod.keys (PKGViewer folder)"))
+                                 "online cover (prod.keys adds the built-in one)"))
             except Exception:
                 pass
             return {"ok": True, "kind": "nsp", "path": path, "size": size,
@@ -3777,6 +3783,64 @@ def fetch_ps3_cover(tid, region=""):
         except Exception:
             continue
     _PS3_COVER_MEM[t] = b""
+    return b""
+
+
+# Switch icon art: Nintendo title database (nlib), keyed by the 16-char
+# Title ID, which is plaintext in every NSP/XCI. This covers the case
+# where no prod.keys are present: the official title and the built-in
+# icon need keys, the cover art does not. Cached on disk like the rest.
+SWITCH_COVER_BASE = "https://api.nlib.cc/nx"
+_SW_COVER_MEM = {}
+
+
+def fetch_switch_cover(tid):
+    """Official eShop icon bytes (JPEG) for a Switch Title ID, or b""."""
+    try:
+        t = str(tid or "").strip().upper()
+    except Exception:
+        return b""
+    if t in _SW_COVER_MEM:
+        return _SW_COVER_MEM[t]
+    import re as _re
+    if not _re.match(r"^[0-9A-F]{16}$", t):
+        _SW_COVER_MEM[t] = b""
+        return b""
+    try:
+        d = _covers_dir()
+        if d:
+            _fp = os.path.join(d, t + ".jpg")
+            try:
+                if os.path.isfile(_fp) and os.path.getsize(_fp) > 1024:
+                    with open(_fp, "rb") as fh:
+                        _raw = fh.read(5_000_000)
+                    if _raw[:2] == b"\xff\xd8":
+                        _SW_COVER_MEM[t] = _raw
+                        return _raw
+            except Exception:
+                pass
+    except Exception:
+        pass
+    if not _proxy_url() and not _host_up("api.nlib.cc"):
+        return b""
+    for _sz in (512, 256, 128):
+        try:
+            raw = _http_get("%s/%s/icon/%d/%d" % (SWITCH_COVER_BASE, t, _sz, _sz),
+                            tries=2)
+            if raw[:2] != b"\xff\xd8":
+                continue
+            _SW_COVER_MEM[t] = raw
+            try:
+                d = _covers_dir()
+                if d:
+                    with open(os.path.join(d, t + ".jpg"), "wb") as out:
+                        out.write(raw)
+            except Exception:
+                pass
+            return raw
+        except Exception:
+            continue
+    _SW_COVER_MEM[t] = b""
     return b""
 
 
@@ -9934,6 +9998,14 @@ def run_gui(start_path=None):
                 fetch_ps3_async(*_ps3)
             elif r.get("x360_tid"):
                 fetch_x360_async(r["x360_tid"])
+        elif r.get("kind") in ("nsp", "xci") and not r.get("icon_entry"):
+            # No built-in icon (no prod.keys): fetch the official icon by
+            # Title ID instead of leaving the user without cover art.
+            state["pil"] = None
+            _sync_imgtab()
+            _fill_imgtab([])
+            imglabel.config(image="", text="Fetching cover...")
+            fetch_sw_async(r.get("patch_tid") or "")
         elif r.get("store_cid"):
             state["pil"] = None
             _sync_imgtab()
@@ -10436,6 +10508,45 @@ def run_gui(start_path=None):
             state["imgnames"] = names
             _fill_imgtab(names)
             statusvar.set("OK - Xbox cover")
+
+    def fetch_sw_async(tid):
+        """Background: Switch eShop icon (Title ID) → tab via root.after."""
+        def _work():
+            try:
+                data = fetch_switch_cover(tid) or b""
+            except Exception:
+                data = b""
+            try:
+                root.after(0, lambda: _sw_cover_done(tid, data))
+            except Exception:
+                pass
+        import threading as _th
+        _th.Thread(target=_work, daemon=True).start()
+
+    def _sw_cover_done(tid, data):
+        r = state.get("result")
+        if not r or r.get("kind") not in ("nsp", "xci"):
+            return
+        if (r.get("patch_tid") or "") != tid:
+            return
+        if data[:2] != b"\xff\xd8":
+            return
+        state["store_bytes"] = data
+        if not has_pil:
+            return
+        try:
+            im = Image.open(io.BytesIO(data))
+        except Exception:
+            return
+        err = display_pil(im, "cover.jpg")
+        if err:
+            statusvar.set(f"Error: {err}")
+        else:
+            names = ["cover.jpg"] + [n for n in state.get("imgnames", [])
+                                     if n != "cover.jpg"]
+            state["imgnames"] = names
+            _fill_imgtab(names)
+            statusvar.set("OK - Switch cover")
 
     def fetch_x360_tu_async(tid, media, own_ver):
         """Background: latest Xbox 360 TU → banner via root.after."""
