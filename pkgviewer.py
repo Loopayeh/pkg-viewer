@@ -1711,8 +1711,7 @@ def parse_nsp(path):
                                 rows[-1] = ("Entries", str(len(ents)))
                                 icon_entry = _inm
                 else:
-                    rows.append(("NACP Title/Icon",
-                                 "online - drop prod.keys here for the built-in"))
+                    rows.append(("NACP Title/Icon", "online (no prod.keys)"))
                     # placeholders, replaced by the async metadata fetch with
                     # the em dash (an em dash survives the empty-value filter)
                     rows.append(("Publisher", "\u2014"))
@@ -7078,6 +7077,26 @@ def run_gui(start_path=None):
                 and os.path.isfile(_r.get("path") or "")):
             load(_r["path"])
 
+    def _ask_keys_once():
+        """One-time prompt: a Switch file is open and no keys are installed."""
+        from tkinter import messagebox as _mb
+        _r = state.get("result") or {}
+        if _r.get("kind") not in ("nsp", "xci") or _find_switch_keys():
+            return
+        try:
+            if not _mb.askyesno(
+                    "Switch cover and title",
+                    "This Switch package keeps its icon and official title "
+                    "inside an encrypted file, so they need prod.keys.\n\n"
+                    "Add your prod.keys now?\n\n"
+                    "You can also drag prod.keys onto the window at any time. "
+                    "Without it, the icon and title are fetched online."):
+                _save_settings({"switch_keys_quiet": True})
+                return
+        except Exception:
+            return
+        _add_prod_keys()
+
     def _open_tools_menu():
         # Top "Tools" dropdown: actions registered later (extract/build...).
         import tkinter as _tk2
@@ -7562,6 +7581,18 @@ def run_gui(start_path=None):
           kind="mini", font=(FONT[0], 9),
           command=_copy_cid).pack(side="left", padx=(6, 8))
     state["cidrow"] = cidrow
+    # Switch without prod.keys: the icon/title come from the online DB.
+    # Shown only for that case (see load()); the button is the one-click fix.
+    keysbanner = tk.Frame(tab_specs, bg=CARD2, highlightthickness=1,
+                          highlightbackground=ACCENT)
+    tk.Label(keysbanner, bg=CARD2, fg=ACCENT, anchor="w", justify="left",
+             font=(FONT[0], 9, "bold"), wraplength=560,
+             text="Switch package without prod.keys: the icon and the "
+                  "official title come from the online database."
+             ).pack(side="left", padx=(8, 8), pady=5)
+    mkbtn(keysbanner, text="Add prod.keys...", style="Accent.TButton",
+          command=lambda: _add_prod_keys()).pack(side="right",
+                                                 padx=(0, 8), pady=5)
     # Specs tab: the classic 2-column grid (PACKAGE/SIGNATURE/...)
     # for whoever wants the fine details at a glance
     specbox = ttk.Frame(tab_specs, style="Card.TFrame", padding=(6, 2, 6, 2))
@@ -10169,6 +10200,21 @@ def run_gui(start_path=None):
         _trophy_reset("Open the Trophies tab to load")
         metatext.delete("1.0", "end")
         refresh_details()
+        # Switch package without prod.keys: say it in bold at the top of the
+        # Info tab, and ask once per install whether to add them now.
+        try:
+            _needs_keys = (r.get("kind") in ("nsp", "xci")
+                           and _find_switch_keys() is None)
+            if _needs_keys:
+                keysbanner.pack(fill="x", pady=(0, 3), before=cidrow)
+            else:
+                keysbanner.pack_forget()
+            if (_needs_keys and not state.get("keys_asked")
+                    and not _load_settings().get("switch_keys_quiet")):
+                state["keys_asked"] = True
+                root.after(500, _ask_keys_once)
+        except Exception:
+            pass
         # image choices: png entries (+ switch jpeg icons).
         # PS3 discs/folders bury ~200 game-texture PNGs in USRDIR — the
         # Image tab only wants the XMB backdrop set (icon + PIC0/1/2).
