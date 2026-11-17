@@ -7586,7 +7586,7 @@ def run_gui(start_path=None):
     # packed only for that case (see load()), so it never disturbs the
     # other formats (cidrow itself is hidden for non-PKG files).
     keysholder = ttk.Frame(tab_specs, style="Card.TFrame")
-    keysholder.pack(fill="x")
+    # not packed here: load() packs it before specbox only when needed
     keysbanner = tk.Frame(keysholder, bg=CARD2, highlightthickness=1,
                           highlightbackground=ACCENT)
     # button first so it always gets its space, then the text fills the rest
@@ -10116,7 +10116,8 @@ def run_gui(start_path=None):
             _cid = str(_rd.get("Content ID", "") or "").strip()
             state.get("cidvar", tk.StringVar(value="")).set(_cid)
             if _cid and _cid != "-":
-                state["cidrow"].pack(fill="x", pady=(0, 2))
+                state["cidrow"].pack(fill="x", pady=(0, 2),
+                                     before=state.get("specbox"))
             else:
                 state["cidrow"].pack_forget()
         except Exception:
@@ -10212,9 +10213,12 @@ def run_gui(start_path=None):
             _needs_keys = (r.get("kind") in ("nsp", "xci")
                            and _find_switch_keys() is None)
             if _needs_keys:
-                keysbanner.pack(fill="x", pady=(0, 3))
+                keysbanner.pack(fill="x")
+                keysholder.pack(fill="x", pady=(0, 3),
+                                before=state.get("specbox"))
             else:
                 keysbanner.pack_forget()
+                keysholder.pack_forget()
             if (_needs_keys and not state.get("keys_asked")
                     and not _load_settings().get("switch_keys_quiet")):
                 state["keys_asked"] = True
@@ -10394,7 +10398,8 @@ def run_gui(start_path=None):
                         else "#f0b429")
                 except Exception:
                     pass
-                state["updrow"].pack(fill="x", pady=(0, 2))
+                state["updrow"].pack(fill="x", pady=(0, 2),
+                                     after=state.get("specbox"))
             else:
                 state["updrow"].pack_forget()
         except Exception:
