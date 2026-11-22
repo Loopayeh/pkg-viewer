@@ -5585,7 +5585,17 @@ def build_entry_tree(entries):
     for idx, e in enumerate(entries or []):
         name = str((e or {}).get("name") or "").strip()
         if not name:
-            continue
+            # Issue #14: plenty of packages carry entries with a real payload
+            # but no name-table entry at all (PS5 digests / image key / ...).
+            # Dropping them silently hid files from the Files tab, so label
+            # them by id instead; extraction uses the same label.
+            try:
+                eid = int((e or {}).get("id") or 0)
+            except (TypeError, ValueError):
+                eid = 0
+            if not eid:
+                continue
+            name = "entry_0x%04X" % eid
         norm = name.replace("\\", "/")
         is_dir = norm.endswith("/")
         parts = [p for p in norm.split("/") if p not in ("", ".", "..")]
