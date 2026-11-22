@@ -36,7 +36,7 @@ Grab `PKGViewer-Setup-X.Y.Z.exe` from [Releases](../../releases) — no admin ne
 - Spec card: Title ID, Content ID, version, region, Min. System, SDK, DRM
 - Latest patch version per game (PS5/PS4) with PKG-vs-latest compare
 - Files tab: folder tree built from entry paths (PS3 discs/folders, ISOs), sized per folder — single-file Extract with rename, trophy00.trp contents
-- Trophies tab: decrypted trophy list (name, grade, hidden) with icons, banner art, Save icons export
+- Trophies tab: decrypted trophy list (name, grade, hidden) with icons, banner art, Save icons export — no PSN API and no login, the NPWR ID is recovered from the file itself ([how it works](docs/trophies.md))
 - OFC (Official) / FPKG (Fake) detection + badges for PS4 and PS5 (incl. split parts)
 - Details tab: curated param.sfo / param.json, Show all for the full dump
 - Drag & drop: PKG files, exFAT / ffpfsc / ffpkg images, Switch NSP / XCI files, and game folders onto the window
