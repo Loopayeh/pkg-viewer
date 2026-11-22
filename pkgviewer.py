@@ -10253,7 +10253,19 @@ def run_gui(start_path=None):
         if pngs:
             _bases = {os.path.basename(n).lower(): n for n in pngs}
             first = _bases.get("icon0.png", _bases.get("icon.jpg", pngs[0]))
-            show_image(first)
+            # While the window is mapped, let Tk paint the spec rows / tree
+            # rows created above before the icon decode blocks the loop:
+            # otherwise Windows erases the fresh child windows white and only
+            # Tk's queued paint fixes them a moment later. With the window
+            # still hidden (startup load) there is nothing to flash, so the
+            # icon is decoded inline and the first frame is already complete.
+            def _show_first(_res=r, _nm=first):
+                if state.get("result") is _res:
+                    show_image(_nm)
+            if root.winfo_ismapped():
+                root.after(1, _show_first)
+            else:
+                _show_first()
             _ps3 = _ps3_cover_key(r)
             if _ps3:
                 fetch_ps3_async(*_ps3)
@@ -10976,8 +10988,7 @@ def run_gui(start_path=None):
             imglabel.config(text="(bad image)")
             statusvar.set(f"Error: {ex}")
 
-    if start_path and os.path.exists(start_path):
-        root.after(200, lambda: load(start_path))
+    _startup_path = start_path if (start_path and os.path.exists(start_path)) else None
     if has_dnd:
         def _on_drop(ev):
             import re as _re
@@ -11033,9 +11044,8 @@ def run_gui(start_path=None):
         except Exception:
             pass
     root.after(150, _restore_cover_state)
-    if len(sys.argv) > 1 and os.path.exists(sys.argv[1]):
-        _startup = sys.argv[1]
-        root.after(100, lambda: load(_startup))
+    if _startup_path is None and len(sys.argv) > 1 and os.path.exists(sys.argv[1]):
+        _startup_path = sys.argv[1]
     # First launch (or installer --first-install): show About (support links).
     _first_install = any(a == "--first-install" for a in sys.argv[1:])
     try:
@@ -11050,25 +11060,56 @@ def run_gui(start_path=None):
         root.after(600, lambda: show_about())
     try:
         # show once, already at final size — no white flash / shrink jump
+        if _startup_path:
+            # Load the file while the window is still hidden. Every widget the
+            # load creates then paints in a single frame; the alternative
+            # (mapping first, loading after) shows erased white rectangles in
+            # the Info pane until Tk catches up.
+            try:
+                load(_startup_path)
+            except Exception:
+                pass
         root.update_idletasks()
-        root.deiconify()
-        root.update()  # full pump: the first map must complete for a valid HWND
+        # Map the window fully transparent first: Tk paints each child window
+        # over the next few message loops, so a normal deiconify shows a
+        # half-painted frame (desktop / white showing through the empty
+        # areas) for a moment. With alpha 0 nothing of that is visible; the
+        # finished frame is revealed in one step below.
+        _alpha = False
         try:
-            # Dark native title bar (Windows 10 20H1+ / 11): same family
-            # look as the Avalonia apps. winfo_id() is the Tk client child,
-            # so the frame HWND is its parent (verified: FindWindow match).
-            # Must run after deiconify (withdrawn window has no HWND).
-            # Native frame stays: snap + min/max/close work.
-            import ctypes as _ct
-            _hwnd = _ct.windll.user32.GetParent(root.winfo_id())
-            _dark = _ct.c_int(1)
-            # 20 = DWMWA_USE_IMMERSIVE_DARK_MODE (Win11), 19 = older value
-            if _ct.windll.dwmapi.DwmSetWindowAttribute(
-                    _hwnd, 20, _ct.byref(_dark), _ct.sizeof(_dark)) != 0:
-                _ct.windll.dwmapi.DwmSetWindowAttribute(
-                    _hwnd, 19, _ct.byref(_dark), _ct.sizeof(_dark))
+            root.attributes("-alpha", 0.0)
+            _alpha = True
         except Exception:
-            pass
+            _alpha = False
+        try:
+            root.deiconify()
+            root.update()  # first map must complete for a valid HWND
+            try:
+                # Dark native title bar (Windows 10 20H1+ / 11): same family
+                # look as the Avalonia apps. winfo_id() is the Tk client child,
+                # so the frame HWND is its parent (verified: FindWindow match).
+                # Must run after deiconify (withdrawn window has no HWND).
+                # Native frame stays: snap + min/max/close work.
+                import ctypes as _ct
+                _hwnd = _ct.windll.user32.GetParent(root.winfo_id())
+                _dark = _ct.c_int(1)
+                # 20 = DWMWA_USE_IMMERSIVE_DARK_MODE (Win11), 19 = older value
+                if _ct.windll.dwmapi.DwmSetWindowAttribute(
+                        _hwnd, 20, _ct.byref(_dark), _ct.sizeof(_dark)) != 0:
+                    _ct.windll.dwmapi.DwmSetWindowAttribute(
+                        _hwnd, 19, _ct.byref(_dark), _ct.sizeof(_dark))
+            except Exception:
+                pass
+            # pump a few rounds: every child mapped by deiconify paints in its
+            # own message pass, and they are all invisible while alpha is 0
+            for _ in range(4):
+                root.update()
+        finally:
+            if _alpha:
+                try:
+                    root.attributes("-alpha", 1.0)
+                except Exception:
+                    pass
     except Exception:
         pass
     root.mainloop()
