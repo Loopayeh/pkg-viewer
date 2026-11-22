@@ -14,3 +14,9 @@ assets/*
 !assets/icons/*.ico
 !assets/logo.png
 !assets/logo.ico
+
+# local agent setup - never published
+AGENTS.md
+.opencode/
+.scratch/
+graphify-out/
