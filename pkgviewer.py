@@ -473,8 +473,11 @@ def entry_name(nt, off):
 
 # Package entries that carry a real payload but are missing from the name
 # table, so they had no name at all and the Files tab dropped them (issue
-# #14: PS5 nptitle.dat is entry id 0x0402 with no name-table entry).
+# #14: PS5 nptitle.dat is entry id 0x0402 with no name-table entry, and most
+# packages also leave the licence entries 0x0400/0x0401 unnamed).
 PKG_ENTRY_FALLBACK_NAMES = {
+    0x0400: "license.dat",
+    0x0401: "license.info",
     0x0402: "nptitle.dat",
 }
 
