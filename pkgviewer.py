@@ -6610,6 +6610,307 @@ def copy_image_to_clipboard(pil_img):
         return str(e)
 
 
+# ---------------- shareable spec card ("Copy card") ----------------
+#
+# One PNG of the open file: cover, title, the same badges and spec rows the
+# Info tab shows, on the app's dark card. Everything is drawn with Pillow so
+# it looks the same on every platform; the app only turns it into pixels.
+
+_CARD_FONT_FILES = {
+    "regular": (
+        r"C:\Windows\Fonts\segoeui.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "arial.ttf",
+    ),
+    "bold": (
+        r"C:\Windows\Fonts\segoeuib.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "arialbd.ttf",
+    ),
+}
+
+_CARD_BG, _CARD_PANEL, _CARD_TILE = "#171717", "#202020", "#262626"
+_CARD_TEXT, _CARD_MUTED, _CARD_LINE = "#f1f3f8", "#8b93a5", "#2b2b2b"
+_CARD_ACCENT = "#4f8ef7"
+
+
+def _card_font(kind, px):
+    from PIL import ImageFont
+    for path in _CARD_FONT_FILES.get(kind, ()):
+        try:
+            return ImageFont.truetype(path, px)
+        except Exception:
+            continue
+    try:
+        return ImageFont.load_default(px)
+    except Exception:
+        return ImageFont.load_default()
+
+
+def _card_rgb(value, fallback="#6b7280"):
+    try:
+        v = str(value or "").strip().lstrip("#")
+        if len(v) == 3:
+            v = "".join(c * 2 for c in v)
+        if len(v) != 6:
+            raise ValueError(v)
+        return tuple(int(v[i:i + 2], 16) for i in (0, 2, 4))
+    except Exception:
+        v = fallback.strip("#")
+        return tuple(int(v[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _card_w(draw, text, font):
+    try:
+        return draw.textlength(text, font=font)
+    except Exception:
+        try:
+            b = draw.textbbox((0, 0), text, font=font)
+            return b[2] - b[0]
+        except Exception:
+            return len(text) * 8
+
+
+def _card_fit(draw, text, font, max_w):
+    s = str(text or "")
+    if _card_w(draw, s, font) <= max_w:
+        return s
+    while s and _card_w(draw, s + "\u2026", font) > max_w:
+        s = s[:-1]
+    return (s + "\u2026") if s else ""
+
+
+def _card_wrap(draw, text, font, max_w, max_lines=3):
+    words = str(text or "").split()
+    if not words:
+        return []
+    lines, cur = [], words[0]
+    for word in words[1:]:
+        probe = cur + " " + word
+        if _card_w(draw, probe, font) <= max_w:
+            cur = probe
+        else:
+            lines.append(cur)
+            cur = word
+    lines.append(cur)
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] = _card_fit(draw, lines[-1] + " \u2026", font, max_w)
+    return lines
+
+
+def build_spec_card(title, badges, badge_colors, rows, cover=None,
+                    filename="", glass=False, content_id="", fmt="",
+                    backdrop=None):
+    """Render the open file as a 1200 px wide PNG (Pillow image).
+
+    `rows` is [(label, value)] already filtered and ordered like the Info
+    tab; `badges`/`badge_colors` come from the header pill strip.
+    """
+    from PIL import Image, ImageDraw
+
+    W, OUT, PAD = 1200, 32, 40
+    COVER_W, COVER_H = 330, 420
+    card_x, card_y = OUT, OUT
+    card_w = W - OUT * 2
+    right_x = card_x + PAD + COVER_W + 44
+    right_w = card_x + card_w - PAD - right_x
+
+    f_word = _card_font("bold", 15)
+    f_title = _card_font("bold", 40)
+    f_badge = _card_font("bold", 15)
+    f_key = _card_font("bold", 12)
+    f_val = _card_font("bold", 19)
+    f_cid = _card_font("bold", 18)
+    f_foot = _card_font("regular", 13)
+
+    scratch = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+    title_lines = _card_wrap(scratch, title or filename or "\u2014",
+                             f_title, right_w, max_lines=3)
+    rows = list(rows or [])[:10]
+    per_col = max(1, (len(rows) + 1) // 2)
+
+    top = card_y + 38
+    title_top = top + 32
+    title_h = max(1, len(title_lines)) * 48
+    cid_top = title_top + title_h + 18
+    cid_h = 46 if content_id else 0
+    divider_y = cid_top + cid_h + (18 if cid_h else 8)
+    specs_top = divider_y + 24
+    specs_bottom = specs_top + per_col * 46
+    badge_h = 32 if any(str(b or "").strip() for b in badges or []) else 0
+    badges_top = specs_bottom + 12
+    cover_bottom = card_y + PAD + COVER_H
+    footer_y = max(specs_bottom + (badge_h + 18 if badge_h else 0),
+                   cover_bottom) + 26
+    card_h = max(520, (footer_y + 34) - card_y)
+    H = card_h + OUT * 2
+
+    glass = bool(glass and cover is not None)
+    if glass:
+        from PIL import ImageEnhance as _IE, ImageFilter as _IF
+        if backdrop is not None:
+            # the game's second picture (pic1/pic0) as a blurred backdrop
+            bd = backdrop.convert("RGB")
+            _s = max(W / bd.width, H / bd.height)
+            bd = bd.resize((max(1, int(bd.width * _s)),
+                            max(1, int(bd.height * _s))), Image.LANCZOS)
+            _ox = (bd.width - W) // 2
+            _oy = (bd.height - H) // 2
+            bg = bd.crop((_ox, _oy, _ox + W, _oy + H))
+            bg = bg.filter(_IF.GaussianBlur(44))
+            bg = _IE.Brightness(bg).enhance(0.42)
+            bg = _IE.Color(bg).enhance(1.15)
+        else:
+            # no second picture: diagonal tint from the four corners
+            sm = cover.convert("RGB").resize((3, 3), Image.LANCZOS)
+            quad = Image.new("RGB", (2, 2))
+            quad.putpixel((0, 0), sm.getpixel((0, 0)))
+            quad.putpixel((1, 0), sm.getpixel((2, 0)))
+            quad.putpixel((0, 1), sm.getpixel((0, 2)))
+            quad.putpixel((1, 1), sm.getpixel((2, 2)))
+            bg = quad.resize((W, H), Image.BICUBIC)
+            bg = _IE.Brightness(bg).enhance(0.50)
+            bg = _IE.Color(bg).enhance(1.25)
+        ramp = Image.new("L", (1, H), 0)
+        for _y in range(H):
+            _t = (_y / H - 0.45) / 0.55
+            ramp.putpixel((0, _y), int(255 * max(0.0, min(1.0, _t))))
+        panel = Image.new("RGB", (W, H), _card_rgb(_CARD_PANEL))
+        card = Image.composite(panel, bg, ramp.resize((W, H)))
+        draw = ImageDraw.Draw(card)
+        draw.rounded_rectangle((card_x, card_y, card_x + card_w - 1,
+                                card_y + card_h - 1),
+                               radius=30, outline=_card_rgb("#4a4a52"), width=1)
+    else:
+        card = Image.new("RGB", (W, H), _card_rgb(_CARD_BG))
+        draw = ImageDraw.Draw(card)
+        draw.rounded_rectangle((card_x, card_y, card_x + card_w - 1,
+                                card_y + card_h - 1),
+                               radius=30, fill=_card_rgb(_CARD_PANEL),
+                               outline=_card_rgb(_CARD_LINE), width=2)
+
+    # ---- cover ---------------------------------------------------------
+    fx, fy = card_x + PAD, card_y + PAD
+    if not glass:
+        draw.rounded_rectangle((fx, fy, fx + COVER_W - 1, fy + COVER_H - 1),
+                               radius=20, fill=_card_rgb(_CARD_TILE))
+    if cover is not None:
+        try:
+            im = cover
+            if im.mode == "RGBA":
+                flat = Image.new("RGB", im.size, _card_rgb(_CARD_TILE))
+                flat.paste(im, mask=im.split()[3])
+                im = flat
+            else:
+                im = im.convert("RGB")
+            scale = min((COVER_W - 24) / im.width, (COVER_H - 24) / im.height)
+            tw = max(1, int(im.width * scale))
+            th = max(1, int(im.height * scale))
+            thumb = im.resize((tw, th), Image.LANCZOS)
+            mask = Image.new("L", (tw, th), 0)
+            ImageDraw.Draw(mask).rounded_rectangle(
+                (0, 0, tw - 1, th - 1), radius=14, fill=255)
+            card.paste(thumb, (fx + (COVER_W - tw) // 2,
+                               fy + (COVER_H - th) // 2), mask)
+            if glass:
+                _tx = fx + (COVER_W - tw) // 2
+                _ty = fy + (COVER_H - th) // 2
+                draw.rounded_rectangle((_tx, _ty, _tx + tw - 1,
+                                        _ty + th - 1), radius=14,
+                                       outline=_card_rgb("#5a5a64"), width=1)
+        except Exception:
+            cover = None
+    if cover is None:
+        # no cover art: the platform name stands in, big and faint
+        _plat = next((str(b).strip() for b in (badges or [])
+                      if str(b or "").strip()), "")
+        if _plat:
+            draw.text((fx + COVER_W // 2, fy + COVER_H // 2 - 10), _plat,
+                      font=_card_font("bold", 64),
+                      fill=_card_rgb("#343434"), anchor="mm")
+        draw.text((fx + COVER_W // 2, fy + COVER_H // 2 + 44), "NO COVER",
+                  font=f_key, fill=_card_rgb(_CARD_MUTED), anchor="mm")
+
+    # ---- wordmark ------------------------------------------------------
+    _logo = _brand_logo((34, 34))
+    _word_x = right_x
+    if _logo is not None:
+        try:
+            card.paste(_logo, (right_x, top - 7), _logo)
+            _word_x = right_x + 44
+        except Exception:
+            _word_x = right_x
+    draw.text((_word_x, top), "PKG VIEWER", font=f_word,
+              fill=_card_rgb(_CARD_ACCENT))
+    if fmt:
+        _fi = _format_icon_image(fmt, (34, 34))
+        if _fi is not None:
+            _fi = _fi.convert("RGBA")
+            card.paste(_fi, (card_x + card_w - PAD - _fi.width, top - 4), _fi)
+
+    # ---- title ---------------------------------------------------------
+    ty = title_top
+    for line in title_lines:
+        draw.text((right_x, ty), line, font=f_title,
+                  fill=_card_rgb(_CARD_TEXT))
+        ty += 48
+
+    # ---- badges (bottom, like the app's action row) --------------------
+    if badge_h:
+        bx, by = right_x, badges_top
+        for text, col in zip(badges, badge_colors or []):
+            text = str(text or "").strip()
+            if not text:
+                continue
+            bw = int(_card_w(draw, text, f_badge)) + 26
+            if bx + bw > right_x + right_w:
+                break
+            rgb = _card_rgb(col)
+            draw.rounded_rectangle((bx, by, bx + bw, by + badge_h),
+                                   radius=badge_h // 2, fill=rgb)
+            lum = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255
+            fg = _CARD_TEXT if lum < 0.45 else "#171717"
+            draw.text((bx + 13, by + badge_h // 2), text, font=f_badge,
+                      fill=_card_rgb(fg), anchor="lm")
+            bx += bw + 10
+
+    # ---- divider -------------------------------------------------------
+    if content_id:
+        draw.text((right_x, cid_top), "CONTENT ID", font=f_key,
+                  fill=_card_rgb(_CARD_MUTED))
+        draw.text((right_x, cid_top + 16),
+                  _card_fit(draw, content_id, f_cid, right_w), font=f_cid,
+                  fill=_card_rgb(_CARD_TEXT))
+    draw.line((right_x, divider_y, card_x + card_w - PAD, divider_y),
+              fill=_card_rgb(_CARD_LINE), width=1)
+
+    # ---- spec rows, two columns ---------------------------------------
+    col_w = right_w // 2 - 12
+    for i, (key, value) in enumerate(rows):
+        col, row = divmod(i, per_col)
+        x = right_x + col * (right_w // 2 + 24)
+        y = specs_top + row * 46
+        draw.text((x, y), str(key or "").upper(), font=f_key,
+                  fill=_card_rgb(_CARD_MUTED))
+        draw.text((x, y + 16),
+                  _card_fit(draw, value, f_val, col_w), font=f_val,
+                  fill=_card_rgb(_CARD_TEXT))
+
+    # ---- footer --------------------------------------------------------
+    draw.text((card_x + PAD, footer_y),
+              "PKG Viewer  \u00b7  github.com/Loopayeh/pkg-viewer",
+              font=f_foot, fill=_card_rgb(_CARD_MUTED))
+    if filename:
+        half = card_w // 2 - PAD
+        draw.text((card_x + card_w - PAD, footer_y),
+                  _card_fit(draw, filename, f_foot, half), font=f_foot,
+                  fill=_card_rgb(_CARD_MUTED), anchor="ra")
+    return card
+
+
 def print_info(path):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -6890,6 +7191,28 @@ def _local_logo(size=(40, 40)):
             cands.insert(0, os.path.join(os.path.dirname(sys.executable),
                                          "assets", "logo.png"))
             cands.insert(0, os.path.join(sys._MEIPASS, "assets", "logo.png"))
+        for p in cands:
+            if os.path.isfile(p):
+                im = _I.open(p).convert("RGBA")
+                im.thumbnail(size, _I.LANCZOS)
+                return im
+        return None
+    except Exception:
+        return None
+
+
+def _brand_logo(size=(34, 34)):
+    """The rounded L mark (white tile, black L) drawn on cards."""
+    try:
+        from PIL import Image as _I
+        here = os.path.dirname(os.path.abspath(__file__))
+        cands = [os.path.join(os.getcwd(), "assets", "logo-mark.png"),
+                 os.path.join(here, "assets", "logo-mark.png")]
+        if getattr(sys, "frozen", False):
+            cands.insert(0, os.path.join(os.path.dirname(sys.executable),
+                                         "assets", "logo-mark.png"))
+            cands.insert(0, os.path.join(sys._MEIPASS, "assets",
+                                         "logo-mark.png"))
         for p in cands:
             if os.path.isfile(p):
                 im = _I.open(p).convert("RGBA")
@@ -7336,8 +7659,14 @@ def run_gui(start_path=None):
     # ---- hero: cover + title/badges (left) ----
     left = ttk.Frame(body, style="Card.TFrame", padding=8)
     left.grid(row=0, column=0, sticky="ns", padx=(0, 10))
+    hero = tk.Canvas(left, width=272, height=300, bd=0,
+                     highlightthickness=0, bg=CARD)
+    if has_pil:
+        hero.pack(pady=(4, 0))
+    state["hero"] = hero
     imgframe = tk.Frame(left, bg=CARD, width=240, height=240)
-    imgframe.pack(pady=(6, 0))
+    if not has_pil:
+        imgframe.pack(pady=(6, 0))
     imgframe.pack_propagate(False)
     state["imgframe"] = imgframe
     imglabel = tk.Label(imgframe, bg=CARD, fg=MUTED,
@@ -7345,14 +7674,16 @@ def run_gui(start_path=None):
                         font=FONT_MID, justify="center")
     imglabel.place(relx=0.5, rely=0.5, anchor="center")
     titlerow = tk.Frame(left, bg=CARD)
-    titlerow.pack(pady=(6, 4), anchor="w", fill="x")
+    if not has_pil:
+        titlerow.pack(pady=(6, 4), anchor="w", fill="x")
     state["titlerow"] = titlerow
     fmtlabel = tk.Label(titlerow, bg=CARD, fg=MUTED, text="")
     fmtlabel.pack(side="left", padx=(0, 8), anchor="n")
     state["fmtlabel"] = fmtlabel
     # selectable + wrapping title: read-only Text (Entry can't wrap,
-    # Label can't be selected)
-    _titletext = tk.Text(titlerow, bg=CARD, fg=TEXT,
+    # Label can't be selected).  In hero mode it lives on the hero image
+    # so the title stays selectable/copyable.
+    _titletext = tk.Text(hero if has_pil else titlerow, bg=CARD, fg=TEXT,
                          font=(FONT[0], 11, "bold"),
                          wrap="word", height=2, width=24,
                          relief="flat", borderwidth=0,
@@ -7360,7 +7691,8 @@ def run_gui(start_path=None):
                          selectbackground=ACCENT,
                          selectforeground="#171717",
                          insertbackground=TEXT)
-    _titletext.pack(side="left", anchor="w", fill="x", expand=True)
+    if not has_pil:
+        _titletext.pack(side="left", anchor="w", fill="x", expand=True)
     _titletext.insert("1.0", "—")
 
     def _title_value():
@@ -7369,6 +7701,188 @@ def run_gui(start_path=None):
         except Exception:
             v = ""
         return "" if v in ("", "—", "-") else v
+
+    # ---- game-tinted hero (left panel as one image) --------------------
+    # Tk widgets cannot be translucent, so the hero is composed with Pillow:
+    # a gradient sampled from the cover plus the sharp art. The title is a
+    # real Text widget placed on top, so it stays selectable and copyable.
+    state["hero_photo"] = None
+
+    def _hero_update():
+        if not has_pil:
+            return
+        try:
+            from PIL import Image as _I, ImageDraw as _ID, ImageTk as _IT
+            from PIL import ImageEnhance as _IE, ImageFilter as _IF
+            W, H = 272, 300
+            TXT_BG, TXT_HEX = (26, 26, 30), "#1a1a1e"
+            cover = state.get("pil")
+            _r = state.get("result") or {}
+            _ext = os.path.splitext(str(_r.get("path") or ""))[1].lower()
+            _fmt = {".pkg": "pkg", ".nsp": "nsp", ".xci": "xci",
+                    ".exfat": "exfat", ".ffpkg": "ffpkg",
+                    ".ffpfsc": "ffpfsc"}.get(_ext, "")
+            _fic = _format_icon_image(_fmt, (28, 28)) if _fmt else None
+            if _fic is not None:
+                _fic = _fic.convert("RGBA")
+            art = None
+            if cover is not None:
+                art = cover.convert("RGB").copy()
+                art.thumbnail((198, 198), _I.LANCZOS)
+            f = _card_font("bold", 17)
+            scratch = _ID.Draw(_I.new("RGB", (8, 8)))
+            icon_w = (_fic.width + 8) if _fic is not None else 0
+            lines = _card_wrap(scratch,
+                               _title_value() or "Drop a file or folder here",
+                               f, W - 24 - icon_w, 3)
+            art_h = art.height if art is not None else 0
+            gap = 12 if art is not None else 0
+            text_h = max(26, max(1, len(lines)) * 24 + 4)
+            block = art_h + gap + text_h
+            top = max(10, (H - block) // 2)
+            ty = top + art_h + gap
+            tx = 12 + icon_w
+
+            base = _I.new("RGB", (W, H), CARD)
+            _bd = state.get("hero_art")
+            if _bd is not None:
+                # the game's second picture (pic1/pic0) blurred behind the
+                # cover, exactly like the export card
+                _s = max(W / _bd.width, H / _bd.height)
+                _b = _bd.resize((max(1, int(_bd.width * _s)),
+                                 max(1, int(_bd.height * _s))), _I.LANCZOS)
+                _ox = (_b.width - W) // 2
+                _oy = (_b.height - H) // 2
+                _b = _b.crop((_ox, _oy, _ox + W, _oy + H))
+                _b = _b.filter(_IF.GaussianBlur(24))
+                _b = _IE.Brightness(_b).enhance(0.48)
+                _b = _IE.Color(_b).enhance(1.1)
+                ramp = _I.new("L", (1, H), 0)
+                for _y in range(H):
+                    _t = (_y / H - 0.42) / 0.45
+                    ramp.putpixel((0, _y),
+                                  int(255 * max(0.0, min(1.0, _t))))
+                base = _I.composite(_I.new("RGB", (W, H), CARD), _b,
+                                    ramp.resize((W, H)))
+            elif cover is not None:
+                # 2x2 corner sample of the art -> diagonal tint over the
+                # whole panel, fading to a dark shade of the same colour
+                sm = cover.convert("RGB").resize((3, 3), _I.LANCZOS)
+                quad = _I.new("RGB", (2, 2))
+                quad.putpixel((0, 0), sm.getpixel((0, 0)))
+                quad.putpixel((1, 0), sm.getpixel((2, 0)))
+                quad.putpixel((0, 1), sm.getpixel((0, 2)))
+                quad.putpixel((1, 1), sm.getpixel((2, 2)))
+                grad = quad.resize((W, H), _I.BICUBIC)
+                grad = _IE.Brightness(grad).enhance(0.55)
+                grad = _IE.Color(grad).enhance(1.2)
+                avg = tuple(sum(quad.getpixel((qx, qy))[i]
+                                for qx in (0, 1) for qy in (0, 1)) // 4
+                            for i in range(3))
+                bottom = tuple(int(avg[i] * 0.22 + 32 * 0.78)
+                               for i in range(3))
+                # lower half: flatten the diagonal into a horizontal band
+                # that only changes vertically, so the title's flat Text
+                # background cannot show a patch or a hard edge
+                strip = grad.resize((1, H), _I.BILINEAR)
+                vert = _I.new("RGB", (W, H))
+                vd = _ID.Draw(vert)
+                for _y in range(H):
+                    _c = strip.getpixel((0, _y))
+                    _t = max(0.0, min(1.0, (_y / H - 0.30) / 0.55)) * 0.9
+                    vd.line((0, _y, W, _y),
+                            fill=tuple(int(_c[i] * (1 - _t) + bottom[i] * _t)
+                                       for i in range(3)))
+                fmask = _I.new("L", (1, H), 0)
+                for _y in range(H):
+                    _t = max(0.0, min(1.0, (_y / H - 0.38) / 0.30))
+                    fmask.putpixel((0, _y), int(255 * _t))
+                base = _I.composite(vert, grad, fmask.resize((W, H)))
+            d = _ID.Draw(base)
+            if art is not None:
+                mask = _I.new("L", art.size, 0)
+                _ID.Draw(mask).rounded_rectangle(
+                    (0, 0, art.width - 1, art.height - 1), radius=16, fill=255)
+                ax = (W - art.width) // 2
+                base.paste(art, (ax, top), mask)
+                d.rounded_rectangle((ax, top, ax + art.width - 1,
+                                     top + art.height - 1), radius=16,
+                                    outline=(92, 92, 100), width=1)
+            if _fic is not None:
+                base.paste(_fic, (12, ty - 2), _fic)
+            _bg = base.getpixel((min(W - 2, tx + 2),
+                                 min(H - 2, ty + text_h // 2)))
+            _hex = "#%02x%02x%02x" % _bg
+            _titletext.config(bg=_hex,
+                              height=max(1, min(4, len(lines))))
+            _titletext.place(x=tx, y=ty, width=W - tx - 12, height=text_h)
+            _titletext.lift()
+            ph = _IT.PhotoImage(base)
+            hero.delete("all")
+            hero.create_image(0, 0, anchor="nw", image=ph)
+            hero.image = ph
+            state["hero_photo"] = ph
+        except Exception:
+            try:
+                import traceback as _tb
+                _p = os.path.join(os.environ.get("TEMP") or ".", "opencode")
+                os.makedirs(_p, exist_ok=True)
+                with open(os.path.join(_p, "hero.log"), "a",
+                          encoding="utf-8") as _fh:
+                    _fh.write(_tb.format_exc() + "\n")
+            except Exception:
+                pass
+
+    def _hero_backdrop_async(res):
+        # load pic1/pic0/pic2 in the background and use it as the hero
+        # backdrop once ready (never blocks opening a file)
+        def _work():
+            img = None
+            try:
+                import io as _io3
+                from PIL import Image as _I3
+                order = ("pic1.png", "pic0.png", "pic2.png")
+                found = {}
+                for e in res.get("entries") or []:
+                    n = os.path.basename(str(e.get("name", ""))).lower()
+                    if n in order and n not in found:
+                        found[n] = e
+                for n in order:
+                    e = found.get(n)
+                    if e is None:
+                        continue
+                    if e.get("local_path") and os.path.isfile(e["local_path"]):
+                        with open(e["local_path"], "rb") as fh:
+                            data = fh.read()
+                    elif e.get("cached") is not None:
+                        data = e["cached"]
+                    else:
+                        data = read_entry_bytes(res["path"], e["abs_off"],
+                                                e["size"])
+                    img = _I3.open(_io3.BytesIO(data)).convert("RGB")
+                    img.thumbnail((520, 520), _I3.LANCZOS)
+                    break
+            except Exception:
+                img = None
+
+            def _done():
+                try:
+                    if state.get("result") is res:
+                        state["hero_art"] = img
+                        _hero_update()
+                except Exception:
+                    pass
+            try:
+                root.after(0, _done)
+            except Exception:
+                pass
+        try:
+            import threading as _th3
+            _th3.Thread(target=_work, daemon=True).start()
+        except Exception:
+            pass
+
+    _hero_update()
 
     def _copy_title(whole=False):
         # Ctrl+C / right-click: copy the selected part, or the whole game
@@ -7446,6 +7960,8 @@ def run_gui(start_path=None):
         return "break"
     _titletext.bind("<Button-3>", _titlemenu)
     _titletext.bind("<Control-Button-1>", _titlemenu)  # mac right-click
+    hero.bind("<Button-3>", _titlemenu)
+    hero.bind("<Control-Button-1>", _titlemenu)
     def _fit_title_height():
         # Recompute visible lines at the CURRENT widget width. The width
         # can change after load (window resize, DPI, late geometry), so a
@@ -7485,6 +8001,7 @@ def run_gui(start_path=None):
                 _titletext.yview_moveto(0.0)
             except Exception:
                 pass
+            _hero_update()
         except Exception:
             pass
     state["titletext"] = _titletext
@@ -8496,6 +9013,77 @@ def run_gui(start_path=None):
     mkbtn(metabar, text="Copy info", style="Ghost.TButton", bg=CARD,
           kind="mini", font=(FONT[0], 9),
           command=lambda: copy_all_info()).pack(side="left", padx=(8, 0))
+    cardbtn = mkbtn(metabar, text="Copy card", style="Ghost.TButton", bg=CARD,
+                    kind="mini", font=(FONT[0], 9),
+                    command=lambda: copy_spec_card(
+                        glass=(_card_style.get() == "glass")))
+    cardbtn.pack(side="left", padx=(8, 0))
+    _card_style = tk.StringVar(
+        value="glass" if _load_settings().get("card_glass", True) else "solid")
+
+    def _remember_card_style():
+        try:
+            _save_settings({"card_glass": _card_style.get() == "glass"})
+        except Exception:
+            pass
+
+    cardmenu = tk.Menu(root, tearoff=0, bg=CARD, fg=TEXT,
+                       activebackground=ACCENT, activeforeground="#171717",
+                       font=(FONT[0], 9))
+
+    def _pick_card_style(value):
+        _card_style.set(value)
+        _remember_card_style()
+        _refresh_card_menu()
+
+    def _refresh_card_menu():
+        # Tk's native radio dot is invisible on a dark menu, so draw the
+        # tick in the label itself
+        try:
+            cardmenu.entryconfig(
+                0, label=("\u2713  Glass card" if _card_style.get() == "glass"
+                          else "    Glass card"))
+            cardmenu.entryconfig(
+                1, label=("\u2713  Solid card" if _card_style.get() == "solid"
+                          else "    Solid card"))
+        except Exception:
+            pass
+
+    cardmenu.add_command(label="Glass card",
+                         command=lambda: _pick_card_style("glass"))
+    cardmenu.add_command(label="Solid card",
+                         command=lambda: _pick_card_style("solid"))
+    cardmenu.add_separator()
+    cardmenu.add_command(label="Save card as PNG...",
+                         command=lambda: copy_spec_card(
+                             glass=(_card_style.get() == "glass"), save=True))
+    _refresh_card_menu()
+
+    def _card_menu(ev):
+        try:
+            cardmenu.tk_popup(ev.x_root, ev.y_root)
+        finally:
+            try:
+                cardmenu.grab_release()
+            except Exception:
+                pass
+        return "break"
+
+    def _card_menu_at(w):
+        try:
+            cardmenu.tk_popup(w.winfo_rootx(),
+                              w.winfo_rooty() + w.winfo_height() + 2)
+        finally:
+            try:
+                cardmenu.grab_release()
+            except Exception:
+                pass
+
+    cardbtn.bind("<Button-3>", _card_menu)
+    cardarrow = mkbtn(metabar, text="\u25be", style="Ghost.TButton", bg=CARD,
+                      kind="mini", font=(FONT[0], 8),
+                      command=lambda: _card_menu_at(cardarrow))
+    cardarrow.pack(side="left", padx=(2, 0))
     detailbtn = mkbtn(metabar, textvariable=detailvar, style="Accent.TButton", bg=CARD,
                       kind="mini_accent", font=(FONT[0], 9),
                       command=lambda: toggle_details())
@@ -9983,6 +10571,94 @@ def run_gui(start_path=None):
         except Exception as ex:
             statusvar.set(f"Copy failed: {ex}")
 
+    def copy_spec_card(glass=True, save=False):
+        # The Info tab as one shareable image: cover + title + badges + rows.
+        r = state.get("result")
+        if not r:
+            statusvar.set("Open a file first")
+            return
+        if not has_pil:
+            statusvar.set("Copy card needs Pillow")
+            return
+        try:
+            title = _title_value() or r.get("title") or ""
+            _skip = ("Platform", "Size", "Region", "Content ID",
+                     "Type", "Package")
+            rows = [(k, v) for (k, v) in r.get("rows", [])
+                    if k not in _skip
+                    and str(v or "").strip() not in ("", "-")]
+            _prio = {k.lower(): i for i, k in enumerate(GRID_ORDER)}
+            rows.sort(key=lambda kv: _prio.get(kv[0].lower(), 999))
+            badges = [bv.get() for bv in state.get("badges", [])]
+            _ext = os.path.splitext(str(r.get("path") or ""))[1].lower()
+            _fmt = {".pkg": "pkg", ".nsp": "nsp", ".xci": "xci",
+                    ".exfat": "exfat", ".ffpkg": "ffpkg",
+                    ".ffpfsc": "ffpfsc"}.get(_ext, "")
+            _bd = None
+            if glass:
+                # the game's second picture (pic1/pic0/pic2) becomes the
+                # blurred backdrop; no picture -> diagonal tint fallback
+                try:
+                    import io as _io2
+                    from PIL import Image as _I2
+                    _order = ("pic1.png", "pic0.png", "pic2.png")
+                    _found = {}
+                    for _e in r.get("entries", []):
+                        _n = os.path.basename(str(_e.get("name", ""))).lower()
+                        if _n in _order and _n not in _found:
+                            _found[_n] = _e
+                    for _n in _order:
+                        _e = _found.get(_n)
+                        if _e is None:
+                            continue
+                        if _e.get("local_path") and os.path.isfile(_e["local_path"]):
+                            with open(_e["local_path"], "rb") as _fh:
+                                _data = _fh.read()
+                        elif _e.get("cached") is not None:
+                            _data = _e["cached"]
+                        else:
+                            _data = read_entry_bytes(r["path"], _e["abs_off"],
+                                                     _e["size"])
+                        _bd = _I2.open(_io2.BytesIO(_data)).convert("RGB")
+                        break
+                except Exception:
+                    _bd = None
+            card = build_spec_card(
+                title, badges, state.get("badge_cols") or [], rows,
+                cover=state.get("pil"),
+                filename=os.path.basename(r.get("path", "") or ""),
+                glass=glass, backdrop=_bd,
+                content_id=str(dict(r.get("rows", [])).get("Content ID", "")
+                               or "").strip(),
+                fmt=_fmt)
+            stem = sanitize_filename_part(title, 60) or "card"
+            if save:
+                from tkinter import filedialog as _fd2
+                out = _fd2.asksaveasfilename(
+                    title="Save card as PNG", defaultextension=".png",
+                    initialfile=stem + "-card.png",
+                    filetypes=[("PNG image", "*.png")])
+                if not out:
+                    return
+                card.save(out)
+                statusvar.set("Card saved: " + out)
+                return
+            err = copy_image_to_clipboard(card)
+            if err:
+                # no Windows clipboard (Linux/mac, or it is locked): keep
+                # the PNG next to the cover cache instead of failing.
+                base = os.path.dirname(_covers_dir() or "") \
+                    or os.environ.get("TEMP") or "."
+                out = os.path.join(base, stem + "-card.png")
+                card.save(out)
+                statusvar.set("Clipboard unavailable (%s) - saved %s"
+                              % (err, out))
+            else:
+                statusvar.set("Spec card (%s) copied to clipboard"
+                              % ("glass" if glass else "dark"))
+        except Exception as ex:
+            statusvar.set("Copy card failed: %s" % ex)
+
     def copy_all_info():
         # Copy everything about the open file: header rows + Details text.
         r = state.get("result")
@@ -10007,6 +10683,9 @@ def run_gui(start_path=None):
 
     def load(p):
         statusvar.set("Reading...")
+        state["pil"] = None
+        state["hero_art"] = None
+        _hero_update()
         root.update_idletasks()
         try:
             r = parse_pkg(p)
@@ -10023,6 +10702,7 @@ def run_gui(start_path=None):
         detailvar.set("Show all")
         pathvar.set(os.path.basename(p))
         _set_title(r["title"])
+        _hero_backdrop_async(r)
         try:
             _ext = os.path.splitext(p)[1].lower()
             _fmt = {".ffpkg": "ffpkg", ".ffpfsc": "ffpfsc",
@@ -10094,6 +10774,7 @@ def run_gui(start_path=None):
                      else "#f59e5b" if ("dlc" in _tl or "patch" in _tl)
                      else "#10b981" if _type else "#6b7280")
         _bcolors = [_plat_col, "#e17b7b", "#6b7280", _type_col, _pkg_col]
+        state["badge_cols"] = list(_bcolors)  # used by "Copy card"
         for i, (bv, val, lb, col) in enumerate(zip(badges, _bvals, _blabs, _bcolors)):
             bv.set(val or "")
             try:
@@ -10535,6 +11216,7 @@ def run_gui(start_path=None):
         try:
             state["pil"] = im.copy()
             state["img_name"] = label
+            _hero_update()
             im.thumbnail((260, 260))
             canvas = Image.new("RGB", (280, 280), CARD)
             canvas.paste(im, ((280 - im.size[0]) // 2,
@@ -10972,6 +11654,7 @@ def run_gui(start_path=None):
             im = Image.open(io.BytesIO(data))
             state["pil"] = im.copy()
             state["img_name"] = name
+            _hero_update()
             im.thumbnail((260, 260))
             # fixed-size canvas: pad with card bg so layout never shifts
             canvas = Image.new("RGB", (280, 280), CARD)
