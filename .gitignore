@@ -14,6 +14,7 @@ assets/*
 !assets/icons/*.ico
 !assets/logo.png
 !assets/logo.ico
+!assets/logo-app.png
 
 # local agent setup - never published
 AGENTS.md
