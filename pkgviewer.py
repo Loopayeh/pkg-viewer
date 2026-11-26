@@ -7542,12 +7542,18 @@ def run_gui(start_path=None):
 
     root = None
     has_dnd = False
+    _TkinterDnD = None
+    _DnDTk = None
     try:
-        from tkinterdnd2 import DND_FILES, TkinterDnD
-        root = TkinterDnD.Tk()
-        has_dnd = True
-    except ImportError:
-        root = tk.Tk()
+        from tkinterdnd2 import DND_FILES, TkinterDnD as _TkinterDnD
+
+        class _DnDTk(tk.Tk, _TkinterDnD.DnDWrapper):
+            pass
+    except Exception:
+        _TkinterDnD = None
+        DND_FILES = None
+
+    root = _DnDTk() if _DnDTk is not None else tk.Tk()
     _alpha_hidden = False
     try:
         # hide until layout is applied:
@@ -7563,6 +7569,15 @@ def run_gui(start_path=None):
             pass
     except Exception:
         pass
+    if _TkinterDnD is not None:
+        try:
+            # Load tkdnd after the window is hidden. When the bundled library
+            # does not match the Tcl version (e.g. Intel macOS + Tcl 9), keep
+            # running without drag & drop instead of crashing at startup.
+            _TkinterDnD._require(root)
+            has_dnd = True
+        except Exception:
+            has_dnd = False
     root.title("PKG Viewer %s — PS2/PS3/PS4/PS5/Switch/WiiU/Xbox360" % APP_VERSION)
     root.geometry("880x410")
     root.configure(bg=BG)
