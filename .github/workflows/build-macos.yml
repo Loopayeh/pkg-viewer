@@ -13,39 +13,41 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: macos-14
-            arch: arm64
           - runner: macos-15
             arch: arm64
+            python: "3.14"
           - runner: macos-15-intel
             arch: x86_64
+            python: "3.12"
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: ${{ matrix.python }}
 
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller pillow cryptography tkinterdnd2
 
-      - name: macOS icon (.icns from logo.png)
+      - name: macOS icon (.icns from logo-app.png)
         run: |
-          if [ -f assets/logo.png ]; then
+          ICON=assets/logo-app.png
+          [ -f "$ICON" ] || ICON=assets/logo.png
+          if [ -f "$ICON" ]; then
             mkdir -p icon.iconset
-            sips -z 16 16     assets/logo.png --out icon.iconset/icon_16x16.png
-            sips -z 32 32     assets/logo.png --out icon.iconset/icon_16x16@2x.png
-            sips -z 32 32     assets/logo.png --out icon.iconset/icon_32x32.png
-            sips -z 64 64     assets/logo.png --out icon.iconset/icon_32x32@2x.png
-            sips -z 128 128   assets/logo.png --out icon.iconset/icon_128x128.png
-            sips -z 256 256   assets/logo.png --out icon.iconset/icon_128x128@2x.png
-            sips -z 256 256   assets/logo.png --out icon.iconset/icon_256x256.png
-            sips -z 512 512   assets/logo.png --out icon.iconset/icon_256x256@2x.png
-            sips -z 512 512   assets/logo.png --out icon.iconset/icon_512x512.png
-            cp assets/logo.png icon.iconset/icon_512x512@2x.png
+            sips -z 16 16     "$ICON" --out icon.iconset/icon_16x16.png
+            sips -z 32 32     "$ICON" --out icon.iconset/icon_16x16@2x.png
+            sips -z 32 32     "$ICON" --out icon.iconset/icon_32x32.png
+            sips -z 64 64     "$ICON" --out icon.iconset/icon_32x32@2x.png
+            sips -z 128 128   "$ICON" --out icon.iconset/icon_128x128.png
+            sips -z 256 256   "$ICON" --out icon.iconset/icon_128x128@2x.png
+            sips -z 256 256   "$ICON" --out icon.iconset/icon_256x256.png
+            sips -z 512 512   "$ICON" --out icon.iconset/icon_256x256@2x.png
+            sips -z 512 512   "$ICON" --out icon.iconset/icon_512x512.png
+            cp "$ICON" icon.iconset/icon_512x512@2x.png
             iconutil -c icns icon.iconset -o icon.icns
           fi
 
