@@ -1,5 +1,5 @@
 ; PKG Viewer installer — per-user, file icons, no admin needed.
-#define AppVer "1.20.2"
+#define AppVer "1.20.3"
 
 [Setup]
 AppName=PKG Viewer
@@ -13,6 +13,8 @@ PrivilegesRequired=lowest
 Compression=lzma2/max
 SolidCompression=yes
 UninstallDisplayName=PKG Viewer
+UninstallDisplayIcon={app}\PKGViewer.exe
+SetupIconFile=assets\logo.ico
 WizardStyle=modern
 ; Sign the Setup exe and its uninstaller, otherwise Smart App Control blocks the
 ; installer before the (signed) app is ever copied - and the in-app updater,

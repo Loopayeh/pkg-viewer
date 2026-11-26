@@ -6,7 +6,7 @@ import os
 import struct
 import sys
 
-APP_VERSION = "v1.20.2"  # bump on every release - the updater compares this
+APP_VERSION = "v1.20.3"  # bump on every release - the updater compares this
 UPDATE_REPO = "Loopayeh/pkg-viewer"
 SUPPORT_ADDR = "0x839a30D52Ef7D2b53e818b9931efd7FE6F472e50"  # USDT (BEP-20)
 SUPPORT_URL = ("https://link.trustwallet.com/send?coin=20000714&address="
@@ -6701,56 +6701,84 @@ def _card_wrap(draw, text, font, max_w, max_lines=3):
     return lines
 
 
+def _card_pill_colors(rgb):
+    """Deep tinted pill: dark fill, same-hue border, light text."""
+    r, g, b = rgb
+    if r > 200 and g > 200 and b > 200:
+        # platform badges arrive as white from the app
+        return (30, 41, 59), (59, 130, 246), (241, 243, 248)
+    bg = (14, 16, 22)
+    r, g, b = rgb
+    fill = (int(bg[0] + (r - bg[0]) * 0.28),
+            int(bg[1] + (g - bg[1]) * 0.28),
+            int(bg[2] + (b - bg[2]) * 0.28))
+    border = (int(r + (255 - r) * 0.10),
+              int(g + (255 - g) * 0.10),
+              int(b + (255 - b) * 0.10))
+    text = (int(r + (255 - r) * 0.62),
+            int(g + (255 - g) * 0.62),
+            int(b + (255 - b) * 0.62))
+    return fill, border, text
+
+
 def build_spec_card(title, badges, badge_colors, rows, cover=None,
                     filename="", glass=False, content_id="", fmt="",
                     backdrop=None):
     """Render the open file as a 1200 px wide PNG (Pillow image).
 
-    `rows` is [(label, value)] already filtered and ordered like the Info
-    tab; `badges`/`badge_colors` come from the header pill strip.
+    Square cover on the left; title, Content ID, a two-column spec grid and
+    the badges on the right. Glass clips a blurred backdrop to the frame and
+    keeps the text side darker so values stay readable.
     """
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 
-    W, OUT, PAD = 1200, 32, 40
-    COVER_W, COVER_H = 330, 420
+    W, OUT, PAD = 1200, 24, 40
+    COVER = 360
+    CARD_W = W - OUT * 2
     card_x, card_y = OUT, OUT
-    card_w = W - OUT * 2
-    right_x = card_x + PAD + COVER_W + 44
-    right_w = card_x + card_w - PAD - right_x
+    right_x = card_x + PAD + COVER + PAD
+    right_w = card_x + CARD_W - PAD - right_x
 
     f_word = _card_font("bold", 15)
-    f_title = _card_font("bold", 40)
+    f_title = _card_font("bold", 38)
     f_badge = _card_font("bold", 15)
     f_key = _card_font("bold", 12)
-    f_val = _card_font("bold", 19)
-    f_cid = _card_font("bold", 18)
+    f_val = _card_font("bold", 20)
+    f_cid = _card_font("regular", 15)
     f_foot = _card_font("regular", 13)
 
     scratch = ImageDraw.Draw(Image.new("RGB", (8, 8)))
     title_lines = _card_wrap(scratch, title or filename or "\u2014",
-                             f_title, right_w, max_lines=3)
-    rows = list(rows or [])[:10]
+                             f_title, right_w, max_lines=2)
+
+    # The card is a share image, not the Info tab: keep the useful rows.
+    _skip = {"concept id", "drm", "pfs image"}
+    _all_rows = [(k, v) for (k, v) in (rows or [])
+                 if str(v or "").strip() not in ("", "-")]
+    _kept = [(k, v) for (k, v) in _all_rows
+             if str(k or "").strip().lower() not in _skip]
+    rows = (_kept or _all_rows)[:6]
     per_col = max(1, (len(rows) + 1) // 2)
 
-    top = card_y + 38
-    title_top = top + 32
-    title_h = max(1, len(title_lines)) * 48
-    cid_top = title_top + title_h + 18
-    cid_h = 46 if content_id else 0
-    divider_y = cid_top + cid_h + (18 if cid_h else 8)
-    specs_top = divider_y + 24
-    specs_bottom = specs_top + per_col * 46
-    badge_h = 32 if any(str(b or "").strip() for b in badges or []) else 0
-    badges_top = specs_bottom + 12
-    cover_bottom = card_y + PAD + COVER_H
-    footer_y = max(specs_bottom + (badge_h + 18 if badge_h else 0),
-                   cover_bottom) + 26
-    card_h = max(520, (footer_y + 34) - card_y)
+    top = card_y + PAD
+    title_top = top + 44
+    title_h = max(1, len(title_lines)) * 46
+    cid_top = title_top + title_h + 6
+    cid_h = 22 if str(content_id or "").strip() else 0
+    divider_y = cid_top + cid_h + (14 if cid_h else 10)
+    specs_top = divider_y + 20
+    specs_bottom = specs_top + per_col * 54
+    badge_h = 36 if any(str(b or "").strip() for b in badges or []) else 0
+    badges_top = max(specs_bottom + 14,
+                     card_y + PAD + COVER - badge_h)
+    cover_bottom = card_y + PAD + COVER
+    footer_top = max(specs_bottom + (badge_h + 14 if badge_h else 0),
+                     cover_bottom) + 26
+    card_h = max(468, footer_top + 34 - card_y)
     H = card_h + OUT * 2
 
     glass = bool(glass and cover is not None)
     if glass:
-        from PIL import ImageEnhance as _IE, ImageFilter as _IF
         if backdrop is not None:
             # the game's second picture (pic1/pic0) as a blurred backdrop
             bd = backdrop.convert("RGB")
@@ -6760,9 +6788,9 @@ def build_spec_card(title, badges, badge_colors, rows, cover=None,
             _ox = (bd.width - W) // 2
             _oy = (bd.height - H) // 2
             bg = bd.crop((_ox, _oy, _ox + W, _oy + H))
-            bg = bg.filter(_IF.GaussianBlur(44))
-            bg = _IE.Brightness(bg).enhance(0.42)
-            bg = _IE.Color(bg).enhance(1.15)
+            bg = bg.filter(ImageFilter.GaussianBlur(44))
+            bg = ImageEnhance.Brightness(bg).enhance(0.42)
+            bg = ImageEnhance.Color(bg).enhance(1.12)
         else:
             # no second picture: diagonal tint from the four corners
             sm = cover.convert("RGB").resize((3, 3), Image.LANCZOS)
@@ -6772,31 +6800,66 @@ def build_spec_card(title, badges, badge_colors, rows, cover=None,
             quad.putpixel((0, 1), sm.getpixel((0, 2)))
             quad.putpixel((1, 1), sm.getpixel((2, 2)))
             bg = quad.resize((W, H), Image.BICUBIC)
-            bg = _IE.Brightness(bg).enhance(0.50)
-            bg = _IE.Color(bg).enhance(1.25)
-        ramp = Image.new("L", (1, H), 0)
-        for _y in range(H):
-            _t = (_y / H - 0.45) / 0.55
-            ramp.putpixel((0, _y), int(255 * max(0.0, min(1.0, _t))))
-        panel = Image.new("RGB", (W, H), _card_rgb(_CARD_PANEL))
-        card = Image.composite(panel, bg, ramp.resize((W, H)))
+            bg = ImageEnhance.Brightness(bg).enhance(0.52)
+            bg = ImageEnhance.Color(bg).enhance(1.25)
+
+        # darken toward the text side so the specs stay legible
+        scrim = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        sd = ImageDraw.Draw(scrim)
+        for _x in range(W):
+            _t = _x / max(1, W - 1)
+            sd.line((_x, 0, _x, H), fill=(10, 12, 18, int(130 * _t * _t)))
+        bg = Image.alpha_composite(bg.convert("RGBA"), scrim)
+
+        # gentle falloff behind the footer
+        fall_h = int(H * 0.35)
+        fall = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        fd = ImageDraw.Draw(fall)
+        for _i in range(fall_h):
+            _t = _i / max(1, fall_h - 1)
+            fd.line((0, H - fall_h + _i, W, H - fall_h + _i),
+                    fill=(10, 12, 18, int(110 * _t * _t)))
+        bg = Image.alpha_composite(bg, fall)
+        bg = bg.convert("RGB")
+
+        card = Image.new("RGB", (W, H), _card_rgb("#0e1015"))
+        mask = Image.new("L", (W, H), 0)
+        ImageDraw.Draw(mask).rounded_rectangle(
+            (card_x, card_y, card_x + CARD_W - 1, card_y + card_h - 1),
+            radius=28, fill=255)
+        card.paste(bg, (0, 0), mask)
+        card = card.convert("RGBA")
+        ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(ov).rounded_rectangle(
+            (card_x, card_y, card_x + CARD_W - 1, card_y + card_h - 1),
+            radius=28, outline=(255, 255, 255, 44), width=1)
+        card = Image.alpha_composite(card, ov)
         draw = ImageDraw.Draw(card)
-        draw.rounded_rectangle((card_x, card_y, card_x + card_w - 1,
-                                card_y + card_h - 1),
-                               radius=30, outline=_card_rgb("#4a4a52"), width=1)
+        divider_col = _card_rgb("#3a3d45")
+        footer_col = _card_rgb("#2f323a")
     else:
-        card = Image.new("RGB", (W, H), _card_rgb(_CARD_BG))
+        card = Image.new("RGB", (W, H), _card_rgb("#121318"))
         draw = ImageDraw.Draw(card)
-        draw.rounded_rectangle((card_x, card_y, card_x + card_w - 1,
-                                card_y + card_h - 1),
-                               radius=30, fill=_card_rgb(_CARD_PANEL),
-                               outline=_card_rgb(_CARD_LINE), width=2)
+        draw.rounded_rectangle((card_x, card_y, card_x + CARD_W - 1,
+                                card_y + card_h - 1), radius=28,
+                               fill=_card_rgb("#1b1d24"),
+                               outline=_card_rgb("#2d313e"), width=1)
+        divider_col = _card_rgb("#2b2e38")
+        footer_col = _card_rgb("#262932")
+
+    card = card.convert("RGBA")
+    draw = ImageDraw.Draw(card)
 
     # ---- cover ---------------------------------------------------------
     fx, fy = card_x + PAD, card_y + PAD
-    if not glass:
-        draw.rounded_rectangle((fx, fy, fx + COVER_W - 1, fy + COVER_H - 1),
-                               radius=20, fill=_card_rgb(_CARD_TILE))
+    tile = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(tile).rounded_rectangle(
+        (fx, fy, fx + COVER - 1, fy + COVER - 1), radius=20,
+        fill=(24, 26, 34, 150) if glass else
+        _card_rgb(_CARD_TILE) + (255,))
+    card = Image.alpha_composite(card, tile)
+    draw = ImageDraw.Draw(card)
+
     if cover is not None:
         try:
             im = cover
@@ -6806,57 +6869,76 @@ def build_spec_card(title, badges, badge_colors, rows, cover=None,
                 im = flat
             else:
                 im = im.convert("RGB")
-            scale = min((COVER_W - 24) / im.width, (COVER_H - 24) / im.height)
+            scale = min(COVER / im.width, COVER / im.height)
             tw = max(1, int(im.width * scale))
             th = max(1, int(im.height * scale))
             thumb = im.resize((tw, th), Image.LANCZOS)
+            tx = fx + (COVER - tw) // 2
+            ty = fy + (COVER - th) // 2
             mask = Image.new("L", (tw, th), 0)
             ImageDraw.Draw(mask).rounded_rectangle(
-                (0, 0, tw - 1, th - 1), radius=14, fill=255)
-            card.paste(thumb, (fx + (COVER_W - tw) // 2,
-                               fy + (COVER_H - th) // 2), mask)
-            if glass:
-                _tx = fx + (COVER_W - tw) // 2
-                _ty = fy + (COVER_H - th) // 2
-                draw.rounded_rectangle((_tx, _ty, _tx + tw - 1,
-                                        _ty + th - 1), radius=14,
-                                       outline=_card_rgb("#5a5a64"), width=1)
+                (0, 0, tw - 1, th - 1), radius=18, fill=255)
+            card.paste(thumb, (tx, ty), mask)
+            ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            ImageDraw.Draw(ov).rounded_rectangle(
+                (tx, ty, tx + tw - 1, ty + th - 1), radius=18,
+                outline=(255, 255, 255, 52), width=1)
+            card = Image.alpha_composite(card, ov)
+            draw = ImageDraw.Draw(card)
         except Exception:
             cover = None
     if cover is None:
-        # no cover art: the platform name stands in, big and faint
         _plat = next((str(b).strip() for b in (badges or [])
                       if str(b or "").strip()), "")
         if _plat:
-            draw.text((fx + COVER_W // 2, fy + COVER_H // 2 - 10), _plat,
-                      font=_card_font("bold", 64),
+            draw.text((fx + COVER // 2, fy + COVER // 2 - 10), _plat,
+                      font=_card_font("bold", 62),
                       fill=_card_rgb("#343434"), anchor="mm")
-        draw.text((fx + COVER_W // 2, fy + COVER_H // 2 + 44), "NO COVER",
+        draw.text((fx + COVER // 2, fy + COVER // 2 + 44), "NO COVER",
                   font=f_key, fill=_card_rgb(_CARD_MUTED), anchor="mm")
 
-    # ---- wordmark ------------------------------------------------------
+    # ---- header --------------------------------------------------------
     _logo = _brand_logo((34, 34))
     _word_x = right_x
     if _logo is not None:
         try:
-            card.paste(_logo, (right_x, top - 7), _logo)
+            card.paste(_logo, (right_x, top), _logo)
             _word_x = right_x + 44
         except Exception:
             _word_x = right_x
-    draw.text((_word_x, top), "PKG VIEWER", font=f_word,
-              fill=_card_rgb(_CARD_ACCENT))
+    draw.text((_word_x, top + 17), "PKG VIEWER", font=f_word,
+              fill=_card_rgb(_CARD_ACCENT), anchor="lm")
     if fmt:
         _fi = _format_icon_image(fmt, (34, 34))
         if _fi is not None:
             _fi = _fi.convert("RGBA")
-            card.paste(_fi, (card_x + card_w - PAD - _fi.width, top - 4), _fi)
+            card.paste(_fi, (card_x + CARD_W - PAD - _fi.width, top), _fi)
 
-    # ---- title ---------------------------------------------------------
+    # ---- title + content id -------------------------------------------
     ty = title_top
     for line in title_lines:
         draw.text((right_x, ty), line, font=f_title,
                   fill=_card_rgb(_CARD_TEXT))
-        ty += 48
+        ty += 46
+    if cid_h:
+        draw.text((right_x, cid_top),
+                  _card_fit(draw, content_id, f_cid, right_w), font=f_cid,
+                  fill=_card_rgb(_CARD_MUTED))
+
+    draw.line((right_x, divider_y, card_x + CARD_W - PAD, divider_y),
+              fill=divider_col, width=1)
+
+    # ---- spec rows, two columns ---------------------------------------
+    col_w = (right_w - 32) // 2
+    for i, (key, value) in enumerate(rows):
+        col, row = divmod(i, per_col)
+        x = right_x + col * (col_w + 32)
+        y = specs_top + row * 54
+        draw.text((x, y), str(key or "").upper(), font=f_key,
+                  fill=_card_rgb(_CARD_MUTED))
+        draw.text((x, y + 18),
+                  _card_fit(draw, value, f_val, col_w), font=f_val,
+                  fill=_card_rgb(_CARD_TEXT))
 
     # ---- badges (bottom, like the app's action row) --------------------
     if badge_h:
@@ -6865,50 +6947,247 @@ def build_spec_card(title, badges, badge_colors, rows, cover=None,
             text = str(text or "").strip()
             if not text:
                 continue
-            bw = int(_card_w(draw, text, f_badge)) + 26
+            bw = int(_card_w(draw, text, f_badge)) + 30
             if bx + bw > right_x + right_w:
                 break
-            rgb = _card_rgb(col)
+            _up = text.upper()
+            if _up in ("FPKG", "FAKE"):
+                fill, border, fg = ((53, 26, 32), (244, 63, 94),
+                                    (253, 164, 175))
+            elif _up in ("OFC", "OFFICIAL"):
+                fill, border, fg = ((19, 42, 62), (79, 142, 247),
+                                    (147, 197, 253))
+            else:
+                fill, border, fg = _card_pill_colors(_card_rgb(col))
             draw.rounded_rectangle((bx, by, bx + bw, by + badge_h),
-                                   radius=badge_h // 2, fill=rgb)
-            lum = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255
-            fg = _CARD_TEXT if lum < 0.45 else "#171717"
-            draw.text((bx + 13, by + badge_h // 2), text, font=f_badge,
-                      fill=_card_rgb(fg), anchor="lm")
+                                   radius=badge_h // 2, fill=fill,
+                                   outline=border, width=1)
+            draw.text((bx + 15, by + badge_h // 2), text, font=f_badge,
+                      fill=fg, anchor="lm")
             bx += bw + 10
 
-    # ---- divider -------------------------------------------------------
-    if content_id:
-        draw.text((right_x, cid_top), "CONTENT ID", font=f_key,
-                  fill=_card_rgb(_CARD_MUTED))
-        draw.text((right_x, cid_top + 16),
-                  _card_fit(draw, content_id, f_cid, right_w), font=f_cid,
-                  fill=_card_rgb(_CARD_TEXT))
-    draw.line((right_x, divider_y, card_x + card_w - PAD, divider_y),
-              fill=_card_rgb(_CARD_LINE), width=1)
-
-    # ---- spec rows, two columns ---------------------------------------
-    col_w = right_w // 2 - 12
-    for i, (key, value) in enumerate(rows):
-        col, row = divmod(i, per_col)
-        x = right_x + col * (right_w // 2 + 24)
-        y = specs_top + row * 46
-        draw.text((x, y), str(key or "").upper(), font=f_key,
-                  fill=_card_rgb(_CARD_MUTED))
-        draw.text((x, y + 16),
-                  _card_fit(draw, value, f_val, col_w), font=f_val,
-                  fill=_card_rgb(_CARD_TEXT))
-
     # ---- footer --------------------------------------------------------
-    draw.text((card_x + PAD, footer_y),
+    draw.line((card_x + PAD, footer_top - 14,
+               card_x + CARD_W - PAD, footer_top - 14),
+              fill=footer_col, width=1)
+    draw.text((card_x + PAD, footer_top),
               "PKG Viewer  \u00b7  github.com/Loopayeh/pkg-viewer",
               font=f_foot, fill=_card_rgb(_CARD_MUTED))
     if filename:
-        half = card_w // 2 - PAD
-        draw.text((card_x + card_w - PAD, footer_y),
+        half = CARD_W // 2 - PAD
+        draw.text((card_x + CARD_W - PAD, footer_top),
                   _card_fit(draw, filename, f_foot, half), font=f_foot,
                   fill=_card_rgb(_CARD_MUTED), anchor="ra")
-    return card
+    return card.convert("RGB")
+
+
+def build_square_card(title, cover=None, backdrop=None, platform="",
+                      region="", size="", kind="", tid="", version="",
+                      fmt="", pkg="", min_system="", sdk="",
+                      content_id="", master_ver=""):
+    """1080x1080 share card: cover, title, a stats dock and bottom badges."""
+    from PIL import Image, ImageDraw, ImageFilter, ImageEnhance
+
+    S, OUT, M = 1080, 24, 68
+    base = None
+    if backdrop is not None:
+        bd = backdrop.convert("RGB")
+        sc = max(S / bd.width, S / bd.height)
+        bd = bd.resize((max(1, int(bd.width * sc)),
+                        max(1, int(bd.height * sc))), Image.LANCZOS)
+        ox, oy = (bd.width - S) // 2, (bd.height - S) // 2
+        base = bd.crop((ox, oy, ox + S, oy + S))
+        base = base.filter(ImageFilter.GaussianBlur(42))
+        base = ImageEnhance.Brightness(base).enhance(0.40)
+        base = ImageEnhance.Color(base).enhance(1.15)
+    elif cover is not None:
+        sm = cover.convert("RGB").resize((3, 3), Image.LANCZOS)
+        quad = Image.new("RGB", (2, 2))
+        quad.putpixel((0, 0), sm.getpixel((0, 0)))
+        quad.putpixel((1, 0), sm.getpixel((2, 0)))
+        quad.putpixel((0, 1), sm.getpixel((0, 2)))
+        quad.putpixel((1, 1), sm.getpixel((2, 2)))
+        base = quad.resize((S, S), Image.BICUBIC)
+        base = ImageEnhance.Brightness(base).enhance(0.48)
+        base = ImageEnhance.Color(base).enhance(1.20)
+    else:
+        base = Image.new("RGB", (S, S), _card_rgb(_CARD_PANEL))
+
+    # soft vignette so the corners fall away
+    small = Image.new("L", (64, 64), 0)
+    px = small.load()
+    for yy in range(64):
+        for xx in range(64):
+            dx, dy = (xx - 31.5) / 31.5, (yy - 31.5) / 31.5
+            dist = min(1.0, (dx * dx + dy * dy) ** 0.5 / 1.35)
+            px[xx, yy] = int(105 * dist * dist)
+    base = Image.composite(Image.new("RGB", (S, S), (0, 0, 0)), base,
+                           small.resize((S, S), Image.BICUBIC))
+
+    # the picture sits inside a rounded frame on a dark canvas
+    card = Image.new("RGB", (S, S), _card_rgb("#0e1015"))
+    frame = Image.new("L", (S, S), 0)
+    ImageDraw.Draw(frame).rounded_rectangle(
+        (OUT, OUT, S - OUT - 1, S - OUT - 1), radius=32, fill=255)
+    card.paste(base, (0, 0), frame)
+    card = card.convert("RGBA")
+    ov = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    ImageDraw.Draw(ov).rounded_rectangle(
+        (OUT, OUT, S - OUT - 1, S - OUT - 1), radius=32,
+        outline=(255, 255, 255, 40), width=1)
+    card = Image.alpha_composite(card, ov)
+    draw = ImageDraw.Draw(card)
+
+    # ---- header --------------------------------------------------------
+    logo = _brand_logo((40, 40))
+    if logo is not None:
+        card.paste(logo, (M, 62), logo)
+    draw.text((M + 54, 82), "PKG VIEWER", font=_card_font("bold", 16),
+              fill=_card_rgb(_CARD_ACCENT), anchor="lm")
+    if fmt:
+        fi = _format_icon_image(fmt, (40, 40))
+        if fi is not None:
+            fi = fi.convert("RGBA")
+            card.paste(fi, (S - M - fi.width, 62), fi)
+            draw = ImageDraw.Draw(card)
+
+    # ---- cover ---------------------------------------------------------
+    f_title = _card_font("bold", 40)
+    title_lines = _card_wrap(draw, title, f_title, 880, max_lines=2)
+    cover_box = 520 if len(title_lines) <= 1 else 470
+    cid_txt = str(content_id or "").strip()
+    gap_title = 24
+    cid_h = 30 if cid_txt else 0
+    group_h = cover_box + gap_title + len(title_lines) * 48 + cid_h
+    avail_top, avail_bottom = 112, 750
+    cy = avail_top + max(0, (avail_bottom - avail_top - group_h) // 2)
+
+    if cover is not None:
+        art = cover.convert("RGB").copy()
+        art.thumbnail((cover_box, cover_box), Image.LANCZOS)
+    else:
+        art = Image.new("RGB", (cover_box, cover_box),
+                        _card_rgb(_CARD_TILE))
+        ImageDraw.Draw(art).text(
+            (cover_box // 2, cover_box // 2), platform or "NO COVER",
+            font=_card_font("bold", 60), fill=_card_rgb("#3a3a42"),
+            anchor="mm")
+    ax = (S - art.width) // 2
+
+    shadow = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).rounded_rectangle(
+        (ax + 6, cy + 20, ax + art.width + 6, cy + art.height + 20),
+        radius=28, fill=(0, 0, 0, 160))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(26))
+    card = Image.alpha_composite(card, shadow)
+    draw = ImageDraw.Draw(card)
+
+    mask = Image.new("L", art.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, art.width - 1, art.height - 1), radius=26, fill=255)
+    card.paste(art, (ax, cy), mask)
+    ov = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    ImageDraw.Draw(ov).rounded_rectangle(
+        (ax, cy, ax + art.width - 1, cy + art.height - 1), radius=26,
+        outline=(255, 255, 255, 55), width=1)
+    card = Image.alpha_composite(card, ov)
+    draw = ImageDraw.Draw(card)
+
+    # ---- title + content id -------------------------------------------
+    ty = cy + cover_box + gap_title
+    for line in title_lines:
+        draw.text((S // 2, ty), line, font=f_title,
+                  fill=_card_rgb(_CARD_TEXT), anchor="ma")
+        ty += 48
+    if cid_txt:
+        draw.text((S // 2, ty + 10),
+                  _card_fit(draw, cid_txt, _card_font("regular", 15), 880),
+                  font=_card_font("regular", 15),
+                  fill=_card_rgb(_CARD_MUTED), anchor="ma")
+
+    # ---- stats dock ----------------------------------------------------
+    _sdk = str(sdk or "").strip()
+    _master = str(master_ver or "").strip()
+    stats = [("TITLE ID", tid), ("VERSION", version),
+             ("MIN. SYSTEM", min_system)]
+    if _sdk not in ("", "-"):
+        stats.append(("SDK", _sdk))
+    elif _master not in ("", "-"):
+        stats.append(("MASTER VER", _master))
+    stats = [(k, str(v)) for k, v in stats
+             if str(v or "").strip() not in ("", "-")]
+    dock_top, dock_bottom = 766, 862
+    if stats:
+        dock = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+        dd = ImageDraw.Draw(dock)
+        dd.rounded_rectangle((M, dock_top, S - M - 1, dock_bottom),
+                             radius=18, fill=(12, 14, 20, 170),
+                             outline=(255, 255, 255, 28), width=1)
+        card = Image.alpha_composite(card, dock)
+        draw = ImageDraw.Draw(card)
+
+        col_w = (S - 2 * M) / max(1, len(stats))
+        f_key = _card_font("bold", 12)
+        f_val = _card_font("bold", 22)
+        for i, (lab, val) in enumerate(stats):
+            cx = M + col_w * (i + 0.5)
+            if i:
+                dx = int(M + col_w * i)
+                draw.line((dx, dock_top + 16, dx, dock_bottom - 16),
+                          fill=_card_rgb("#2c3038"), width=1)
+            draw.text((cx, dock_top + 16), lab, font=f_key,
+                      fill=_card_rgb(_CARD_MUTED), anchor="ma")
+            draw.text((cx, dock_top + 40),
+                      _card_fit(draw, val, f_val, int(col_w) - 24),
+                      font=f_val,
+                      fill=_card_rgb(_CARD_ACCENT if lab == "TITLE ID"
+                                     else _CARD_TEXT), anchor="ma")
+
+    # ---- badges, bottom like the app's action row ----------------------
+    pills = []
+    if platform:
+        pills.append((platform, "#1e293b", "#3b82f6", "#f1f3f8"))
+    if region:
+        pills.append((region, "#232634", "#4b5563", "#d1d5db"))
+    if size:
+        pills.append((size, "#1f242d", "#374151", "#9ca3af"))
+    if kind:
+        pills.append((kind, "#0f2e26", "#10b981", "#6ee7b7"))
+    if pkg:
+        if str(pkg).upper() == "FPKG":
+            pills.append((pkg, "#351a20", "#f43f5e", "#fda4af"))
+        else:
+            pills.append((pkg, "#132a3e", "#4f8ef7", "#93c5fd"))
+
+    if pills:
+        by, bh = 894, 38
+        f_pill = _card_font("bold", 16)
+        gap = 10
+        widths = [int(draw.textlength(t, font=f_pill)) + 32
+                  for t, _, _, _ in pills]
+        total = sum(widths) + gap * (len(widths) - 1)
+        if total > S - 2 * M:
+            f_pill = _card_font("bold", 15)
+            gap = 6
+            widths = [int(draw.textlength(t, font=f_pill)) + 28
+                      for t, _, _, _ in pills]
+            total = sum(widths) + gap * (len(widths) - 1)
+        bx = (S - total) // 2
+        for (text, fill, border, fg), bw in zip(pills, widths):
+            draw.rounded_rectangle((bx, by, bx + bw, by + bh), radius=bh // 2,
+                                   fill=_card_rgb(fill),
+                                   outline=_card_rgb(border), width=1)
+            draw.text((bx + bw // 2, by + bh // 2), text, font=f_pill,
+                      fill=_card_rgb(fg), anchor="mm")
+            bx += bw + gap
+
+    # ---- footer --------------------------------------------------------
+    draw.line((280, 978, S - 280, 978), fill=_card_rgb("#2f323a"), width=1)
+    draw.text((S // 2, 1006),
+              "PKG Viewer  \u00b7  github.com/Loopayeh/pkg-viewer",
+              font=_card_font("regular", 14), fill=_card_rgb(_CARD_MUTED),
+              anchor="mm")
+    return card.convert("RGB")
 
 
 def print_info(path):
@@ -7202,17 +7481,22 @@ def _local_logo(size=(40, 40)):
 
 
 def _brand_logo(size=(34, 34)):
-    """The rounded L mark (white tile, black L) drawn on cards."""
+    """The app icon (L + magnifier) drawn on cards."""
     try:
         from PIL import Image as _I
         here = os.path.dirname(os.path.abspath(__file__))
-        cands = [os.path.join(os.getcwd(), "assets", "logo-mark.png"),
+        cands = [os.path.join(os.getcwd(), "assets", "logo.ico"),
+                 os.path.join(here, "assets", "logo.ico"),
+                 os.path.join(os.getcwd(), "assets", "logo-mark.png"),
                  os.path.join(here, "assets", "logo-mark.png")]
         if getattr(sys, "frozen", False):
             cands.insert(0, os.path.join(os.path.dirname(sys.executable),
                                          "assets", "logo-mark.png"))
             cands.insert(0, os.path.join(sys._MEIPASS, "assets",
                                          "logo-mark.png"))
+            cands.insert(0, os.path.join(os.path.dirname(sys.executable),
+                                         "assets", "logo.ico"))
+            cands.insert(0, os.path.join(sys._MEIPASS, "assets", "logo.ico"))
         for p in cands:
             if os.path.isfile(p):
                 im = _I.open(p).convert("RGBA")
@@ -7264,10 +7548,19 @@ def run_gui(start_path=None):
         has_dnd = True
     except ImportError:
         root = tk.Tk()
+    _alpha_hidden = False
     try:
         # hide until layout is applied:
         # avoids white flash + resize jump on startup
         root.withdraw()
+        root.configure(bg=BG)
+        try:
+            # keep even the very first map invisible; the finished frame is
+            # revealed in one step at the end of startup
+            root.attributes("-alpha", 0.0)
+            _alpha_hidden = True
+        except Exception:
+            pass
     except Exception:
         pass
     root.title("PKG Viewer %s — PS2/PS3/PS4/PS5/Switch/WiiU/Xbox360" % APP_VERSION)
@@ -9054,9 +9347,14 @@ def run_gui(start_path=None):
     cardmenu.add_command(label="Solid card",
                          command=lambda: _pick_card_style("solid"))
     cardmenu.add_separator()
+    cardmenu.add_command(label="Copy square card",
+                         command=lambda: copy_square_card())
+    cardmenu.add_separator()
     cardmenu.add_command(label="Save card as PNG...",
                          command=lambda: copy_spec_card(
                              glass=(_card_style.get() == "glass"), save=True))
+    cardmenu.add_command(label="Save square card as PNG...",
+                         command=lambda: copy_square_card(save=True))
     _refresh_card_menu()
 
     def _card_menu(ev):
@@ -10571,6 +10869,91 @@ def run_gui(start_path=None):
         except Exception as ex:
             statusvar.set(f"Copy failed: {ex}")
 
+    def _second_picture(res):
+        # pic1 -> pic0 -> pic2, as an RGB image for card backdrops
+        try:
+            import io as _io
+            from PIL import Image as _I
+            order = ("pic1.png", "pic0.png", "pic2.png")
+            found = {}
+            for e in res.get("entries") or []:
+                n = os.path.basename(str(e.get("name", ""))).lower()
+                if n in order and n not in found:
+                    found[n] = e
+            for n in order:
+                e = found.get(n)
+                if e is None:
+                    continue
+                if e.get("local_path") and os.path.isfile(e["local_path"]):
+                    with open(e["local_path"], "rb") as fh:
+                        data = fh.read()
+                elif e.get("cached") is not None:
+                    data = e["cached"]
+                else:
+                    data = read_entry_bytes(res["path"], e["abs_off"],
+                                            e["size"])
+                return _I.open(_io.BytesIO(data)).convert("RGB")
+        except Exception:
+            return None
+        return None
+
+    def copy_square_card(save=False):
+        # 1080x1080 share card: cover, title, a few pills, Title ID/version.
+        r = state.get("result")
+        if not r:
+            statusvar.set("Open a file first")
+            return
+        if not has_pil:
+            statusvar.set("Square card needs Pillow")
+            return
+        try:
+            rows = dict(r.get("rows") or [])
+            title = _title_value() or r.get("title") or ""
+            plat = str(rows.get("Platform", "") or "")
+            plat = plat.split("(")[0].strip()
+            kind = str(rows.get("Type", "") or "").split("(")[0].strip()
+            ext = os.path.splitext(str(r.get("path") or ""))[1].lower()
+            fmt = {".pkg": "pkg", ".nsp": "nsp", ".xci": "xci",
+                   ".exfat": "exfat", ".ffpkg": "ffpkg",
+                   ".ffpfsc": "ffpfsc"}.get(ext, "")
+            card = build_square_card(
+                title, cover=state.get("pil"), backdrop=_second_picture(r),
+                platform=plat, region=str(rows.get("Region", "") or ""),
+                size=str(rows.get("Size", "") or ""), kind=kind,
+                tid=str(rows.get("Title ID", "") or ""),
+                version=str(rows.get("Content Ver", "") or ""), fmt=fmt,
+                pkg=("FPKG" if "fake" in str(rows.get("Package", "")).lower()
+                     else "OFC" if "official" in str(rows.get("Package", "")).lower()
+                     else ""),
+                min_system=str(rows.get("Min. System", "") or ""),
+                sdk=str(rows.get("SDK", "") or ""),
+                content_id=str(rows.get("Content ID", "") or ""),
+                master_ver=str(rows.get("Master Ver", "") or ""))
+            stem = sanitize_filename_part(title, 60) or "card"
+            if save:
+                from tkinter import filedialog as _fd3
+                out = _fd3.asksaveasfilename(
+                    title="Save square card as PNG", defaultextension=".png",
+                    initialfile=stem + "-square.png",
+                    filetypes=[("PNG image", "*.png")])
+                if not out:
+                    return
+                card.save(out)
+                statusvar.set("Square card saved: " + out)
+                return
+            err = copy_image_to_clipboard(card)
+            if err:
+                base = os.path.dirname(_covers_dir() or "") \
+                    or os.environ.get("TEMP") or "."
+                out = os.path.join(base, stem + "-square.png")
+                card.save(out)
+                statusvar.set("Clipboard unavailable (%s) - saved %s"
+                              % (err, out))
+            else:
+                statusvar.set("Square card copied to clipboard")
+        except Exception as ex:
+            statusvar.set("Square card failed: %s" % ex)
+
     def copy_spec_card(glass=True, save=False):
         # The Info tab as one shareable image: cover + title + badges + rows.
         r = state.get("result")
@@ -11753,36 +12136,62 @@ def run_gui(start_path=None):
             except Exception:
                 pass
         root.update_idletasks()
-        # Map the window fully transparent first: Tk paints each child window
-        # over the next few message loops, so a normal deiconify shows a
-        # half-painted frame (desktop / white showing through the empty
-        # areas) for a moment. With alpha 0 nothing of that is visible; the
-        # finished frame is revealed in one step below.
-        _alpha = False
-        try:
-            root.attributes("-alpha", 0.0)
-            _alpha = True
-        except Exception:
-            _alpha = False
-        try:
-            root.deiconify()
-            root.update()  # first map must complete for a valid HWND
+
+        # Dark native title bar before the first map. The frame HWND already
+        # exists while the window is withdrawn, so the caption is dark when
+        # deiconify paints it - otherwise a white caption flashes briefly.
+        # winfo_id() is the Tk client child, so the frame HWND is its parent
+        # (verified: FindWindow match). The native frame stays: snap +
+        # min/max/close work.
+        def _dark_frame():
             try:
-                # Dark native title bar (Windows 10 20H1+ / 11): same family
-                # look as the Avalonia apps. winfo_id() is the Tk client child,
-                # so the frame HWND is its parent (verified: FindWindow match).
-                # Must run after deiconify (withdrawn window has no HWND).
-                # Native frame stays: snap + min/max/close work.
                 import ctypes as _ct
                 _hwnd = _ct.windll.user32.GetParent(root.winfo_id())
+                if not _hwnd:
+                    return False
                 _dark = _ct.c_int(1)
                 # 20 = DWMWA_USE_IMMERSIVE_DARK_MODE (Win11), 19 = older value
                 if _ct.windll.dwmapi.DwmSetWindowAttribute(
                         _hwnd, 20, _ct.byref(_dark), _ct.sizeof(_dark)) != 0:
                     _ct.windll.dwmapi.DwmSetWindowAttribute(
                         _hwnd, 19, _ct.byref(_dark), _ct.sizeof(_dark))
+
+                def _dwm_color(value):
+                    h = value.lstrip("#")
+                    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+                    return _ct.c_uint(r | (g << 8) | (b << 16))
+
+                # 35 caption, 36 caption text, 34 window border (Win11 22000+;
+                # older builds simply ignore these)
+                for _attr, _hex in ((35, BG), (36, TEXT), (34, CARD2)):
+                    try:
+                        _col = _dwm_color(_hex)
+                        _ct.windll.dwmapi.DwmSetWindowAttribute(
+                            _hwnd, _attr, _ct.byref(_col), _ct.sizeof(_col))
+                    except Exception:
+                        pass
+                return True
             except Exception:
-                pass
+                return False
+
+        _frame_dark = _dark_frame()
+
+        # Map the window fully transparent first: Tk paints each child window
+        # over the next few message loops, so a normal deiconify shows a
+        # half-painted frame (desktop / white showing through the empty
+        # areas) for a moment. With alpha 0 nothing of that is visible; the
+        # finished frame is revealed in one step below.
+        _alpha = _alpha_hidden
+        try:
+            root.attributes("-alpha", 0.0)
+            _alpha = True
+        except Exception:
+            pass
+        try:
+            root.deiconify()
+            if not _frame_dark:
+                _dark_frame()
+            root.update()  # first map must complete for a valid HWND
             # pump a few rounds: every child mapped by deiconify paints in its
             # own message pass, and they are all invisible while alpha is 0
             for _ in range(4):

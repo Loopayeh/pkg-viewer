@@ -33,8 +33,8 @@ Grab `PKGViewer-Setup-X.Y.Z.exe` from [Releases](../../releases) — no admin ne
 ## Features
 
 - Cover art preview (icon0.png, pic0.png, …) with Save / Copy to clipboard — online covers (PlayStation Store, ps2-covers, GameTDB, XboxUnity, Nintendo IDBE), cached offline
-- Copy card: the open file as one PNG — cover, title, badges and spec rows — straight to the clipboard, ready to paste in a chat or post
-- Spec card: Title ID, Content ID, version, region, Min. System, SDK, DRM
+- Copy card: the open file as one PNG — cover, title, Content ID, badges and key specs — straight to the clipboard, ready to paste in a chat or post
+- Two card formats: a wide spec card and a square **1080x1080** share card; **Glass / Solid** style is remembered, and the `▾` menu saves either one as PNG
 - Latest patch version per game (PS5/PS4) with PKG-vs-latest compare
 - Files tab: folder tree built from entry paths (PS3 discs/folders, ISOs), sized per folder — single-file Extract with rename, trophy00.trp contents
 - Trophies tab: decrypted trophy list (name, grade, hidden) with icons, banner art, Save icons export — no PSN API and no login, the NPWR ID is recovered from the file itself ([how it works](docs/trophies.md))
